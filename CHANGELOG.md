@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.7] - 2026-03-06
+
+### Fixed
+- DuckDB 1.x compatibility: `.arrow()` returns `RecordBatchReader`, added `.read_all()` to all adapter call sites
+- PySpark 3.5 compatibility: convert Arrow tables to pandas before `createDataFrame()` (direct Arrow support is 4.0-only)
+
 ## [0.1.6] - 2026-03-06
 
 ### Changed
