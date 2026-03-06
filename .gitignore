@@ -23,4 +23,4 @@ mcp.json
 docs/reference/
 docs/_build/
 *.zip
-site/.kiro/
+.kiro/
