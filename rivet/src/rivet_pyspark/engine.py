@@ -244,11 +244,17 @@ class PySparkComputeEnginePlugin(ComputeEnginePlugin):
         """
         pyspark_engine: PySparkComputeEngine = engine  # type: ignore[assignment]
         session = pyspark_engine.get_session()
+        from pyspark.sql.pandas.types import from_arrow_schema
+
         for name, table in input_tables.items():
             # Normalise RecordBatchReader → Table (Spark 4.0 compat)
             if isinstance(table, pyarrow.RecordBatchReader):
                 table = table.read_all()
-            df = session.createDataFrame(table.to_pandas())
+            # Convert Arrow schema to Spark schema so Spark doesn't have to
+            # infer types from the pandas DataFrame (avoids CANNOT_DETERMINE_TYPE
+            # errors for null / ambiguous columns).
+            spark_schema = from_arrow_schema(table.schema)
+            df = session.createDataFrame(table.to_pandas(), schema=spark_schema)
             df.createOrReplaceTempView(name)
         result_df = session.sql(sql)
         return SparkDataFrameMaterializedRef(result_df).to_arrow()
