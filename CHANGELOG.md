@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-03-06
+
+### Fixed
+- Resolved ruff lint errors across CLI and tests (dead code, unused imports, f-string prefixes, import sorting)
+- Fixed missing `_initial_sql` attribute in editor cache restore test
+- Resolved mypy type errors in explore command and terminal renderer
+- Fixed `.gitignore` entry for `.kiro/` directory
+
+### Changed
+- Removed automated semantic-release workflow; versions are now managed manually
+- Properly typed `ExploreController` renderer as `TerminalRenderer`
+- Cleaned up `# type: ignore` comments in explore command
+
 ## [0.1.0] - 2025-01-01
 
 ### Added
