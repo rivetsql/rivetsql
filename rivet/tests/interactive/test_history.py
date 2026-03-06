@@ -7,12 +7,14 @@ Validates: Requirements 21.1, 21.3
 from __future__ import annotations
 
 import tempfile
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+import rivet_core.interactive.history as hist_mod
 from rivet_core.interactive.history import HISTORY_CAP, load_history, save_history
 from rivet_core.interactive.types import QueryHistoryEntry
 
@@ -43,6 +45,23 @@ _entry_strategy = st.builds(
     duration_ms=st.floats(min_value=0.0, max_value=60_000.0, allow_nan=False),
     status=st.sampled_from(["success", "failed", "canceled", "warning"]),
 )
+
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _isolated_history(tmp_path: Path) -> Iterator[None]:
+    """Redirect history to a temp file and disable ephemeral-path guard."""
+    orig_file = hist_mod._HISTORY_FILE
+    orig_check = hist_mod._is_ephemeral
+    hist_mod._HISTORY_FILE = tmp_path / "history.json"
+    hist_mod._is_ephemeral = lambda _: False  # type: ignore[assignment]
+    try:
+        yield
+    finally:
+        hist_mod._HISTORY_FILE = orig_file
+        hist_mod._is_ephemeral = orig_check  # type: ignore[assignment]
 
 
 class TestHistoryRoundTrip:
@@ -116,21 +135,11 @@ class TestHistoryRoundTrip:
     def test_corrupt_file_returns_empty(self, tmp_path: Path) -> None:
         project = tmp_path / "project"
         project.mkdir()
-        history_dir = tmp_path / ".cache" / "rivet" / "repl"
-        history_dir.mkdir(parents=True)
-        (history_dir / "history.json").write_text("not valid json", encoding="utf-8")
-        # load_history uses the global path, so we test via monkeypatching
-        # Instead, test that corrupt JSON in the actual file is handled gracefully
-        import rivet_core.interactive.history as hist_mod
-        orig_file = hist_mod._HISTORY_FILE
         corrupt_file = tmp_path / "corrupt.json"
         corrupt_file.write_text("not valid json", encoding="utf-8")
         hist_mod._HISTORY_FILE = corrupt_file
-        try:
-            loaded = load_history(project)
-            assert loaded == []
-        finally:
-            hist_mod._HISTORY_FILE = orig_file
+        loaded = load_history(project)
+        assert loaded == []
 
     def test_projects_are_isolated(self, tmp_path: Path) -> None:
         """History for different projects is stored separately."""
@@ -139,24 +148,18 @@ class TestHistoryRoundTrip:
         project_a.mkdir()
         project_b.mkdir()
 
-        import rivet_core.interactive.history as hist_mod
-        orig_file = hist_mod._HISTORY_FILE
-        hist_mod._HISTORY_FILE = tmp_path / "history.json"
-        try:
-            entries_a = [_make_entry(name="query_a")]
-            entries_b = [_make_entry(name="query_b")]
-            save_history(project_a, entries_a)
-            save_history(project_b, entries_b)
+        entries_a = [_make_entry(name="query_a")]
+        entries_b = [_make_entry(name="query_b")]
+        save_history(project_a, entries_a)
+        save_history(project_b, entries_b)
 
-            loaded_a = load_history(project_a)
-            loaded_b = load_history(project_b)
+        loaded_a = load_history(project_a)
+        loaded_b = load_history(project_b)
 
-            assert len(loaded_a) == 1
-            assert loaded_a[0].name == "query_a"
-            assert len(loaded_b) == 1
-            assert loaded_b[0].name == "query_b"
-        finally:
-            hist_mod._HISTORY_FILE = orig_file
+        assert len(loaded_a) == 1
+        assert loaded_a[0].name == "query_a"
+        assert len(loaded_b) == 1
+        assert loaded_b[0].name == "query_b"
 
     def test_timestamp_preserved(self, tmp_path: Path) -> None:
         project = tmp_path / "project"
@@ -170,30 +173,18 @@ class TestHistoryRoundTrip:
             duration_ms=5.0,
             status="success",
         )
-        import rivet_core.interactive.history as hist_mod
-        orig_file = hist_mod._HISTORY_FILE
-        hist_mod._HISTORY_FILE = tmp_path / "history.json"
-        try:
-            save_history(project, [entry])
-            loaded = load_history(project)
-            assert len(loaded) == 1
-            assert loaded[0].timestamp == ts
-        finally:
-            hist_mod._HISTORY_FILE = orig_file
+        save_history(project, [entry])
+        loaded = load_history(project)
+        assert len(loaded) == 1
+        assert loaded[0].timestamp == ts
 
     def test_null_row_count_preserved(self, tmp_path: Path) -> None:
         project = tmp_path / "project"
         project.mkdir()
         entry = _make_entry(row_count=None)
-        import rivet_core.interactive.history as hist_mod
-        orig_file = hist_mod._HISTORY_FILE
-        hist_mod._HISTORY_FILE = tmp_path / "history.json"
-        try:
-            save_history(project, [entry])
-            loaded = load_history(project)
-            assert loaded[0].row_count is None
-        finally:
-            hist_mod._HISTORY_FILE = orig_file
+        save_history(project, [entry])
+        loaded = load_history(project)
+        assert loaded[0].row_count is None
 
 
 @settings(max_examples=100)
@@ -205,14 +196,15 @@ def test_history_round_trip_property(entries: list[QueryHistoryEntry]) -> None:
     deserializing should produce equivalent entries. When the history exceeds
     1,000 entries, only the most recent 1,000 should be retained.
     """
-    import rivet_core.interactive.history as hist_mod
     orig_file = hist_mod._HISTORY_FILE
+    orig_check = hist_mod._is_ephemeral
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         project = tmp_path / "project"
         project.mkdir()
         hist_mod._HISTORY_FILE = tmp_path / "history.json"
+        hist_mod._is_ephemeral = lambda _: False  # type: ignore[assignment]
         try:
             save_history(project, entries)
             loaded = load_history(project)
@@ -230,3 +222,4 @@ def test_history_round_trip_property(entries: list[QueryHistoryEntry]) -> None:
                 assert abs(orig.duration_ms - restored.duration_ms) < 1e-6
         finally:
             hist_mod._HISTORY_FILE = orig_file
+            hist_mod._is_ephemeral = orig_check  # type: ignore[assignment]

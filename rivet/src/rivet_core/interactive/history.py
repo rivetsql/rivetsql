@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -20,6 +21,17 @@ logger = logging.getLogger(__name__)
 HISTORY_CAP = 1_000
 _HISTORY_DIR = Path.home() / ".cache" / "rivet" / "repl"
 _HISTORY_FILE = _HISTORY_DIR / "history.json"
+
+_TEMP_DIR = Path(tempfile.gettempdir()).resolve()
+
+
+def _is_ephemeral(project_path: Path) -> bool:
+    """Return True for temp/ephemeral directories that should not persist history."""
+    try:
+        resolved = str(project_path.resolve())
+    except OSError:
+        return True
+    return str(_TEMP_DIR) in resolved
 
 
 def _project_key(project_path: Path) -> str:
@@ -64,7 +76,10 @@ def save_history(project_path: Path, entries: list[QueryHistoryEntry]) -> None:
 
     Caps at HISTORY_CAP entries, retaining the most recent.
     Merges with any existing entries for other projects.
+    Skips persistence for ephemeral/temp directories (e.g. pytest).
     """
+    if _is_ephemeral(project_path):
+        return
     # Load existing data for all projects
     try:
         existing = json.loads(_HISTORY_FILE.read_text(encoding="utf-8"))
