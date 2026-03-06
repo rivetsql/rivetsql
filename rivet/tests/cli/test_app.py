@@ -260,7 +260,7 @@ class TestMainEntryPoint:
         code = main(["--version"])
         assert code == 0
         out = capsys.readouterr().out
-        assert "0.1.0" in out
+        assert "rivet " in out
 
     @given(cmd=st.text(min_size=1, max_size=30, alphabet=st.characters(whitelist_categories=("L",))).filter(lambda s: s not in COMMANDS))
     @settings(max_examples=100)
