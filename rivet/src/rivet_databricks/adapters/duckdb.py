@@ -248,7 +248,7 @@ class _DatabricksDuckDBMaterializedRef(MaterializedRef):
             _configure_duckdb_credentials(conn, self._storage_location, self._credentials, self._catalog_options)
             location = _resolve_storage_path(self._storage_location, self._reader_func)
             sql = self._sql_override or f"SELECT * FROM {self._reader_func}('{location}')"
-            return conn.execute(sql).arrow()
+            return conn.execute(sql).arrow().read_all()
         except ExecutionError:
             raise
         except Exception as exc:

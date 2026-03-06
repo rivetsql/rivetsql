@@ -78,7 +78,7 @@ class _S3DuckDBMaterializedRef(MaterializedRef):
             _configure_s3_secret(conn, self._catalog_options)
 
             if self._sql:
-                return conn.execute(self._sql).arrow()
+                return conn.execute(self._sql).arrow().read_all()
 
             s3_path = _build_s3_path(self._catalog_options, self._table)
             fmt = self._catalog_options.get("format", "parquet")
@@ -95,7 +95,7 @@ class _S3DuckDBMaterializedRef(MaterializedRef):
                         format=fmt,
                     )
                 )
-            return conn.execute(f"SELECT * FROM {reader}('{s3_path}')").arrow()
+            return conn.execute(f"SELECT * FROM {reader}('{s3_path}')").arrow().read_all()
         except ExecutionError:
             raise
         except Exception as exc:

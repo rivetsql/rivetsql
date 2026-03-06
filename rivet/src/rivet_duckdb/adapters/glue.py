@@ -200,7 +200,7 @@ class GlueDuckDBMaterializedRef(MaterializedRef):
                 path_list = ", ".join(f"'{p}'" for p in paths)
                 sql = self._sql_override or f"SELECT * FROM {reader}([{path_list}])"
 
-            return conn.execute(sql).arrow()
+            return conn.execute(sql).arrow().read_all()
         except ExecutionError:
             raise
         except Exception as exc:
