@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
 import os
 import sys
 from dataclasses import dataclass
@@ -68,7 +69,11 @@ def _add_global_options(parser: argparse.ArgumentParser) -> None:
 def build_parser() -> argparse.ArgumentParser:
     """Build the argument parser with all commands and global options."""
     parser = argparse.ArgumentParser(prog="rivet", description="Rivet data pipeline CLI")
-    parser.add_argument("--version", action="version", version="rivet 0.1.0")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"rivet {importlib.metadata.version('rivetsql')}",
+    )
     _add_global_options(parser)
 
     subs = parser.add_subparsers(dest="command")
