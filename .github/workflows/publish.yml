@@ -39,18 +39,3 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: rivet/src/${{ matrix.plugin }}/dist/
-
-  publish-main:
-    needs: publish-plugins
-    runs-on: ubuntu-latest
-    environment: pypi
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-      - run: pip install hatch
-      - run: cp README.md rivet/README.md && cd rivet && cp pyproject.rivetsql.toml pyproject.toml && hatch build
-      - uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          packages-dir: rivet/dist/
