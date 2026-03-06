@@ -71,6 +71,7 @@ class SparkDataFrameMaterializedRef(MaterializedRef):
     def storage_type(self) -> str:
         return "spark_dataframe"
 
+
 ALL_6_CAPABILITIES = [
     "projection_pushdown",
     "predicate_pushdown",
@@ -247,9 +248,7 @@ class PySparkComputeEnginePlugin(ComputeEnginePlugin):
             # Normalise RecordBatchReader → Table (Spark 4.0 compat)
             if isinstance(table, pyarrow.RecordBatchReader):
                 table = table.read_all()
-            # Pass Arrow table directly — preserves schema and avoids
-            # pandas type-inference issues (Spark >= 3.3 required)
-            df = session.createDataFrame(table)
+            df = session.createDataFrame(table.to_pandas())
             df.createOrReplaceTempView(name)
         result_df = session.sql(sql)
         return SparkDataFrameMaterializedRef(result_df).to_arrow()
