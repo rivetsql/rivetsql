@@ -15,6 +15,8 @@ if TYPE_CHECKING:
         SearchResult,
     )
 
+    from rivet_cli.rendering.explore_terminal import TerminalRenderer
+
 logger = logging.getLogger(__name__)
 
 
@@ -37,7 +39,7 @@ class ExploreController:
     Requirements: 13.1, 13.2, 13.3–13.10
     """
 
-    def __init__(self, explorer: CatalogExplorer, renderer: object | None = None) -> None:
+    def __init__(self, explorer: CatalogExplorer, renderer: TerminalRenderer | None = None) -> None:
         self._explorer = explorer
         self._renderer = renderer
 
@@ -207,6 +209,7 @@ class ExploreController:
             self.detail = None
             # Build a NodeDetail with stats as metadata
             from rivet_core.catalog_explorer import NodeDetail
+
             self.detail = NodeDetail(
                 node=node,
                 schema=None,
@@ -240,6 +243,8 @@ class ExploreController:
     def action_generate_confirm(self, fmt: str) -> None:
         """Generate source in chosen format and exit explorer to write file."""
         node = self._generate_node
+        if node is None:
+            return
         try:
             self.generated_source = self._explorer.generate_source(node.path, format=fmt)
             self.error_message = None
@@ -415,39 +420,69 @@ class ExploreController:
         self._running = True
         r = self._renderer
         if hasattr(r, "enter_raw"):
-            r.enter_raw()  # type: ignore[union-attr]
+            r.enter_raw()
         try:
             while self._running:
                 self._render()
-                key = r.read_key()  # type: ignore[attr-defined]
+                key = r.read_key()
                 if not self.handle_key(key):
                     self._running = False
         except KeyboardInterrupt:
             self._running = False
         finally:
             if hasattr(r, "leave_raw"):
-                r.leave_raw()  # type: ignore[union-attr]
-            r.show_cursor()  # type: ignore[attr-defined]
-            r.clear()  # type: ignore[attr-defined]
+                r.leave_raw()
+            r.show_cursor()
+            r.clear()
 
     def _render(self) -> None:
         """Dispatch rendering to the appropriate pane."""
         r = self._renderer
+        assert r is not None
         expanded_keys = {".".join(k) for k in self.expanded}
         node = self._current_node()
         on_table = node is not None and self._is_table_or_view(node)
-        r.clear()  # type: ignore[union-attr]
-        r.hide_cursor()  # type: ignore[union-attr]
+        r.clear()
+        r.hide_cursor()
         if self.active_pane == Pane.DETAIL and self.detail is not None:
             tree_width = r._cols // 2 if hasattr(r, "_cols") else 40
-            r.render_tree(self.visible_nodes, self.cursor, self.scroll_offset, expanded=expanded_keys, tree_width=tree_width, cursor_on_table=on_table)  # type: ignore[union-attr]
-            r.render_detail(self.detail, tree_width)  # type: ignore[union-attr]
+            r.render_tree(
+                self.visible_nodes,
+                self.cursor,
+                self.scroll_offset,
+                expanded=expanded_keys,
+                tree_width=tree_width,
+                cursor_on_table=on_table,
+            )
+            r.render_detail(self.detail, tree_width)
         elif self.active_pane == Pane.SEARCH:
-            r.render_tree(self.visible_nodes, self.cursor, self.scroll_offset, expanded=expanded_keys, cursor_on_table=on_table)  # type: ignore[union-attr]
-            r.render_search(self.search_query, self.search_results)  # type: ignore[union-attr]
+            r.render_tree(
+                self.visible_nodes,
+                self.cursor,
+                self.scroll_offset,
+                expanded=expanded_keys,
+                cursor_on_table=on_table,
+            )
+            r.render_search(self.search_query, self.search_results)
         elif self.active_pane == Pane.GENERATE:
-            table_name = ".".join(self._generate_node.path) if hasattr(self, "_generate_node") else ""
-            r.render_tree(self.visible_nodes, self.cursor, self.scroll_offset, expanded=expanded_keys, cursor_on_table=on_table)  # type: ignore[union-attr]
-            r.render_generate_prompt(table_name)  # type: ignore[union-attr]
+            table_name = (
+                ".".join(self._generate_node.path)
+                if hasattr(self, "_generate_node") and self._generate_node is not None
+                else ""
+            )
+            r.render_tree(
+                self.visible_nodes,
+                self.cursor,
+                self.scroll_offset,
+                expanded=expanded_keys,
+                cursor_on_table=on_table,
+            )
+            r.render_generate_prompt(table_name)
         else:
-            r.render_tree(self.visible_nodes, self.cursor, self.scroll_offset, expanded=expanded_keys, cursor_on_table=on_table)  # type: ignore[union-attr]
+            r.render_tree(
+                self.visible_nodes,
+                self.cursor,
+                self.scroll_offset,
+                expanded=expanded_keys,
+                cursor_on_table=on_table,
+            )

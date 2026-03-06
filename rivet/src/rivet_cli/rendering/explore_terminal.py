@@ -12,7 +12,7 @@ import os
 import sys
 import termios
 import tty
-from typing import IO
+from typing import IO, Any
 
 from rivet_core.catalog_explorer import ExplorerNode, NodeDetail, SearchResult
 
@@ -66,7 +66,7 @@ class TerminalRenderer:
         self._rows = 24
         self._cols = 80
         self._refresh_size()
-        self._old_termios: list | None = None
+        self._old_termios: list[Any] | None = None
 
     def _refresh_size(self) -> None:
         try:
@@ -181,7 +181,9 @@ class TerminalRenderer:
         row += 1
 
         if detail.schema is not None:
-            self._write(f"{_move_to(row, start_col)}{_BOLD}{'  Name':<20}{'Type':<16}{'Null':<6}{_RESET}")
+            self._write(
+                f"{_move_to(row, start_col)}{_BOLD}{'  Name':<20}{'Type':<16}{'Null':<6}{_RESET}"
+            )
             row += 1
             for col in detail.schema.columns:
                 if row >= self._rows - 1:
@@ -261,9 +263,14 @@ class TerminalRenderer:
             if ch2 == "[":
                 ch3 = os.read(fd, 1).decode("utf-8", errors="replace")
                 return {
-                    "A": "up", "B": "down", "C": "right", "D": "left",
-                    "H": "home", "F": "end",
-                    "5": "page_up", "6": "page_down",
+                    "A": "up",
+                    "B": "down",
+                    "C": "right",
+                    "D": "left",
+                    "H": "home",
+                    "F": "end",
+                    "5": "page_up",
+                    "6": "page_down",
                 }.get(ch3, "escape")
             return "escape"
         if ch == "\r" or ch == "\n":
