@@ -85,6 +85,7 @@ class TestOnMountRestoresEditorSql:
         app = RivetRepl.__new__(RivetRepl)
         app._keymap_error = None
         app._editor_path = None
+        app._initial_sql = None
         app._file_watcher = None
 
         # Mock session with repl_state
