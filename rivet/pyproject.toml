@@ -142,24 +142,4 @@ omit = ["src/rivet_cli/repl/*", "*/tests/*"]
 show_missing = true
 skip_covered = false
 
-[tool.semantic_release]
-version_toml = [
-    "pyproject.toml:project.version",
-    "src/rivet_aws/pyproject.toml:project.version",
-    "src/rivet_databricks/pyproject.toml:project.version",
-    "src/rivet_duckdb/pyproject.toml:project.version",
-    "src/rivet_polars/pyproject.toml:project.version",
-    "src/rivet_postgres/pyproject.toml:project.version",
-    "src/rivet_pyspark/pyproject.toml:project.version",
-]
-branch = "main"
-major_on_zero = false
-changelog_file = "../CHANGELOG.md"
-build_command = ""
-upload_to_pypi = false
-upload_to_release = true
 
-[tool.semantic_release.commit_parser_options]
-allowed_tags = ["feat", "fix", "perf", "refactor", "docs", "chore", "ci", "test", "style"]
-minor_tags = ["feat"]
-patch_tags = ["fix", "perf", "refactor"]
