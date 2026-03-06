@@ -44,7 +44,7 @@ def _make_manifest(root: Path) -> ProjectManifest:
 def _write_source(directory: Path, name: str, suffix: str = ".yaml") -> Path:
     """Write a minimal valid joint declaration file."""
     fp = directory / f"{name}{suffix}"
-    fp.write_text(f"name: {name}\ntype: source\ncatalog: cat\n")
+    fp.write_text(f"name: '{name}'\ntype: source\ncatalog: cat\n")
     return fp
 
 
@@ -72,16 +72,14 @@ def test_duplicate_name_produces_error_with_both_paths(
         # overwriting the same file when dir_a == dir_b).
         fp_a = root / dir_a / f"{dup_name}_a.yaml"
         fp_b = root / dir_b / f"{dup_name}_b.yaml"
-        fp_a.write_text(f"name: {dup_name}\ntype: source\ncatalog: cat\n")
-        fp_b.write_text(f"name: {dup_name}\ntype: source\ncatalog: cat\n")
+        fp_a.write_text(f"name: '{dup_name}'\ntype: source\ncatalog: cat\n")
+        fp_b.write_text(f"name: '{dup_name}'\ntype: source\ncatalog: cat\n")
 
         loader = DeclarationLoader()
         _, errors = loader.load(manifest)
 
         dup_errors = [e for e in errors if "Duplicate" in e.message or dup_name in e.message]
-        assert dup_errors, (
-            f"Expected a duplicate-name error for '{dup_name}', got errors: {errors}"
-        )
+        assert dup_errors, f"Expected a duplicate-name error for '{dup_name}', got errors: {errors}"
         # The error must mention the duplicate name.
         assert any(dup_name in e.message for e in dup_errors), (
             f"Error should mention duplicate name '{dup_name}': {dup_errors}"
@@ -114,6 +112,4 @@ def test_unique_names_produce_no_uniqueness_errors(names: list[str]) -> None:
 
         dup_errors = [e for e in errors if "Duplicate" in e.message]
         assert not dup_errors, f"Unexpected duplicate errors for unique names {names}: {dup_errors}"
-        assert len(decls) == len(names), (
-            f"Expected {len(names)} declarations, got {len(decls)}"
-        )
+        assert len(decls) == len(names), f"Expected {len(names)} declarations, got {len(decls)}"
