@@ -7,6 +7,7 @@ from enum import Enum, auto
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from rivet_cli.rendering.explore_terminal import TerminalRenderer
     from rivet_core.catalog_explorer import (
         CatalogExplorer,
         ExplorerNode,
@@ -14,8 +15,6 @@ if TYPE_CHECKING:
         NodeDetail,
         SearchResult,
     )
-
-    from rivet_cli.rendering.explore_terminal import TerminalRenderer
 
 logger = logging.getLogger(__name__)
 
