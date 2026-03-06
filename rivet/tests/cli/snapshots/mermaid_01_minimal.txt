@@ -1,0 +1,8 @@
+graph TD
+    subgraph <UUID>[eng1]
+        raw_orders["raw_orders<br/>type: source<br/>catalog: main"]
+        total_orders["total_orders<br/>type: sql"]
+        write_totals["write_totals<br/>type: sink<br/>catalog: main"]
+    end
+    raw_orders --> total_orders
+    total_orders --> write_totals

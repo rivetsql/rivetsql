@@ -1,0 +1,15 @@
+═══ Compilation Result ═══
+Profile: default
+Catalogs (2): main (arrow), pg (arrow)
+Engines (1): eng1 (arrow)
+Adapters (0): none
+
+─── Assembly ───
+  📥 raw_events (source) [eng1]
+  📥 raw_users (source) [eng1]
+  ⚡ materialization: raw_users -> active_users (assertion_boundary: Joint 'raw_users' has assertions) [strategy: arrow]
+  🔧 active_users (sql) [eng1]
+  🔧 user_summary (sql) [eng1]
+  📤 write_users (sink) [eng1]
+
+✓ compiled 5 joints (2/5 schemas) in <T>ms [introspection: 0 ok, 0 failed, 0 skipped]

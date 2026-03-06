@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: 'pip'
+          cache-dependency-path: rivet/pyproject.toml
+      - run: pip install -e "./rivet[dev]"
+      - run: ruff check src tests
+        working-directory: rivet
+      - run: mypy src
+        working-directory: rivet
+
+  test:
+    strategy:
+      matrix:
+        include:
+          - python-version: "3.11"
+            os: ubuntu-latest
+            test-scope: "tests/core tests/config tests/bridge"
+          - python-version: "3.12"
+            os: ubuntu-latest
+            test-scope: "tests"
+          - python-version: "3.12"
+            os: macos-latest
+            test-scope: "tests/core tests/config tests/bridge"
+          - python-version: "3.13"
+            os: ubuntu-latest
+            test-scope: "tests/core tests/config tests/bridge"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: 'pip'
+          cache-dependency-path: rivet/pyproject.toml
+      - run: pip install -e "./rivet[dev,test]"
+      - run: pytest ${{ matrix.test-scope }} -n auto
+        working-directory: rivet
+
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: 'pip'
+          cache-dependency-path: rivet/pyproject.toml
+      - run: pip install -e "./rivet[dev,test]"
+      - run: pytest tests --cov=src --cov-report=xml --cov-report=term-missing -n auto
+        working-directory: rivet
+      - uses: codecov/codecov-action@v5
+        with:
+          files: rivet/coverage.xml
+          fail_ci_if_error: false
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: 'pip'
+          cache-dependency-path: rivet/pyproject.toml
+      - run: pip install -e "./rivet[dev,test]"
+      - run: pip install pip-audit && pip-audit

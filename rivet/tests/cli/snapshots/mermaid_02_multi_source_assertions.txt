@@ -1,0 +1,16 @@
+graph TD
+    subgraph <UUID>[eng1]
+        raw_categories["raw_categories<br/>type: source<br/>catalog: warehouse"]
+        enriched_products["enriched_products<br/>type: sql"]
+    end
+    subgraph <UUID>[eng1]
+        raw_products["raw_products<br/>type: source<br/>catalog: warehouse"]
+    end
+    subgraph <UUID>[eng1]
+        write_products["write_products<br/>type: sink<br/>catalog: warehouse"]
+    end
+    raw_products --> enriched_products
+    raw_categories --> enriched_products
+    enriched_products --> write_products
+    raw_products -->|⚡ materialize| enriched_products
+    enriched_products -->|⚡ materialize| write_products

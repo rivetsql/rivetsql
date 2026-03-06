@@ -1,119 +1,155 @@
-<!-- Logo / Banner -->
-<p align="center">
-  <img src="https://rivetsql.github.io/rivet/assets/logo.png" alt="Rivet SQL" width="400">
-</p>
+<div align="center">
+  <img src="docs/assets/logo.png" alt="Rivet Logo" width="400"/>
 
-<!-- Badges -->
-<p align="center">
-  <a href="https://pypi.org/project/rivetsql/"><img src="https://img.shields.io/pypi/v/rivetsql" alt="PyPI version"></a>
-  <a href="https://pypi.org/project/rivetsql/"><img src="https://img.shields.io/pypi/pyversions/rivetsql" alt="Python versions"></a>
-  <a href="https://github.com/rivetsql/rivet/blob/main/LICENSE"><img src="https://img.shields.io/github/license/rivetsql/rivet" alt="License"></a>
-  <a href="https://github.com/rivetsql/rivet/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/rivetsql/rivet/ci.yml?branch=main&label=CI" alt="CI status"></a>
-</p>
+  <h1>Rivet</h1>
+  <p><b>Declarative SQL pipelines with multi-engine execution, quality checks, and built-in testing.</b></p>
 
-<p align="center"><strong>Declarative SQL pipelines — define what, not how.</strong></p>
+  [![PyPI version](https://img.shields.io/pypi/v/rivetsql)](https://pypi.org/project/rivetsql/)
+  [![Python versions](https://img.shields.io/pypi/pyversions/rivetsql)](https://pypi.org/project/rivetsql/)
+  [![License](https://img.shields.io/github/license/rivetsql/rivetsql)](https://github.com/rivetsql/rivetsql/blob/main/LICENSE)
+  [![Docs](https://img.shields.io/badge/docs-rivetsql.github.io-blue)](https://rivetsql.github.io/rivetsql)
+</div>
 
 ---
 
-Rivet separates *what* to compute (joints) from *how* to compute (engines) and *where* data lives (catalogs). Define your pipeline once — run it on DuckDB, Polars, PySpark, or Postgres without changing your logic.
+Rivet is a framework that revolutionizes data pipelines by strictly separating concerns. It allows you to define your pipeline once and run it on DuckDB, Polars, PySpark, Postgres or any other engine without changing your logic.
 
-## Features
+## 🧠 The Mental Model
 
-- **Multi-engine execution** — swap between DuckDB, Polars, PySpark, and Postgres without rewriting pipelines
-- **Declarative pipelines** — define joints in SQL, YAML, or Python
-- **Quality checks** — assertions before write, audits after write
-- **Built-in testing** — offline fixture-based tests with `rivet test`
-- **Plugin architecture** — install only the engines you need
-- **Interactive REPL** — explore and debug pipelines interactively
+Rivet pipelines are built on three foundational pillars:
 
-## Quick Start
+| Concept | Rivet Abstraction | Description |
+|---|---|---|
+| **What** to compute | **Joints** | Named, declarative units of computation (SQL, Python, Source, Sink). |
+| **How** to compute | **Engines** | Deterministic compute engines that execute the logic. |
+| **Where** data lives | **Catalogs** | Named references to data locations like filesystems, databases, or object stores. |
 
-Install Rivet and the DuckDB plugin:
+This architecture lets you build **portable pipelines**. Adjacent SQL joints assigned to the same engine are automatically fused into a single query to reduce memory pressure and avoid unnecessary data movement.
 
-```bash
-pip install rivetsql[duckdb]
+---
+
+## ✨ Key Features
+
+* **🔄 Multi-Engine Execution:** Swap compute engines without rewriting pipelines.
+* **🛠️ Declarative Flexibility:** Define joints using SQL, YAML, or Python.
+* **🛡️ Ironclad Data Quality:** * **Assertions** run pre-write on computed data to catch errors before they hit your target. 
+    * **Audits** run post-write by reading back from the target catalog to verify state.
+* **🧪 Built-in Offline Testing:** Validate your transformation logic using offline fixture data without needing a live database.
+* **💻 Interactive REPL:** Use `rivet repl` for a full-screen terminal UI to explore data, run ad-hoc queries, and iterate on pipeline logic.
+* **🔀 Advanced Write Strategies:** Supports 7 write modes including `append`, `replace`, `merge`, and `scd2` (Slowly Changing Dimensions).
+
+---
+
+## ⚡ Quick Start
+
+### 1. Install
+Install Rivet directly from PyPI:
+`pip install rivetsql`
+
+### 2. Initialize a Project
+Scaffold a new project with the required directory structure:
+```sh
+rivet init my_pipeline
+cd my_pipeline
 ```
 
-Create and run a pipeline:
-
-```bash
-mkdir my_pipeline && cd my_pipeline
-rivet init
+### 3. Run the Pipeline
+Compile and execute your DAG:
+```sh
 rivet run
 ```
 
-A minimal SQL joint (`joints/transform_orders.sql`):
+---
 
+## 💡 Example: A Complete Pipeline
+
+Three files. Source → Transform → Sink. That's it.
+
+**1. Read raw data from a catalog:**
 ```sql
+-- sources/raw_orders.sql
+-- rivet:name: raw_orders
+-- rivet:type: source
+-- rivet:catalog: local
+-- rivet:table: raw_orders
+select * from raw_orders
+```
+
+**2. Transform with plain SQL:**
+```sql
+-- joints/daily_revenue.sql
+-- rivet:name: daily_revenue
+-- rivet:type: sql
 SELECT
-    order_id,
-    customer_name,
-    amount * 1.1 AS amount_with_tax
-FROM {{ ref('raw_orders') }}
+    order_date,
+    SUM(amount) AS revenue
+FROM raw_orders
+WHERE status = 'completed'
+GROUP BY order_date
 ```
 
-## Installation
-
-```bash
-# Full CLI + core
-pip install rivetsql
-
-# Core library only (no CLI)
-pip install rivetsql-core
-
-# With a specific plugin
-pip install rivetsql[duckdb]
-
-# All plugins
-pip install rivetsql[all]
+**3. Write results with quality checks:**
+```sql
+-- sinks/daily_revenue_out.sql
+-- rivet:name: daily_revenue_out
+-- rivet:type: sink
+-- rivet:upstream: [daily_revenue]
+-- rivet:catalog: warehouse
+-- rivet:table: daily_revenue
+-- rivet:write_strategy: replace
+-- rivet:assert: not_null(revenue)
+-- rivet:assert: row_count(min=1)
 ```
 
-## Plugins
+```sh
+$ rivet run
+✓ compiled 3 joints in 38ms
+  raw_orders          ✓ OK (1200 rows)
+  daily_revenue       ✓ OK (90 rows)
+  daily_revenue_out   ✓ OK (90 rows)
 
-| Plugin | Install | Engine |
-|--------|---------|--------|
-| DuckDB | `pip install rivetsql[duckdb]` | In-process analytical SQL |
-| Postgres | `pip install rivetsql[postgres]` | PostgreSQL databases |
-| Polars | `pip install rivetsql[polars]` | DataFrame-based compute |
-| PySpark | `pip install rivetsql[pyspark]` | Distributed Spark execution |
-| Databricks | `pip install rivetsql[databricks]` | Databricks SQL warehouses |
-| AWS | `pip install rivetsql[aws]` | S3 + Glue catalog integration |
-
-## Pipeline Visualization
-
-```mermaid
-graph LR
-    subgraph Joints["Joints (What)"]
-        S[Source] --> T[Transform]
-        T --> K[Sink]
-    end
-
-    subgraph Engines["Engines (How)"]
-        DK[DuckDB]
-        PL[Polars]
-        PS[PySpark]
-        PG[Postgres]
-    end
-
-    subgraph Catalogs["Catalogs (Where)"]
-        FS[Filesystem]
-        DB[Database]
-        S3[Object Store]
-    end
-
-    T --> DK
-    T --> PL
-    T --> PS
-    T --> PG
-
-    K --> FS
-    K --> DB
-    K --> S3
+  38ms | 3 joints | 1 groups | 0 failures
 ```
 
-## Links
+If an assertion like `not_null` fails, the write is completely aborted, keeping your target clean.
 
-- [Documentation](https://rivetsql.github.io/rivet)
-- [Contributing Guide](CONTRIBUTING.md)
-- [License (MIT)](LICENSE)
-- [Changelog](CHANGELOG.md)
+---
+
+## 🧩 Rich Plugin Ecosystem
+
+Rivet is fully extensible through plugins.
+
+| Package | Engine Type | Catalog Type | Best For |
+|---|---|---|---|
+| **`rivet-duckdb`** | `duckdb` | `duckdb` | Local analytics and fast SQL on files. |
+| **`rivet-polars`** | `polars` | — | In-process DataFrame transforms. |
+| **`rivet-pyspark`** | `pyspark` | — | Large-scale distributed processing. |
+| **`rivet-postgres`** | `postgres` | `postgres` | PostgreSQL databases as sources and sinks. |
+| **`rivet-aws`** | — | `s3`, `glue` | AWS S3 object storage and Glue Data Catalog. |
+| **`rivet-databricks`** | `databricks` | `unity`, `databricks` | Databricks SQL warehouses and Unity Catalog. |
+
+---
+
+## 📚 Documentation
+
+Start here:
+* **[Getting Started guide](docs/getting-started.md)**
+* **[Concepts Overview](docs/concepts/index.md)**
+* **[Testing Guide](docs/guides/testing.md)**
+* **[Quality Checks Guide](docs/guides/quality-checks.md)**
+
+---
+
+## 🤝 Contributing
+
+Pull requests are welcome! 
+Check out our [Contribution Guidelines](https://github.com/rivetsql/rivetsql/blob/main/CONTRIBUTING.md).
+
+```sh
+git clone https://github.com/rivetsql/rivetsql
+```
+
+<div align="center">
+  <br/>
+  <i>Built for data engineers who love SQL, demand quality, and value flexibility.</i>
+</div>

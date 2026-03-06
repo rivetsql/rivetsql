@@ -1,0 +1,16 @@
+═══ Compilation Result ═══
+Profile: default
+Catalogs (1): warehouse (arrow)
+Engines (1): eng1 (arrow)
+Adapters (0): none
+
+─── Assembly ───
+╔══ Fused Group: aae62310-eab8-621b-4189-ac37e90ca047 (engine: eng1, strategy: cte) ══╗
+║   📥 raw_categories (source) [eng1]
+║   ↓
+║   🔧 enriched_products (sql) [eng1]
+╚════════════════════════════════════════╝
+  📥 raw_products (source) [eng1]
+  📤 write_products (sink) [eng1]
+
+✓ compiled 4 joints (1/4 schemas) in <T>ms [introspection: 0 ok, 0 failed, 0 skipped]

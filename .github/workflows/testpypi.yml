@@ -1,0 +1,29 @@
+name: Publish to TestPyPI
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "rivet/**"
+      - ".github/workflows/testpypi.yml"
+
+permissions:
+  id-token: write
+
+jobs:
+  test-publish-core:
+    runs-on: ubuntu-latest
+    environment: testpypi
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install hatch
+      - run: cd rivet && hatch build
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          packages-dir: rivet/dist/
+          skip-existing: true

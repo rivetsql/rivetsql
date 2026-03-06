@@ -1,0 +1,164 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "rivetsql"
+version = "0.1.0"
+description = "Core SQL pipeline framework — joints, engines, catalogs"
+requires-python = ">=3.11"
+license = "MIT"
+readme = "../README.md"
+authors = [{ name = "Rivet Contributors" }]
+keywords = ["sql", "data-pipeline", "etl", "elt", "dbt-alternative"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Database",
+]
+dependencies = [
+    "pyarrow>=14.0",
+    "sqlglot>=20.0",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+rivet = "rivet_cli:main"
+
+[project.urls]
+Homepage = "https://github.com/rivetsql/rivetsql"
+Documentation = "https://rivetsql.github.io/rivetsql"
+Repository = "https://github.com/rivetsql/rivetsql"
+Changelog = "https://github.com/rivetsql/rivetsql/blob/main/CHANGELOG.md"
+
+[project.optional-dependencies]
+duckdb = ["rivetsql-duckdb>=1.0.0"]
+polars = ["rivetsql-polars>=1.0.0"]
+pyspark = ["rivetsql-pyspark>=1.0.0"]
+postgres = ["rivetsql-postgres>=1.0.0"]
+aws = ["rivetsql-aws>=1.0.0"]
+databricks = ["rivetsql-databricks>=1.0.0"]
+all = [
+    "rivetsql-duckdb>=1.0.0",
+    "rivetsql-polars>=1.0.0",
+    "rivetsql-pyspark>=1.0.0",
+    "rivetsql-postgres>=1.0.0",
+    "rivetsql-aws>=1.0.0",
+    "rivetsql-databricks>=1.0.0",
+]
+dev = [
+    "pytest>=7.0",
+    "pytest-xdist>=3.5",
+    "pytest-cov>=5.0",
+    "ruff>=0.4",
+    "mypy>=1.10",
+    "hypothesis>=6.0",
+    "types-PyYAML>=6.0",
+    "types-requests>=2.31",
+]
+test = [
+    "duckdb>=0.9",
+    "boto3>=1.28",
+    "polars>=0.20",
+    "psycopg[binary,pool]>=3.1",
+    "pyspark>=3.3",
+    "requests>=2.28",
+    "textual>=0.40",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rivet_core", "src/rivet_config", "src/rivet_bridge", "src/rivet_cli"]
+
+[tool.hatch.build.targets.editable]
+packages = ["src/rivet_core", "src/rivet_config", "src/rivet_bridge", "src/rivet_cli"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+ignore = ["E501", "E741", "E402", "SIM102", "SIM103", "SIM105", "SIM108", "SIM117", "B905"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = false
+disable_error_code = ["import-untyped"]
+
+[[tool.mypy.overrides]]
+module = [
+    "pyarrow",
+    "pyarrow.*",
+    "boto3",
+    "boto3.*",
+    "botocore",
+    "botocore.*",
+    "duckdb",
+    "duckdb.*",
+    "polars",
+    "polars.*",
+    "pyspark",
+    "pyspark.*",
+    "pandas",
+    "pandas.*",
+    "databricks.*",
+    "textual",
+    "textual.*",
+    "psycopg",
+    "psycopg.*",
+    "psycopg_pool",
+    "psycopg_pool.*",
+    "deltalake",
+    "deltalake.*",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = [
+    "rivet_cli.repl.*",
+]
+disable_error_code = ["misc", "no-any-return", "untyped-decorator"]
+
+[tool.coverage.run]
+source = ["src"]
+omit = ["src/rivet_cli/repl/*", "*/tests/*"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+
+[tool.semantic_release]
+version_toml = [
+    "pyproject.toml:project.version",
+    "src/rivet_aws/pyproject.toml:project.version",
+    "src/rivet_databricks/pyproject.toml:project.version",
+    "src/rivet_duckdb/pyproject.toml:project.version",
+    "src/rivet_polars/pyproject.toml:project.version",
+    "src/rivet_postgres/pyproject.toml:project.version",
+    "src/rivet_pyspark/pyproject.toml:project.version",
+]
+branch = "main"
+changelog_file = "../CHANGELOG.md"
+build_command = ""
+upload_to_pypi = false
+upload_to_release = true
+
+[tool.semantic_release.commit_parser_options]
+allowed_tags = ["feat", "fix", "perf", "refactor", "docs", "chore", "ci", "test", "style"]
+minor_tags = ["feat"]
+patch_tags = ["fix", "perf", "refactor"]

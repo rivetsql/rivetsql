@@ -1,0 +1,371 @@
+/* rivet_light.tcss — light theme for the Rivet REPL
+ *
+ * Color conventions (Requirements 27.2):
+ *   SQL keywords   : bold blue   ($keyword)
+ *   strings        : green       ($string)
+ *   numbers        : magenta     ($number)
+ *   comments       : dim gray    ($comment)
+ *   assertions ◆   : cyan        ($assertion)
+ *   audits ●       : magenta     ($audit)
+ *   errors         : red         ($error)
+ *   warnings       : yellow/amber ($warning)
+ *   success        : green       ($success)
+ *   joint names    : bold dark   ($joint-name)
+ *   types          : dim teal    ($type-label)
+ *   NULL values    : dim italic  ($null-value)
+ */
+
+/* ── Design tokens ─────────────────────────────────────────────────────── */
+$background:    #fafafa;
+$surface:       #f0f0f5;
+$surface-alt:   #e8e8f0;
+$border:        #c0c0d0;
+$text:          #1e1e2e;
+$text-muted:    #6c6c80;
+
+$keyword:       #1565c0;   /* dark blue */
+$string:        #2e7d32;   /* dark green */
+$number:        #7b1fa2;   /* dark magenta */
+$comment:       #9e9e9e;   /* gray */
+$assertion:     #00838f;   /* dark cyan */
+$audit:         #7b1fa2;   /* dark magenta */
+$error:         #c62828;   /* dark red */
+$warning:       #e65100;   /* dark amber */
+$success:       #2e7d32;   /* dark green */
+$joint-name:    #1e1e2e;   /* bold dark */
+$type-label:    #00838f;   /* dark teal */
+$null-value:    #9e9e9e;   /* gray */
+$accent:        #1565c0;   /* dark blue accent */
+
+/* ── App shell ─────────────────────────────────────────────────────────── */
+Screen {
+    background: $background;
+    color: $text;
+}
+
+/* ── Status bar ────────────────────────────────────────────────────────── */
+StatusBar {
+    background: $surface;
+    color: $text;
+    border-bottom: solid $border;
+    height: 1;
+}
+
+StatusBar .status-profile {
+    color: $accent;
+    text-style: bold;
+}
+
+StatusBar .status-compiling {
+    color: $warning;
+}
+
+StatusBar .status-compiled {
+    color: $success;
+}
+
+StatusBar .status-error {
+    color: $error;
+    text-style: bold;
+}
+
+StatusBar .status-watching {
+    color: $text-muted;
+}
+
+/* ── Catalog panel ─────────────────────────────────────────────────────── */
+CatalogPanel {
+    background: $surface;
+    border-right: solid $border;
+}
+
+CatalogPanel .catalog-header {
+    color: $text-muted;
+    text-style: bold;
+}
+
+CatalogPanel .joint-name {
+    color: $joint-name;
+    text-style: bold;
+}
+
+CatalogPanel .type-label {
+    color: $type-label;
+}
+
+CatalogPanel .assertion-indicator {
+    color: $assertion;
+}
+
+CatalogPanel .audit-indicator {
+    color: $audit;
+}
+
+CatalogPanel .status-ok {
+    color: $success;
+}
+
+CatalogPanel .status-fail {
+    color: $error;
+}
+
+CatalogPanel .status-running {
+    color: $warning;
+}
+
+CatalogPanel .connection-failed {
+    color: $error;
+    text-style: italic;
+}
+
+/* ── Editor panel ──────────────────────────────────────────────────────── */
+EditorPanel {
+    background: $background;
+}
+
+EditorPanel .tab-active {
+    background: $surface-alt;
+    color: $text;
+    text-style: bold;
+}
+
+EditorPanel .tab-inactive {
+    background: $surface;
+    color: $text-muted;
+}
+
+EditorPanel .tab-dirty {
+    color: $warning;
+}
+
+/* Syntax highlighting */
+EditorPanel .token-keyword {
+    color: $keyword;
+    text-style: bold;
+}
+
+EditorPanel .token-string {
+    color: $string;
+}
+
+EditorPanel .token-number {
+    color: $number;
+}
+
+EditorPanel .token-comment {
+    color: $comment;
+}
+
+EditorPanel .token-annotation {
+    color: $assertion;
+    text-style: italic;
+}
+
+/* Validation underlines */
+EditorPanel .error-underline {
+    color: $error;
+}
+
+EditorPanel .warning-underline {
+    color: $warning;
+}
+
+/* ── Results panel ─────────────────────────────────────────────────────── */
+ResultsPanel {
+    background: $background;
+    border-top: solid $border;
+}
+
+ResultsPanel .results-header {
+    background: $surface;
+    color: $text-muted;
+    text-style: bold;
+}
+
+ResultsPanel .results-footer {
+    background: $surface;
+    color: $text-muted;
+    height: 1;
+}
+
+ResultsPanel .cell-null {
+    color: $null-value;
+    text-style: italic dim;
+}
+
+ResultsPanel .cell-number {
+    color: $number;
+    text-align: right;
+}
+
+ResultsPanel .cell-date {
+    color: $accent;
+}
+
+ResultsPanel .cell-boolean {
+    color: $assertion;
+}
+
+ResultsPanel .diff-added {
+    color: $success;
+}
+
+ResultsPanel .diff-removed {
+    color: $error;
+}
+
+ResultsPanel .diff-changed {
+    color: $warning;
+}
+
+ResultsPanel .diff-unchanged {
+    color: $text-muted;
+}
+
+ResultsPanel .pin-indicator {
+    color: $accent;
+    text-style: bold;
+}
+
+ResultsPanel .error-message {
+    color: $error;
+    text-style: bold;
+}
+
+ResultsPanel .empty-placeholder {
+    color: $text-muted;
+    text-style: italic;
+}
+
+/* ── Footer ────────────────────────────────────────────────────────────── */
+Footer {
+    background: $surface;
+    color: $text-muted;
+    border-top: solid $border;
+}
+
+/* ── Modal overlays ────────────────────────────────────────────────────── */
+ModalScreen {
+    background: $background 80%;
+}
+
+ModalScreen > * {
+    background: $surface;
+    border: thick $accent;
+    color: $text;
+}
+
+/* ── Command palette ───────────────────────────────────────────────────── */
+CommandPaletteScreen {
+    background: $background 80%;
+}
+
+CommandPaletteScreen .palette-input {
+    background: $surface-alt;
+    border: solid $accent;
+    color: $text;
+}
+
+CommandPaletteScreen .palette-item-selected {
+    background: $accent 20%;
+    color: $text;
+}
+
+CommandPaletteScreen .palette-shortcut {
+    color: $text-muted;
+}
+
+/* ── Scrollbars ────────────────────────────────────────────────────────── */
+ScrollBar {
+    background: $surface;
+    color: $border;
+}
+
+ScrollBar:hover {
+    color: $accent;
+}
+
+/* ── Buttons ───────────────────────────────────────────────────────────── */
+Button {
+    background: $surface-alt;
+    color: $text;
+    border: solid $border;
+}
+
+Button:hover {
+    background: $accent 20%;
+    border: solid $accent;
+}
+
+Button:focus {
+    border: solid $accent;
+}
+
+Button.-primary {
+    background: $accent 30%;
+    color: $text;
+    border: solid $accent;
+}
+
+/* ── Input fields ──────────────────────────────────────────────────────── */
+Input {
+    background: $surface-alt;
+    color: $text;
+    border: solid $border;
+}
+
+Input:focus {
+    border: solid $accent;
+}
+
+/* ── Data table ────────────────────────────────────────────────────────── */
+DataTable {
+    background: $background;
+    color: $text;
+}
+
+DataTable > .datatable--header {
+    background: $surface;
+    color: $text-muted;
+    text-style: bold;
+}
+
+DataTable > .datatable--cursor {
+    background: $accent 20%;
+    color: $text;
+}
+
+DataTable > .datatable--hover {
+    background: $surface-alt;
+}
+
+/* ── Tree widget ───────────────────────────────────────────────────────── */
+Tree {
+    background: $surface;
+    color: $text;
+}
+
+Tree > .tree--cursor {
+    background: $accent 20%;
+    color: $text;
+}
+
+Tree > .tree--hover {
+    background: $surface-alt;
+}
+
+/* ── Tabs ──────────────────────────────────────────────────────────────── */
+Tabs {
+    background: $surface;
+    border-bottom: solid $border;
+}
+
+Tab {
+    color: $text-muted;
+}
+
+Tab.-active {
+    color: $text;
+    text-style: bold;
+    border-bottom: solid $accent;
+}

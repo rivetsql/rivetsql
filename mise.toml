@@ -1,0 +1,29 @@
+[tools]
+python = "3.12"
+
+[env]
+PYTHONPATH = "rivet/src"
+
+[tasks.install]
+description = "Install project in dev mode"
+run = "pip install -e 'rivet[dev]'"
+
+[tasks.test]
+description = "Run test suite"
+run = "pytest rivet/tests"
+
+[tasks.lint]
+description = "Run ruff linter"
+run = "ruff check rivet/src"
+
+[tasks.format]
+description = "Format code with ruff"
+run = "ruff format rivet/src"
+
+[tasks.typecheck]
+description = "Run mypy type checking"
+run = "mypy rivet/src"
+
+[tasks.check]
+description = "Run lint + typecheck + tests"
+depends = ["lint", "typecheck", "test"]
