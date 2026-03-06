@@ -45,7 +45,7 @@ def run_execute(
     # --- Build session (reuses the same loader as the interactive REPL) ---
     from rivet_core.interactive import InteractiveSession  # noqa: PLC0415
 
-    from .import _make_loader  # noqa: PLC0415
+    from . import _make_loader  # noqa: PLC0415
 
     session = InteractiveSession(
         project_path=project_path,

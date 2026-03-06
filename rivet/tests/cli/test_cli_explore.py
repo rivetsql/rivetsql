@@ -371,7 +371,7 @@ class TestActionStats:
 class TestActionPreview:
     def test_p_on_table_sets_repl_query_and_stops(self):
         ctrl, explorer = _ctrl_with_table()
-        result = ctrl.handle_key("p")
+        ctrl.handle_key("p")
         assert ctrl.repl_query == "SELECT * FROM pg.public.users LIMIT 100"
         assert ctrl._running is False
 

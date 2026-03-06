@@ -383,7 +383,6 @@ def _infer_sql_table_refs(sql_text: str, known_names: set[str]) -> list[str]:
                     refs.add(n)
                     break
     return sorted(refs)
-    return file_path.stem
 
 
 def _check_level3(

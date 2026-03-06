@@ -188,7 +188,7 @@ def run_engine_create(
     globals: Any,
 ) -> int:
     """Entry point for ``rivet engine create``."""
-    from rivet_cli.exit_codes import GENERAL_ERROR, SUCCESS, USAGE_ERROR
+    from rivet_cli.exit_codes import GENERAL_ERROR
 
     globals_ = globals
 
@@ -345,7 +345,7 @@ def _run_non_interactive(
 
     print(f"\nEngine '{engine_name}' ({engine_type}) written to {profiles_path}")
     if set_default:
-        print(f"Set as default engine.")
+        print("Set as default engine.")
     _print_next_steps()
     return SUCCESS
 
@@ -444,7 +444,7 @@ def _run_interactive(
 
     print(f"\nEngine '{state.engine_name}' ({state.engine_type}) written to {profiles_path}")
     if state.set_as_default:
-        print(f"Set as default engine.")
+        print("Set as default engine.")
     _print_next_steps()
     return SUCCESS
 
