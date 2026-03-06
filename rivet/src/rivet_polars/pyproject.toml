@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rivetsql-polars"
-version = "0.1.3"
+version = "0.1.4"
 description = "Polars plugin for Rivet SQL"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -35,4 +35,5 @@ Repository = "https://github.com/rivetsql/rivetsql"
 polars = "rivet_polars:PolarsPlugin"
 
 [tool.hatch.build.targets.wheel]
-packages = ["rivet_polars"]
+packages = ["."]
+sources = {"." = "rivet_polars"}
