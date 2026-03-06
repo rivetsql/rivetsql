@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rivetsql"
-version = "1.0.0"
+version = "0.1.0"
 description = "Core SQL pipeline framework — joints, engines, catalogs"
 requires-python = ">=3.11"
 license = "MIT"
@@ -153,6 +153,7 @@ version_toml = [
     "src/rivet_pyspark/pyproject.toml:project.version",
 ]
 branch = "main"
+major_on_zero = false
 changelog_file = "../CHANGELOG.md"
 build_command = ""
 upload_to_pypi = false
