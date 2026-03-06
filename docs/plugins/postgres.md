@@ -3,7 +3,7 @@
 The `rivet-postgres` plugin provides both a compute engine and a catalog for PostgreSQL. It supports async connection pooling, server-side cursors for streaming large result sets, and all seven write strategies.
 
 ```bash
-pip install rivetsql[postgres]
+pip install 'rivetsql[postgres]'
 ```
 
 ---

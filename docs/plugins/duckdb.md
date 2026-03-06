@@ -3,7 +3,7 @@
 The `rivet-duckdb` plugin provides both a compute engine and a catalog for DuckDB. Recommended default for local analytics, fast SQL on files, and prototyping pipelines.
 
 ```bash
-pip install rivetsql[duckdb]
+pip install 'rivetsql[duckdb]'
 ```
 
 ---

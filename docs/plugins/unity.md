@@ -3,7 +3,7 @@
 The `rivet-databricks` plugin provides a compute engine (`databricks`) and two catalog plugins (`unity` for Unity Catalog REST API, `databricks` for Databricks-managed catalogs).
 
 ```bash
-pip install rivetsql[databricks]
+pip install 'rivetsql[databricks]'
 ```
 
 ---

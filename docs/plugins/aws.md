@@ -3,7 +3,7 @@
 The `rivet-aws` plugin provides two catalog plugins: `s3` for S3 object storage and `glue` for the AWS Glue Data Catalog.
 
 ```bash
-pip install rivetsql[aws]
+pip install 'rivetsql[aws]'
 ```
 
 ---

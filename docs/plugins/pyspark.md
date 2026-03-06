@@ -3,7 +3,7 @@
 The `rivet-pyspark` plugin provides a compute engine for Apache Spark. It supports both local Spark sessions and remote Spark Connect clusters for large-scale distributed processing.
 
 ```bash
-pip install rivetsql[pyspark]
+pip install 'rivetsql[pyspark]'
 ```
 
 ---

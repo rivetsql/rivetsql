@@ -3,7 +3,7 @@
 The `rivet-polars` plugin provides a compute engine backed by the Polars DataFrame library. It executes SQL via `polars.SQLContext` and supports lazy evaluation with optional streaming.
 
 ```bash
-pip install rivetsql[polars]
+pip install 'rivetsql[polars]'
 ```
 
 ---
@@ -144,7 +144,7 @@ default:
 | `delta` | `deltalake>=0.14` | Read and write Delta Lake tables |
 
 ```bash
-pip install rivetsql[polars] deltalake
+pip install 'rivetsql[polars]' deltalake
 ```
 
 ---

@@ -32,24 +32,24 @@ Rivet ships with a built-in Arrow engine for testing. For real workloads, instal
 Install individual plugins:
 
 ```bash
-pip install rivetsql[duckdb]       # recommended for local dev
-pip install rivetsql[polars]       # in-process DataFrames
-pip install rivetsql[pyspark]      # distributed Spark
-pip install rivetsql[postgres]     # PostgreSQL
-pip install rivetsql[aws]          # S3 + Glue
-pip install rivetsql[databricks]   # Databricks + Unity
+pip install 'rivetsql[duckdb]'       # recommended for local dev
+pip install 'rivetsql[polars]'       # in-process DataFrames
+pip install 'rivetsql[pyspark]'      # distributed Spark
+pip install 'rivetsql[postgres]'     # PostgreSQL
+pip install 'rivetsql[aws]'          # S3 + Glue
+pip install 'rivetsql[databricks]'   # Databricks + Unity
 ```
 
 Combine extras:
 
 ```bash
-pip install rivetsql[duckdb,postgres]
+pip install 'rivetsql[duckdb,postgres]'
 ```
 
 Or install everything:
 
 ```bash
-pip install rivetsql[all]
+pip install 'rivetsql[all]'
 ```
 
 ---

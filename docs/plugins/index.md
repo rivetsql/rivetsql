@@ -64,13 +64,13 @@ Two plugins ship with `rivet_core` and require no extra installation:
 Install plugins as extras of the `rivetsql` package:
 
 ```bash
-pip install rivetsql[duckdb,postgres]
+pip install 'rivetsql[duckdb,postgres]'
 ```
 
 Or install everything:
 
 ```bash
-pip install rivetsql[all]
+pip install 'rivetsql[all]'
 ```
 
 Rivet discovers plugins automatically at startup via Python entry points — no manual registration required.
