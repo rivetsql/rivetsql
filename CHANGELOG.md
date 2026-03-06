@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.5] - 2026-03-06
+
+### Fixed
+- Plugin discovery now uses entry points instead of hardcoded import list
+- Plugin wheels include actual Python source code (hatch build config)
+- Version test no longer asserts hardcoded version string
+
 ## [0.1.4] - 2026-03-06
 
 ### Fixed
