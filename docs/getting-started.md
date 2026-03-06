@@ -7,7 +7,13 @@ Install Rivet, scaffold a project, and run your first pipeline in under 5 minute
 ## Installation
 
 ```bash
-pip install rivetsql
+pip install 'rivetsql[all]'
+```
+
+This installs Rivet and all engine/catalog plugins. To install only specific plugins:
+
+```bash
+pip install 'rivetsql[duckdb]'       # recommended for local dev
 ```
 
 Verify it works:

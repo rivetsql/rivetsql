@@ -43,8 +43,15 @@ This architecture lets you build **portable pipelines**. Adjacent SQL joints ass
 ## ⚡ Quick Start
 
 ### 1. Install
-Install Rivet directly from PyPI:
-`pip install rivetsql`
+Install Rivet with all plugins:
+```sh
+pip install 'rivetsql[all]'
+```
+
+Or install only what you need:
+```sh
+pip install 'rivetsql[duckdb]'    # recommended for local dev
+```
 
 ### 2. Initialize a Project
 Scaffold a new project with the required directory structure:

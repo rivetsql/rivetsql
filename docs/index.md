@@ -26,7 +26,7 @@ Declarative SQL pipelines with multi-engine execution, quality checks, and built
 <div class="install-banner" markdown>
 
 ```
-pip install rivetsql
+pip install 'rivetsql[all]'
 ```
 
 </div>
