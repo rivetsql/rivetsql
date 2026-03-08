@@ -109,7 +109,7 @@ class TestRunTestEndToEnd:
 
         with patch("rivet_config.load_config", return_value=config_result), \
              patch("rivet_bridge.build_assembly", return_value=bridge_result), \
-             patch("rivet_core.executor.Executor.run_query", return_value=mock_table), \
+             patch("rivet_core.executor.Executor.run_query_sync", return_value=mock_table), \
              patch("rivet_bridge.register_optional_plugins"):
             exit_code = run_test(
                 tags=[], tag_all=False, target=None, file_paths=[],
@@ -140,7 +140,7 @@ class TestRunTestEndToEnd:
 
         with patch("rivet_config.load_config", return_value=config_result), \
              patch("rivet_bridge.build_assembly", return_value=bridge_result), \
-             patch("rivet_core.executor.Executor.run_query", return_value=mock_table), \
+             patch("rivet_core.executor.Executor.run_query_sync", return_value=mock_table), \
              patch("rivet_bridge.register_optional_plugins"):
             exit_code = run_test(
                 tags=[], tag_all=False, target=None, file_paths=[],
@@ -177,7 +177,7 @@ class TestRunTestEndToEnd:
 
         with patch("rivet_config.load_config", return_value=config_result), \
              patch("rivet_bridge.build_assembly", return_value=bridge_result), \
-             patch("rivet_core.executor.Executor.run_query", side_effect=mock_run_query), \
+             patch("rivet_core.executor.Executor.run_query_sync", side_effect=mock_run_query), \
              patch("rivet_bridge.register_optional_plugins"):
             run_test(
                 tags=[], tag_all=False, target=None, file_paths=[],
@@ -245,7 +245,7 @@ class TestTagFiltering:
 
         with patch("rivet_config.load_config", return_value=config_result), \
              patch("rivet_bridge.build_assembly", return_value=bridge_result), \
-             patch("rivet_core.executor.Executor.run_query", return_value=mock_table), \
+             patch("rivet_core.executor.Executor.run_query_sync", return_value=mock_table), \
              patch("rivet_bridge.register_optional_plugins"):
             exit_code = run_test(
                 tags=["smoke"], tag_all=False, target=None, file_paths=[],
@@ -313,7 +313,7 @@ class TestTargetFiltering:
 
         with patch("rivet_config.load_config", return_value=config_result), \
              patch("rivet_bridge.build_assembly", return_value=bridge_result), \
-             patch("rivet_core.executor.Executor.run_query", return_value=mock_table), \
+             patch("rivet_core.executor.Executor.run_query_sync", return_value=mock_table), \
              patch("rivet_bridge.register_optional_plugins"):
             exit_code = run_test(
                 tags=[], tag_all=False, target="j1", file_paths=[],
@@ -351,7 +351,7 @@ class TestJsonFormat:
 
         with patch("rivet_config.load_config", return_value=config_result), \
              patch("rivet_bridge.build_assembly", return_value=bridge_result), \
-             patch("rivet_core.executor.Executor.run_query", return_value=mock_table), \
+             patch("rivet_core.executor.Executor.run_query_sync", return_value=mock_table), \
              patch("rivet_bridge.register_optional_plugins"):
             run_test(
                 tags=[], tag_all=False, target=None, file_paths=[],
@@ -384,7 +384,7 @@ class TestJsonFormat:
 
         with patch("rivet_config.load_config", return_value=config_result), \
              patch("rivet_bridge.build_assembly", return_value=bridge_result), \
-             patch("rivet_core.executor.Executor.run_query", return_value=mock_table), \
+             patch("rivet_core.executor.Executor.run_query_sync", return_value=mock_table), \
              patch("rivet_bridge.register_optional_plugins"):
             exit_code = run_test(
                 tags=[], tag_all=False, target=None, file_paths=[],
@@ -418,7 +418,7 @@ class TestJsonFormat:
 
         with patch("rivet_config.load_config", return_value=config_result), \
              patch("rivet_bridge.build_assembly", return_value=bridge_result), \
-             patch("rivet_core.executor.Executor.run_query", return_value=mock_table), \
+             patch("rivet_core.executor.Executor.run_query_sync", return_value=mock_table), \
              patch("rivet_bridge.register_optional_plugins"):
             run_test(
                 tags=[], tag_all=False, target=None, file_paths=[],
@@ -456,7 +456,7 @@ class TestExitCodes:
 
         with patch("rivet_config.load_config", return_value=config_result), \
              patch("rivet_bridge.build_assembly", return_value=bridge_result), \
-             patch("rivet_core.executor.Executor.run_query", return_value=mock_table), \
+             patch("rivet_core.executor.Executor.run_query_sync", return_value=mock_table), \
              patch("rivet_bridge.register_optional_plugins"):
             exit_code = run_test(
                 tags=[], tag_all=False, target=None, file_paths=[],
@@ -485,7 +485,7 @@ class TestExitCodes:
 
         with patch("rivet_config.load_config", return_value=config_result), \
              patch("rivet_bridge.build_assembly", return_value=bridge_result), \
-             patch("rivet_core.executor.Executor.run_query", return_value=mock_table), \
+             patch("rivet_core.executor.Executor.run_query_sync", return_value=mock_table), \
              patch("rivet_bridge.register_optional_plugins"):
             exit_code = run_test(
                 tags=[], tag_all=False, target=None, file_paths=[],
@@ -534,7 +534,7 @@ class TestVerboseOutput:
 
         with patch("rivet_config.load_config", return_value=config_result), \
              patch("rivet_bridge.build_assembly", return_value=bridge_result), \
-             patch("rivet_core.executor.Executor.run_query", return_value=mock_table), \
+             patch("rivet_core.executor.Executor.run_query_sync", return_value=mock_table), \
              patch("rivet_bridge.register_optional_plugins"):
             exit_code = run_test(
                 tags=[], tag_all=False, target=None, file_paths=[],
@@ -564,7 +564,7 @@ class TestVerboseOutput:
 
         with patch("rivet_config.load_config", return_value=config_result), \
              patch("rivet_bridge.build_assembly", return_value=bridge_result), \
-             patch("rivet_core.executor.Executor.run_query", return_value=mock_table), \
+             patch("rivet_core.executor.Executor.run_query_sync", return_value=mock_table), \
              patch("rivet_bridge.register_optional_plugins"):
             run_test(
                 tags=[], tag_all=False, target=None, file_paths=[],
@@ -608,7 +608,7 @@ class TestFilePathFiltering:
 
         with patch("rivet_config.load_config", return_value=config_result), \
              patch("rivet_bridge.build_assembly", return_value=bridge_result), \
-             patch("rivet_core.executor.Executor.run_query", return_value=mock_table), \
+             patch("rivet_core.executor.Executor.run_query_sync", return_value=mock_table), \
              patch("rivet_bridge.register_optional_plugins"):
             exit_code = run_test(
                 tags=[], tag_all=False, target=None, file_paths=[file_a],

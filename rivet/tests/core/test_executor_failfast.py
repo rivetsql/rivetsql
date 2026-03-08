@@ -14,6 +14,8 @@ Requirements covered:
 
 from __future__ import annotations
 
+import asyncio
+
 from rivet_core.checks import CompiledCheck
 from rivet_core.compiler import (
     CompiledAssembly,
@@ -142,7 +144,7 @@ class TestFailFastTrue:
         )
 
         executor = Executor()
-        result = executor.run(assembly, fail_fast=True)
+        result = asyncio.run(executor.run(assembly, fail_fast=True))
 
         assert result.success is False
         assert result.status == "failure"
@@ -173,7 +175,7 @@ class TestFailFastTrue:
         )
 
         executor = Executor()
-        result = executor.run(assembly, fail_fast=True)
+        result = asyncio.run(executor.run(assembly, fail_fast=True))
 
         assert result.success is False
         sink_result = next(jr for jr in result.joint_results if jr.name == "sink1")
@@ -201,7 +203,7 @@ class TestFailFastTrue:
         )
 
         executor = Executor()
-        result = executor.run(assembly, fail_fast=True)
+        result = asyncio.run(executor.run(assembly, fail_fast=True))
 
         assert result.success is False
         assert result.status == "failure"
@@ -228,7 +230,7 @@ class TestFailFastTrue:
         )
 
         executor = Executor()
-        result = executor.run(assembly, fail_fast=True)
+        result = asyncio.run(executor.run(assembly, fail_fast=True))
 
         assert result.success is True
         assert result.status == "success"
@@ -267,7 +269,7 @@ class TestFailFastFalse:
         )
 
         executor = Executor()
-        result = executor.run(assembly, fail_fast=False)
+        result = asyncio.run(executor.run(assembly, fail_fast=False))
 
         assert result.success is False
         assert result.status == "partial_failure"
@@ -303,7 +305,7 @@ class TestFailFastFalse:
         )
 
         executor = Executor()
-        result = executor.run(assembly, fail_fast=False)
+        result = asyncio.run(executor.run(assembly, fail_fast=False))
 
         assert result.success is False
         c_result = next(jr for jr in result.joint_results if jr.name == "c")
@@ -332,7 +334,7 @@ class TestFailFastFalse:
         )
 
         executor = Executor()
-        result = executor.run(assembly, fail_fast=False)
+        result = asyncio.run(executor.run(assembly, fail_fast=False))
 
         assert result.success is False
         assert result.status == "partial_failure"
@@ -355,7 +357,7 @@ class TestFailFastFalse:
         )
 
         executor = Executor()
-        result = executor.run(assembly, fail_fast=False)
+        result = asyncio.run(executor.run(assembly, fail_fast=False))
 
         assert result.success is False
         assert result.status == "failure"
@@ -385,7 +387,7 @@ class TestFailFastFalse:
         )
 
         executor = Executor()
-        result = executor.run(assembly, fail_fast=False)
+        result = asyncio.run(executor.run(assembly, fail_fast=False))
 
         assert result.success is False
         assert result.total_failures == 2
@@ -412,7 +414,7 @@ class TestFailFastFalse:
         )
 
         executor = Executor()
-        result = executor.run(assembly, fail_fast=False)
+        result = asyncio.run(executor.run(assembly, fail_fast=False))
 
         assert result.success is False
         assert result.status == "partial_failure"
@@ -448,7 +450,7 @@ class TestFailFastFalse:
         )
 
         executor = Executor()
-        result = executor.run(assembly, fail_fast=False)
+        result = asyncio.run(executor.run(assembly, fail_fast=False))
 
         assert result.success is False
         b_result = next(jr for jr in result.joint_results if jr.name == "b")
@@ -487,7 +489,7 @@ class TestExecutionResultStatus:
         )
 
         executor = Executor()
-        result = executor.run(assembly)
+        result = asyncio.run(executor.run(assembly))
 
         assert result.success is True
         assert result.status == "success"
@@ -505,7 +507,7 @@ class TestExecutionResultStatus:
         )
 
         executor = Executor()
-        result = executor.run(assembly, fail_fast=True)
+        result = asyncio.run(executor.run(assembly, fail_fast=True))
 
         assert result.success is False
         assert result.status == "failure"
@@ -524,11 +526,11 @@ class TestExecutionResultStatus:
 
         # fail_fast=True
         executor = Executor()
-        result_ff = executor.run(assembly, fail_fast=True)
+        result_ff = asyncio.run(executor.run(assembly, fail_fast=True))
         assert result_ff.total_failures >= 1
         assert result_ff.total_check_failures >= 1
 
         # fail_fast=False
-        result_nff = executor.run(assembly, fail_fast=False)
+        result_nff = asyncio.run(executor.run(assembly, fail_fast=False))
         assert result_nff.total_failures >= 1
         assert result_nff.total_check_failures >= 1

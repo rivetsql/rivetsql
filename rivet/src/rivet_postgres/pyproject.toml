@@ -20,7 +20,7 @@ classifiers = [
     "Topic :: Database",
 ]
 dependencies = [
-    "rivetsql==0.1.9",
+    "rivetsql>=0.1.0,<0.2.0",
     "psycopg[binary,pool]>=3.1",
 ]
 

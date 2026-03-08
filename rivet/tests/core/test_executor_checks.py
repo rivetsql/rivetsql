@@ -17,6 +17,8 @@ Requirements covered:
 
 from __future__ import annotations
 
+import asyncio
+
 import pyarrow
 
 from rivet_core.checks import CompiledCheck
@@ -246,7 +248,7 @@ class TestAssertionNoShortCircuit:
         )
 
         executor = Executor()
-        result = executor.run(assembly)
+        result = asyncio.run(executor.run(assembly))
 
         # Find sink1 results
         sink_result = next(jr for jr in result.joint_results if jr.name == "sink1")
@@ -269,7 +271,7 @@ class TestAssertionNoShortCircuit:
         )
 
         executor = Executor()
-        result = executor.run(assembly)
+        result = asyncio.run(executor.run(assembly))
 
         # not_null on empty table passes (0 nulls), but row_count fails (0 < 100)
         # The row_count is warning severity, so joint should still succeed
@@ -300,7 +302,7 @@ class TestAssertionReadOnly:
         )
 
         executor = Executor()
-        result = executor.run(assembly)
+        result = asyncio.run(executor.run(assembly))
 
         t_result = next(jr for jr in result.joint_results if jr.name == "t")
         assert len(t_result.check_results) == 1
@@ -337,7 +339,7 @@ class TestAuditExecution:
         )
 
         executor = Executor()
-        result = executor.run(assembly)
+        result = asyncio.run(executor.run(assembly))
 
         sink_result = next(jr for jr in result.joint_results if jr.name == "sink1")
         # Audit should have run
@@ -370,7 +372,7 @@ class TestAuditExecution:
         )
 
         executor = Executor()
-        result = executor.run(assembly)
+        result = asyncio.run(executor.run(assembly))
 
         sink_result = next(jr for jr in result.joint_results if jr.name == "sink1")
         audit_results = [cr for cr in sink_result.check_results if cr.phase == "audit"]
@@ -408,7 +410,7 @@ class TestAuditNoRollback:
         )
 
         executor = Executor()
-        result = executor.run(assembly)
+        result = asyncio.run(executor.run(assembly))
 
         # Audit failure should be reported
         assert result.total_check_failures >= 1
@@ -448,7 +450,7 @@ class TestAuditReadBackRows:
         )
 
         executor = Executor()
-        result = executor.run(assembly)
+        result = asyncio.run(executor.run(assembly))
 
         sink_result = next(jr for jr in result.joint_results if jr.name == "sink1")
         audit_results = [cr for cr in sink_result.check_results if cr.phase == "audit"]
@@ -475,7 +477,7 @@ class TestAssertionPreventsWrite:
         )
 
         executor = Executor()
-        result = executor.run(assembly)
+        result = asyncio.run(executor.run(assembly))
 
         t_result = next(jr for jr in result.joint_results if jr.name == "t")
         assert t_result.success is False
@@ -494,7 +496,7 @@ class TestAssertionPreventsWrite:
         )
 
         executor = Executor()
-        result = executor.run(assembly)
+        result = asyncio.run(executor.run(assembly))
 
         t_result = next(jr for jr in result.joint_results if jr.name == "t")
         assert t_result.success is True
@@ -532,7 +534,7 @@ class TestAuditSkippedOnAssertionFailure:
         )
 
         executor = Executor()
-        result = executor.run(assembly)
+        result = asyncio.run(executor.run(assembly))
 
         sink_result = next(jr for jr in result.joint_results if jr.name == "sink1")
         # Only assertion checks should be present, no audit checks
@@ -571,7 +573,7 @@ class TestSinkAssertionAndAudit:
         )
 
         executor = Executor()
-        result = executor.run(assembly)
+        result = asyncio.run(executor.run(assembly))
 
         sink_result = next(jr for jr in result.joint_results if jr.name == "sink1")
         assertion_results = [cr for cr in sink_result.check_results if cr.phase == "assertion"]
@@ -600,7 +602,7 @@ class TestCheckCounts:
         )
 
         executor = Executor()
-        result = executor.run(assembly)
+        result = asyncio.run(executor.run(assembly))
         assert result.total_check_failures >= 1
 
     def test_total_check_warnings_counted(self) -> None:
@@ -615,7 +617,7 @@ class TestCheckCounts:
         )
 
         executor = Executor()
-        result = executor.run(assembly)
+        result = asyncio.run(executor.run(assembly))
         assert result.total_check_warnings >= 1
         assert result.total_check_failures == 0
 
@@ -642,7 +644,7 @@ class TestAuditOnNonSink:
         )
 
         executor = Executor()
-        result = executor.run(assembly)
+        result = asyncio.run(executor.run(assembly))
 
         t_result = next(jr for jr in result.joint_results if jr.name == "t")
         # No audit results since this is not a sink

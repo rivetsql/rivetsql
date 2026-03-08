@@ -6,6 +6,7 @@ and handles AdapterPushdownResult return type.
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import MagicMock
 
 import pyarrow
@@ -105,11 +106,11 @@ class TestPushdownThreading:
 
         executor = Executor(registry=registry)
         tables: dict[str, pyarrow.Table] = {}
-        executor._read_sources_into(
+        asyncio.run(executor._read_sources_into(
             tables, group=group,
             joint_map={"src": source},
             catalog_map={"cat": CompiledCatalog(name="cat", type="unity", options={})},
-        )
+        ))
 
         _, kwargs = mock_adapter.read_dispatch.call_args
         # pushdown should be the 4th positional arg (or keyword)
@@ -136,11 +137,11 @@ class TestPushdownThreading:
 
         executor = Executor(registry=registry)
         tables: dict[str, pyarrow.Table] = {}
-        executor._read_sources_into(
+        asyncio.run(executor._read_sources_into(
             tables, group=group,
             joint_map={"src": source},
             catalog_map={"cat": CompiledCatalog(name="cat", type="unity", options={})},
-        )
+        ))
 
         call_args = mock_adapter.read_dispatch.call_args[0]
         assert call_args[3] is None
@@ -167,11 +168,11 @@ class TestPushdownThreading:
 
         executor = Executor(registry=registry)
         tables: dict[str, pyarrow.Table] = {}
-        executor._read_sources_into(
+        asyncio.run(executor._read_sources_into(
             tables, group=group,
             joint_map={"src": source},
             catalog_map={"cat": CompiledCatalog(name="cat", type="unity", options={})},
-        )
+        ))
 
         assert "src" in tables
         assert tables["src"].equals(arrow_table)
@@ -196,11 +197,11 @@ class TestPushdownThreading:
 
         executor = Executor(registry=registry)
         tables: dict[str, pyarrow.Table] = {}
-        executor._read_sources_into(
+        asyncio.run(executor._read_sources_into(
             tables, group=group,
             joint_map={"src": source},
             catalog_map={"cat": CompiledCatalog(name="cat", type="unity", options={})},
-        )
+        ))
 
         assert "src" in tables
         assert tables["src"].equals(arrow_table)

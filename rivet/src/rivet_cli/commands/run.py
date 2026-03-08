@@ -82,7 +82,7 @@ def run_run(
         return GENERAL_ERROR
 
     # Execute
-    result = Executor(registry).run(compiled, fail_fast=fail_fast)
+    result = Executor(registry).run_sync(compiled, fail_fast=fail_fast)
 
     # Determine exit code from execution result
     has_assertion = any(

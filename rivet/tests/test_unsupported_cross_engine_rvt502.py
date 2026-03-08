@@ -9,6 +9,7 @@ Validates:
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pyarrow
@@ -158,7 +159,7 @@ class TestDatabricksConsumingLocalEngines:
 
         plugin = registry.get_engine_plugin("databricks")
         with pytest.raises(ExecutionError) as exc_info:
-            executor._execute_via_plugin(group, materials, joint_map, None, plugin)
+            asyncio.run(executor._execute_via_plugin(group, materials, joint_map, None, plugin))
 
         assert exc_info.value.error.code == "RVT-502"
         assert "upstream_joint" in exc_info.value.error.message
@@ -192,7 +193,7 @@ class TestPostgresConsumingLocalEngines:
 
         plugin = registry.get_engine_plugin("postgres")
         with pytest.raises(ExecutionError) as exc_info:
-            executor._execute_via_plugin(group, materials, joint_map, None, plugin)
+            asyncio.run(executor._execute_via_plugin(group, materials, joint_map, None, plugin))
 
         assert exc_info.value.error.code == "RVT-502"
         assert "src" in exc_info.value.error.message
@@ -226,7 +227,7 @@ class TestRemoteToRemoteBoundaries:
 
         plugin = registry.get_engine_plugin("databricks")
         with pytest.raises(ExecutionError) as exc_info:
-            executor._execute_via_plugin(group, materials, joint_map, None, plugin)
+            asyncio.run(executor._execute_via_plugin(group, materials, joint_map, None, plugin))
 
         assert exc_info.value.error.code == "RVT-502"
 
@@ -250,7 +251,7 @@ class TestRemoteToRemoteBoundaries:
 
         plugin = registry.get_engine_plugin("postgres")
         with pytest.raises(ExecutionError) as exc_info:
-            executor._execute_via_plugin(group, materials, joint_map, None, plugin)
+            asyncio.run(executor._execute_via_plugin(group, materials, joint_map, None, plugin))
 
         assert exc_info.value.error.code == "RVT-502"
 
@@ -283,7 +284,7 @@ class TestRvt502ErrorContent:
 
         plugin = registry.get_engine_plugin("databricks")
         with pytest.raises(ExecutionError) as exc_info:
-            executor._execute_via_plugin(group, materials, joint_map, None, plugin)
+            asyncio.run(executor._execute_via_plugin(group, materials, joint_map, None, plugin))
 
         err = exc_info.value.error
         assert err.code == "RVT-502"
@@ -309,7 +310,7 @@ class TestRvt502ErrorContent:
 
         plugin = registry.get_engine_plugin("databricks")
         with pytest.raises(ExecutionError) as exc_info:
-            executor._execute_via_plugin(group, materials, joint_map, None, plugin)
+            asyncio.run(executor._execute_via_plugin(group, materials, joint_map, None, plugin))
 
         # Must be RVT-502, NOT wrapped in RVT-503
         assert exc_info.value.error.code == "RVT-502"

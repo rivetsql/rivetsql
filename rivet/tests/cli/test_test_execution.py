@@ -129,7 +129,7 @@ class TestRunSingleTestBasic:
 
         mock_table = pa.table({"x": [42]})
         with patch("rivet_bridge.build_assembly", return_value=bridge_result), \
-             patch("rivet_core.executor.Executor.run_query", return_value=mock_table):
+             patch("rivet_core.executor.Executor.run_query_sync", return_value=mock_table):
             result = run_single_test(td, config_result, _registry())
 
         assert result.passed is True
@@ -152,7 +152,7 @@ class TestRunSingleTestBasic:
 
         mock_table = pa.table({"x": [1]})
         with patch("rivet_bridge.build_assembly", return_value=bridge_result), \
-             patch("rivet_core.executor.Executor.run_query", return_value=mock_table):
+             patch("rivet_core.executor.Executor.run_query_sync", return_value=mock_table):
             result = run_single_test(td, config_result, _registry())
 
         assert result.passed is False
@@ -246,7 +246,7 @@ class TestRunSingleTestMultiTarget:
 
         mock_table = pa.table({"x": [1]})
         with patch("rivet_bridge.build_assembly", return_value=bridge_result), \
-             patch("rivet_core.executor.Executor.run_query", return_value=mock_table):
+             patch("rivet_core.executor.Executor.run_query_sync", return_value=mock_table):
             result = run_single_test(td, config_result, _registry())
 
         assert isinstance(result, TestResult)
@@ -274,7 +274,7 @@ class TestRunSingleTestMultiTarget:
 
         mock_table = pa.table({"x": [1]})
         with patch("rivet_bridge.build_assembly", return_value=bridge_result), \
-             patch("rivet_core.executor.Executor.run_query", return_value=mock_table):
+             patch("rivet_core.executor.Executor.run_query_sync", return_value=mock_table):
             result = run_single_test(td, config_result, _registry())
 
         assert result.passed is False
@@ -322,7 +322,7 @@ class TestRunSingleTestSnapshots:
 
         mock_table = pa.table({"x": [7]})
         with patch("rivet_bridge.build_assembly", return_value=bridge_result), \
-             patch("rivet_core.executor.Executor.run_query", return_value=mock_table):
+             patch("rivet_core.executor.Executor.run_query_sync", return_value=mock_table):
             result = run_single_test(td, config_result, _registry(), update_snapshots=True)
 
         assert result.passed is True
@@ -355,7 +355,7 @@ class TestRunSingleTestSnapshots:
 
         new_table = pa.table({"x": [42]})
         with patch("rivet_bridge.build_assembly", return_value=bridge_result), \
-             patch("rivet_core.executor.Executor.run_query", return_value=new_table):
+             patch("rivet_core.executor.Executor.run_query_sync", return_value=new_table):
             result = run_single_test(td, config_result, _registry(), update_snapshots=True)
 
         assert result.passed is True
@@ -379,7 +379,7 @@ class TestRunSingleTestSnapshots:
 
         mock_table = pa.table({"x": [1]})
         with patch("rivet_bridge.build_assembly", return_value=bridge_result), \
-             patch("rivet_core.executor.Executor.run_query", return_value=mock_table):
+             patch("rivet_core.executor.Executor.run_query_sync", return_value=mock_table):
             result = run_single_test(td, config_result, _registry(), update_snapshots=True)
 
         assert result.passed is True
@@ -402,7 +402,7 @@ class TestRunSingleTestSnapshots:
 
         mock_table = pa.table({"x": [5]})
         with patch("rivet_bridge.build_assembly", return_value=bridge_result), \
-             patch("rivet_core.executor.Executor.run_query", return_value=mock_table):
+             patch("rivet_core.executor.Executor.run_query_sync", return_value=mock_table):
             result = run_single_test(td, config_result, _registry(), update_snapshots=True)
 
         # Should compare normally (pass), not skip comparison
@@ -433,7 +433,7 @@ class TestRunSingleTestSnapshots:
 
         mock_table = pa.table({"x": [10]})
         with patch("rivet_bridge.build_assembly", return_value=bridge_result), \
-             patch("rivet_core.executor.Executor.run_query", return_value=mock_table):
+             patch("rivet_core.executor.Executor.run_query_sync", return_value=mock_table):
             result = run_single_test(td, config_result, _registry(), update_snapshots=False)
 
         # Should compare (pass), not skip

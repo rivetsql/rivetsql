@@ -12,7 +12,8 @@ import importlib
 import inspect
 import time
 import traceback
-from dataclasses import dataclass
+from collections import deque
+from dataclasses import dataclass, field
 from typing import Any
 
 import pyarrow
@@ -753,6 +754,178 @@ def _execute_check(check: CompiledCheck, table: pyarrow.Table) -> CheckExecution
     )
 
 
+class DependencyGraph:
+    """DAG of fused groups derived from upstream joint references."""
+
+    _upstream: dict[str, set[str]]
+    _downstream: dict[str, set[str]]
+    _in_degree: dict[str, int]
+    _submitted: set[str]
+    _completed: set[str]
+
+    def __init__(
+        self,
+        upstream: dict[str, set[str]],
+        downstream: dict[str, set[str]],
+        in_degree: dict[str, int],
+    ) -> None:
+        self._upstream = upstream
+        self._downstream = downstream
+        self._in_degree = in_degree
+        self._submitted: set[str] = set()
+        self._completed: set[str] = set()
+
+    @staticmethod
+    def build(
+        fused_groups: list[FusedGroup],
+        joint_map: dict[str, CompiledJoint],
+    ) -> DependencyGraph:
+        """Construct the graph from compiled assembly data.
+
+        An edge A -> B exists iff any joint in B has an upstream joint
+        whose output is produced by group A.
+        """
+        # Map each joint name to its owning fused group ID
+        joint_to_group: dict[str, str] = {}
+        for group in fused_groups:
+            for joint_name in group.joints:
+                joint_to_group[joint_name] = group.id
+
+        upstream: dict[str, set[str]] = {g.id: set() for g in fused_groups}
+        downstream: dict[str, set[str]] = {g.id: set() for g in fused_groups}
+
+        for group in fused_groups:
+            for joint_name in group.joints:
+                compiled_joint = joint_map.get(joint_name)
+                if compiled_joint is None:
+                    continue
+                for up_name in compiled_joint.upstream:
+                    up_group_id = joint_to_group.get(up_name)
+                    # Skip upstream refs not belonging to any group (Req 1.3)
+                    if up_group_id is None:
+                        continue
+                    # Skip self-references (joints within the same group)
+                    if up_group_id == group.id:
+                        continue
+                    upstream[group.id].add(up_group_id)
+                    downstream[up_group_id].add(group.id)
+
+        in_degree: dict[str, int] = {
+            gid: len(ups) for gid, ups in upstream.items()
+        }
+
+        return DependencyGraph(
+            upstream=upstream,
+            downstream=downstream,
+            in_degree=in_degree,
+        )
+
+    def ready_groups(self) -> list[str]:
+        """Return group IDs with in-degree 0 that haven't been submitted."""
+        return [
+            gid
+            for gid, deg in self._in_degree.items()
+            if deg == 0 and gid not in self._submitted
+        ]
+
+    def mark_complete(self, group_id: str) -> list[str]:
+        """Add to completed, decrement downstream in-degrees.
+
+        Returns newly ready group IDs (in-degree just became 0 and not yet
+        submitted).
+        """
+        self._completed.add(group_id)
+        newly_ready: list[str] = []
+        for ds_id in self._downstream.get(group_id, set()):
+            self._in_degree[ds_id] -= 1
+            if self._in_degree[ds_id] == 0 and ds_id not in self._submitted:
+                newly_ready.append(ds_id)
+        return newly_ready
+
+    def mark_failed(self, group_id: str) -> list[str]:
+        """BFS to collect all transitive downstream group IDs."""
+        visited: set[str] = set()
+        queue: deque[str] = deque()
+        # Seed with direct downstream of the failed group
+        for ds_id in self._downstream.get(group_id, set()):
+            if ds_id not in visited:
+                visited.add(ds_id)
+                queue.append(ds_id)
+        while queue:
+            current = queue.popleft()
+            for ds_id in self._downstream.get(current, set()):
+                if ds_id not in visited:
+                    visited.add(ds_id)
+                    queue.append(ds_id)
+        return list(visited)
+
+
+class EngineConcurrencyPool:
+    """Manages concurrency for a single engine instance."""
+
+    def __init__(self, engine_name: str, concurrency_limit: int) -> None:
+        self._semaphore = asyncio.Semaphore(concurrency_limit)
+        self.engine_name = engine_name
+        self.concurrency_limit = concurrency_limit
+
+    async def __aenter__(self) -> EngineConcurrencyPool:
+        """Acquire a slot (suspends coroutine if pool is full)."""
+        await self._semaphore.acquire()
+        return self
+
+    async def __aexit__(self, *exc: Any) -> None:
+        """Release a slot."""
+        self._semaphore.release()
+
+
+def _resolve_concurrency_limits(
+    engines: list[ComputeEngine],
+    plugin_registry: PluginRegistry,
+) -> dict[str, int]:
+    """Resolve concurrency_limit for each engine.
+
+    Priority: config["concurrency_limit"] (user override) > plugin.default_concurrency_limit > 1.
+    Returns engine_name → concurrency_limit mapping.
+    Raises ExecutionError if any resolved limit is invalid (< 1 or non-integer).
+    """
+    limits: dict[str, int] = {}
+    for engine in engines:
+        limit: Any = engine.config.get("concurrency_limit")
+        if limit is None:
+            plugin = plugin_registry.get_engine_plugin(engine.engine_type)
+            if plugin is not None and hasattr(plugin, "default_concurrency_limit"):
+                limit = plugin.default_concurrency_limit
+            else:
+                limit = 1
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
+            raise ExecutionError(
+                RivetError(
+                    code="RVT-501",
+                    message=(
+                        f"Invalid concurrency_limit for engine '{engine.name}': "
+                        f"{limit!r}. Must be a positive integer (>= 1)."
+                    ),
+                    context={"engine": engine.name, "concurrency_limit": limit},
+                    remediation=(
+                        "Set 'concurrency_limit' in the engine config to a positive integer, "
+                        "or remove it to use the plugin default."
+                    ),
+                )
+            )
+        limits[engine.name] = limit
+    return limits
+
+
+class _nullcontext:
+    """Minimal async context manager that does nothing (fallback when no pool)."""
+
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *exc: Any) -> None:
+        pass
+
+
 class Executor:
     """Executes a CompiledAssembly deterministically.
 
@@ -834,7 +1007,7 @@ class Executor:
                 )
 
     @staticmethod
-    def _run_assertion_checks(
+    async def _run_assertion_checks(
         group: FusedGroup,
         joint_map: dict[str, CompiledJoint],
         result_ref: MaterializedRef,
@@ -872,7 +1045,7 @@ class Executor:
 
         return all_check_results, assertion_error, check_failures, check_warnings
 
-    def _run_sink_audits(
+    async def _run_sink_audits(
         self,
         group: FusedGroup,
         joint_map: dict[str, CompiledJoint],
@@ -888,11 +1061,11 @@ class Executor:
             cj = joint_map.get(jn)
             if not cj or cj.type != "sink" or assertion_error:
                 continue
-            self._dispatch_sink_write(cj, result_ref, catalog_map)
+            await self._dispatch_sink_write(cj, result_ref, catalog_map)
             audit_checks = [c for c in cj.checks if c.phase == "audit"]
             if not audit_checks:
                 continue
-            audit_results = self._run_audits(
+            audit_results = await self._run_audits(
                 cj, audit_checks, result_ref.to_arrow(), catalog_map
             )
             for i, jr in enumerate(joint_results):
@@ -917,7 +1090,7 @@ class Executor:
                         check_warnings += 1
         return check_failures, check_warnings
 
-    def _execute_group_success(
+    async def _execute_group_success(
         self,
         group: FusedGroup,
         joint_map: dict[str, CompiledJoint],
@@ -945,7 +1118,7 @@ class Executor:
         arrow_materials: dict[str, pyarrow.Table] = {
             k: v.to_arrow() for k, v in materials.items() if k in needed_keys
         }
-        result_ref, adapter_residual = self._execute_fused_group(
+        result_ref, adapter_residual = await self._execute_fused_group(
             group, arrow_materials, joint_map, catalog_map, ref_materials=materials,
             stats_collector=stats_collector,
         )
@@ -1015,7 +1188,7 @@ class Executor:
         materialize_ms = (time.monotonic() - mat_start) * 1000
 
         check_start = time.monotonic()
-        all_check_results, assertion_error, check_failures, check_warnings = self._run_assertion_checks(
+        all_check_results, assertion_error, check_failures, check_warnings = await self._run_assertion_checks(
             group, joint_map, result_ref,
         )
         check_ms = (time.monotonic() - check_start) * 1000
@@ -1099,7 +1272,7 @@ class Executor:
                 stop = True
                 return total_materializations, total_failures, check_failures, check_warnings, stop
 
-        af, aw = self._run_sink_audits(
+        af, aw = await self._run_sink_audits(
             group, joint_map, result_ref, catalog_map,
             assertion_error, joint_results,
         )
@@ -1154,15 +1327,20 @@ class Executor:
             run_stats=run_stats,
         )
 
-    def run(
+    async def run(
         self, compiled: CompiledAssembly, fail_fast: bool = True
     ) -> ExecutionResult:
-        """Execute the compiled assembly.
+        """Execute the compiled assembly using a wavefront parallel scheduler.
+
+        Builds a dependency graph from fused groups, creates per-engine
+        concurrency pools, and schedules groups for concurrent execution.
+        Groups with all upstream dependencies satisfied are submitted in
+        parallel, constrained by engine concurrency limits.
 
         Raises CompilationError if compiled.success is False.
 
-        fail_fast=True: stop immediately on error-severity assertion failure,
-            prevent sink writes.
+        fail_fast=True: stop scheduling new groups on first failure,
+            let running groups complete.
         fail_fast=False: continue independent branches, skip downstream of
             failed joints, produce ErrorMaterial, accumulate all errors,
             set "partial_failure" status.
@@ -1192,63 +1370,198 @@ class Executor:
         total_check_warnings = 0
         pipeline_stopped = False
 
-        for step in compiled.execution_order:
-            if pipeline_stopped:
-                break
+        # --- Build dependency graph ---
+        dep_graph = DependencyGraph.build(compiled.fused_groups, joint_map)
 
-            group = group_map.get(step)
-            if group is None:
-                continue
+        # --- Resolve concurrency limits and create engine pools ---
+        # Collect unique engine names from fused groups, look up ComputeEngine
+        # instances from the registry.
+        unique_engines: dict[str, ComputeEngine] = {}
+        for g in compiled.fused_groups:
+            if g.engine not in unique_engines and self._registry:
+                engine_instance = self._registry.get_compute_engine(g.engine)
+                if engine_instance is not None:
+                    unique_engines[g.engine] = engine_instance
 
-            if self._has_upstream_failure(group, joint_map, failed_joints):
-                total_failures += 1
-                error = RivetError(
-                    code="RVT-501",
-                    message="Skipped: upstream dependency failed.",
-                    context={"group_id": group.id, "joints": group.joints},
-                    remediation="Fix the upstream failure first.",
-                )
-                self._record_group_failure(
-                    group, error, failed_joints, joint_results, group_results,
-                    stats_collector=stats_collector,
-                )
-                continue
+        # Build list of ComputeEngine objects for concurrency limit resolution.
+        # For engines not found in the registry, create a minimal ComputeEngine
+        # so _resolve_concurrency_limits can still apply defaults.
+        engine_list: list[ComputeEngine] = []
+        for g in compiled.fused_groups:
+            if g.engine not in {e.name for e in engine_list}:
+                if g.engine in unique_engines:
+                    engine_list.append(unique_engines[g.engine])
+                else:
+                    engine_list.append(
+                        ComputeEngine(name=g.engine, engine_type=g.engine_type, config={})
+                    )
 
-            step_start = time.monotonic()
-            engine_start = time.monotonic()
+        if self._registry:
+            concurrency_limits = _resolve_concurrency_limits(engine_list, self._registry)
+        else:
+            concurrency_limits = {e.name: 1 for e in engine_list}
 
-            try:
-                mats, fails, cf, cw, stop = self._execute_group_success(
-                    group, joint_map, catalog_map, mat_map, materials,
-                    failed_joints, joint_results, group_results, fail_fast,
-                    step_start, engine_start,
-                    stats_collector=stats_collector,
-                )
+        engine_pools: dict[str, EngineConcurrencyPool] = {
+            engine_name: EngineConcurrencyPool(engine_name, limit)
+            for engine_name, limit in concurrency_limits.items()
+        }
+
+        # --- Per-group coroutine ---
+        async def _run_group(
+            group_id: str,
+        ) -> tuple[str, bool, int, int, int, int]:
+            """Execute a single group within its engine's concurrency pool.
+
+            Returns (group_id, success, materializations, failures,
+                     check_failures, check_warnings).
+            """
+            group = group_map[group_id]
+            pool = engine_pools.get(group.engine)
+
+            async with pool if pool is not None else _nullcontext():
+                # Check for upstream failures (between awaits, safe)
+                if self._has_upstream_failure(group, joint_map, failed_joints):
+                    error = RivetError(
+                        code="RVT-501",
+                        message="Skipped: upstream dependency failed.",
+                        context={"group_id": group.id, "joints": group.joints},
+                        remediation="Fix the upstream failure first.",
+                    )
+                    self._record_group_failure(
+                        group, error, failed_joints, joint_results, group_results,
+                        stats_collector=stats_collector,
+                    )
+                    return group_id, False, 0, 1, 0, 0
+
+                step_start = time.monotonic()
+                engine_start = time.monotonic()
+
+                try:
+                    mats, fails, cf, cw, stop = await self._execute_group_success(
+                        group, joint_map, catalog_map, mat_map, materials,
+                        failed_joints, joint_results, group_results, fail_fast,
+                        step_start, engine_start,
+                        stats_collector=stats_collector,
+                    )
+                    return group_id, (fails == 0), mats, fails, cf, cw
+
+                except Exception as e:
+                    step_ms = (time.monotonic() - step_start) * 1000
+                    error = RivetError(
+                        code="RVT-501",
+                        message=f"Execution failed for group '{group.id}': {e}",
+                        context={"group_id": group.id, "joints": group.joints},
+                        remediation="Check the SQL and upstream data.",
+                    )
+                    self._record_group_failure(
+                        group, error, failed_joints, joint_results, group_results,
+                        step_ms=step_ms,
+                        stats_collector=stats_collector,
+                    )
+                    return group_id, False, 0, 1, 0, 0
+
+        # --- Wavefront scheduling loop ---
+        pending_tasks: dict[asyncio.Task[tuple[str, bool, int, int, int, int]], str] = {}
+
+        # Seed with initially ready groups
+        for gid in dep_graph.ready_groups():
+            dep_graph._submitted.add(gid)
+            task = asyncio.create_task(_run_group(gid))
+            pending_tasks[task] = gid
+
+        while pending_tasks:
+            # Wait for at least one task to complete
+            done, _ = await asyncio.wait(
+                pending_tasks.keys(), return_when=asyncio.FIRST_COMPLETED
+            )
+
+            # Process ALL completed tasks before checking pipeline_stopped.
+            # This ensures running tasks that finished in the same batch
+            # have their results recorded.
+            for task in done:
+                completed_gid = pending_tasks.pop(task)
+
+                try:
+                    _gid, success, mats, fails, cf, cw = task.result()
+                except asyncio.CancelledError:
+                    # Task was cancelled (fail-fast); don't record
+                    continue
+                except Exception:
+                    # Unexpected error in the coroutine wrapper itself
+                    success = False
+                    mats, fails, cf, cw = 0, 1, 0, 0
+
                 total_materializations += mats
                 total_failures += fails
                 total_check_failures += cf
                 total_check_warnings += cw
-                if stop:
-                    pipeline_stopped = True
-                    break
 
-            except Exception as e:
-                total_failures += 1
-                step_ms = (time.monotonic() - step_start) * 1000
-                error = RivetError(
-                    code="RVT-501",
-                    message=f"Execution failed for group '{group.id}': {e}",
-                    context={"group_id": group.id, "joints": group.joints},
-                    remediation="Check the SQL and upstream data.",
-                )
-                self._record_group_failure(
-                    group, error, failed_joints, joint_results, group_results,
-                    step_ms=step_ms,
-                    stats_collector=stats_collector,
-                )
-                if fail_fast:
+                newly_ready = dep_graph.mark_complete(completed_gid)
+
+                if not success and fail_fast:
                     pipeline_stopped = True
-                    break
+                elif not success and not fail_fast:
+                    # Non-fail-fast: skip transitive downstream dependents,
+                    # continue independent branches.
+                    downstream_ids = dep_graph.mark_failed(completed_gid)
+                    for ds_gid in downstream_ids:
+                        ds_group = group_map.get(ds_gid)
+                        if ds_group is not None:
+                            error = RivetError(
+                                code="RVT-501",
+                                message=(
+                                    f"Skipped: upstream dependency '{completed_gid}' failed."
+                                ),
+                                context={
+                                    "group_id": ds_gid,
+                                    "joints": list(ds_group.joints),
+                                    "failed_upstream": completed_gid,
+                                },
+                                remediation="Fix the upstream failure first.",
+                            )
+                            self._record_group_failure(
+                                ds_group, error, failed_joints,
+                                joint_results, group_results,
+                                stats_collector=stats_collector,
+                            )
+                            total_failures += 1
+                        # Mark as submitted so ready_groups() won't return them
+                        dep_graph._submitted.add(ds_gid)
+
+                # When pipeline is stopped, don't schedule new groups
+                # but continue processing remaining done tasks
+                if not pipeline_stopped:
+                    # Schedule newly ready groups
+                    for new_gid in newly_ready:
+                        if new_gid not in dep_graph._submitted:
+                            dep_graph._submitted.add(new_gid)
+                            new_task = asyncio.create_task(_run_group(new_gid))
+                            pending_tasks[new_task] = new_gid
+
+            if pipeline_stopped:
+                # Cancel all pending tasks (not yet running or waiting
+                # for semaphore). cancel() is a no-op on already-done tasks.
+                for t in list(pending_tasks.keys()):
+                    t.cancel()
+                # Wait for cancelled/running tasks to settle, then collect
+                # results from tasks that completed (were already running).
+                if pending_tasks:
+                    await asyncio.wait(pending_tasks.keys())
+                    for t in list(pending_tasks.keys()):
+                        try:
+                            _gid, success, mats, fails, cf, cw = t.result()
+                        except asyncio.CancelledError:
+                            # Cancelled task — don't record in results
+                            continue
+                        except Exception:
+                            success = False
+                            mats, fails, cf, cw = 0, 1, 0, 0
+                        total_materializations += mats
+                        total_failures += fails
+                        total_check_failures += cf
+                        total_check_warnings += cw
+                    pending_tasks.clear()
+                break
 
         total_ms = (time.monotonic() - start_time) * 1000
         run_stats = stats_collector.build_run_stats(total_ms)
@@ -1259,7 +1572,7 @@ class Executor:
             total_check_failures, total_check_warnings, fail_fast,
             run_stats=run_stats,
         )
-    def run_query(
+    async def run_query(
         self, compiled: CompiledAssembly, target_joint: str = "__query"
     ) -> pyarrow.Table:
         """Execute a compiled assembly and return the target joint's result table.
@@ -1286,7 +1599,7 @@ class Executor:
             arrow_materials: dict[str, pyarrow.Table] = {
                 k: v.to_arrow() for k, v in materials.items()
             }
-            result_ref, adapter_residual = self._execute_fused_group(
+            result_ref, adapter_residual = await self._execute_fused_group(
                 group, arrow_materials, joint_map, catalog_map, ref_materials=materials
             )
             merged_residual = _merge_residuals(group.residual, adapter_residual) if adapter_residual else group.residual
@@ -1308,7 +1621,7 @@ class Executor:
             )
         )
 
-    def run_query_with_stats(
+    async def run_query_with_stats(
         self, compiled: CompiledAssembly, target_joint: str = "__query"
     ) -> tuple[pyarrow.Table, RunStats]:
         """Like run_query but also returns RunStats with timing breakdown.
@@ -1339,7 +1652,7 @@ class Executor:
             }
 
             engine_start = time.monotonic()
-            result_ref, adapter_residual = self._execute_fused_group(
+            result_ref, adapter_residual = await self._execute_fused_group(
                 group, arrow_materials, joint_map, catalog_map,
                 ref_materials=materials, stats_collector=stats_collector,
             )
@@ -1382,7 +1695,26 @@ class Executor:
             )
         )
 
-    def _run_audits(
+    def run_sync(
+        self, compiled: CompiledAssembly, fail_fast: bool = True
+    ) -> ExecutionResult:
+        """Synchronous entry point — creates an event loop and runs the async scheduler."""
+        return asyncio.run(self.run(compiled, fail_fast=fail_fast))
+
+    def run_query_sync(
+        self, compiled: CompiledAssembly, target_joint: str = "__query"
+    ) -> pyarrow.Table:
+        """Synchronous wrapper for run_query."""
+        return asyncio.run(self.run_query(compiled, target_joint))
+
+    def run_query_with_stats_sync(
+        self, compiled: CompiledAssembly, target_joint: str = "__query"
+    ) -> tuple[pyarrow.Table, RunStats]:
+        """Synchronous wrapper for run_query_with_stats."""
+        return asyncio.run(self.run_query_with_stats(compiled, target_joint))
+
+
+    async def _run_audits(
         self,
         cj: CompiledJoint,
         audit_checks: list[CompiledCheck],
@@ -1413,7 +1745,7 @@ class Executor:
                             catalog=cj.catalog,
                             table=cj.table,
                         )
-                        mat = source.read(cat, joint, None)
+                        mat = await asyncio.to_thread(source.read, cat, joint, None)
                         if mat.materialized_ref is not None:
                             read_back_table = mat.to_arrow()
                     except Exception:
@@ -1456,7 +1788,7 @@ class Executor:
 
         return results
 
-    def _execute_fused_group(
+    async def _execute_fused_group(
         self,
         group: FusedGroup,
         materials: dict[str, pyarrow.Table],
@@ -1475,7 +1807,7 @@ class Executor:
         if len(group.joints) == 1:
             cj = joint_map.get(group.joints[0])
             if cj and cj.type == "python":
-                return self._execute_python_joint(cj, ref_materials or {}), None
+                return await self._execute_python_joint(cj, ref_materials or {}), None
 
         # Look up engine plugin — required for all engine types
         plugin = self._registry.get_engine_plugin(group.engine_type) if self._registry else None
@@ -1494,7 +1826,7 @@ class Executor:
             )
 
         # Single dispatch path: resolve upstream, build input_tables, call execute_sql
-        result_table, adapter_residual = self._execute_via_plugin(group, materials, joint_map, catalog_map, plugin, stats_collector=stats_collector)
+        result_table, adapter_residual = await self._execute_via_plugin(group, materials, joint_map, catalog_map, plugin, stats_collector=stats_collector)
         return self._materialize_result(result_table, group), adapter_residual
 
     def _materialize_result(self, table: pyarrow.Table, group: FusedGroup) -> MaterializedRef:
@@ -1568,7 +1900,7 @@ class Executor:
         return sql
 
     @staticmethod
-    def _dispatch_to_engine(
+    async def _dispatch_to_engine(
         plugin: ComputeEnginePlugin,
         engine_instance: ComputeEngine | None,
         sql: str,
@@ -1577,7 +1909,7 @@ class Executor:
     ) -> pyarrow.Table:
         """Call plugin.execute_sql, wrapping non-ExecutionError failures as RVT-503."""
         try:
-            return plugin.execute_sql(engine_instance, sql, input_tables)  # type: ignore[arg-type]
+            return await asyncio.to_thread(plugin.execute_sql, engine_instance, sql, input_tables)  # type: ignore[arg-type]
         except ExecutionError:
             raise
         except Exception as exc:
@@ -1594,7 +1926,7 @@ class Executor:
                 )
             )
 
-    def _execute_via_plugin(
+    async def _execute_via_plugin(
         self,
         group: FusedGroup,
         materials: dict[str, pyarrow.Table],
@@ -1640,7 +1972,7 @@ class Executor:
             or (group.fusion_result is not None and group.fusion_result.resolved_fused_sql is not None)
         )
         skip_source_reads = group_has_resolved_sql and len(group.joints) > 1
-        adapter_residual = self._read_sources_into(
+        adapter_residual = await self._read_sources_into(
             input_tables, group, joint_map, catalog_map,
             stats_collector=stats_collector,
             skip_fused_sources=skip_source_reads,
@@ -1653,7 +1985,7 @@ class Executor:
 
         # Handle temp_view strategy: execute intermediate statements, then final select
         if group.fusion_strategy == "temp_view" and group.fusion_result:
-            return self._execute_temp_view_via_plugin(
+            return await self._execute_temp_view_via_plugin(
                 group, input_tables, plugin, engine_instance, adapter_read_sources,
             ), adapter_residual
 
@@ -1676,10 +2008,10 @@ class Executor:
         ):
             return pyarrow.table({}), adapter_residual
 
-        return self._dispatch_to_engine(plugin, engine_instance, sql, input_tables, group), adapter_residual
+        return await self._dispatch_to_engine(plugin, engine_instance, sql, input_tables, group), adapter_residual
 
     # CLEANUP-RISK: _execute_temp_view_via_plugin (complexity 13) — plugin dispatch with error handling; refactoring risks changing error messages/types
-    def _execute_temp_view_via_plugin(
+    async def _execute_temp_view_via_plugin(
         self,
         group: FusedGroup,
         input_tables: dict[str, pyarrow.Table],
@@ -1720,7 +2052,7 @@ class Executor:
                     return next(iter(input_tables.values()))
                 return pyarrow.table({})
             try:
-                return plugin.execute_sql(engine_instance, final_select, input_tables)  # type: ignore[arg-type]
+                return await asyncio.to_thread(plugin.execute_sql, engine_instance, final_select, input_tables)  # type: ignore[arg-type]
             except ExecutionError:
                 raise
             except Exception as exc:
@@ -1750,7 +2082,7 @@ class Executor:
                     view_name = m.group(1)
                     view_sql = m.group(2)
                     try:
-                        result = plugin.execute_sql(engine_instance, view_sql, input_tables)  # type: ignore[arg-type]
+                        result = await asyncio.to_thread(plugin.execute_sql, engine_instance, view_sql, input_tables)  # type: ignore[arg-type]
                     except ExecutionError:
                         raise
                     except Exception as exc:
@@ -1770,7 +2102,7 @@ class Executor:
                     created_views.append(view_name)
 
             try:
-                return plugin.execute_sql(engine_instance, final_select, input_tables)  # type: ignore[arg-type]
+                return await asyncio.to_thread(plugin.execute_sql, engine_instance, final_select, input_tables)  # type: ignore[arg-type]
             except ExecutionError:
                 raise
             except Exception as exc:
@@ -1841,7 +2173,7 @@ class Executor:
         )
         return adapter.resolve_upstream(upstream_ref, engine_instance, ctx)
 
-    def _read_source_via_adapter(
+    async def _read_source_via_adapter(
         self,
         jn: str,
         cj: CompiledJoint,
@@ -1863,7 +2195,7 @@ class Executor:
             effective_pushdown = _merge_cross_group_predicates(effective_pushdown, group, jn)
             effective_pushdown = _merge_cross_group_projections(effective_pushdown, group, jn)
             effective_pushdown = _merge_cross_group_limits(effective_pushdown, group, jn)
-            result = adapter.read_dispatch(engine_instance, cat, joint, effective_pushdown)
+            result = await asyncio.to_thread(adapter.read_dispatch, engine_instance, cat, joint, effective_pushdown)
             if isinstance(result, AdapterPushdownResult):
                 mat = result.material
                 tbl = mat.to_arrow() if mat and mat.materialized_ref is not None else None
@@ -1881,7 +2213,7 @@ class Executor:
                 )
             )
 
-    def _read_source_fallback(
+    async def _read_source_fallback(
         self,
         jn: str,
         cj: CompiledJoint,
@@ -1892,7 +2224,7 @@ class Executor:
         source = self._registry._sources.get(cj.catalog_type or "")
         if source:
             try:
-                mat = source.read(cat, joint, None)
+                mat = await asyncio.to_thread(source.read, cat, joint, None)
                 if mat.materialized_ref is not None:
                     return mat.to_arrow()
             except Exception as exc:
@@ -1931,7 +2263,7 @@ class Executor:
             )
         return None
 
-    def _read_sources_into(
+    async def _read_sources_into(
         self,
         input_tables: dict[str, pyarrow.Table],
         group: FusedGroup,
@@ -1981,7 +2313,7 @@ class Executor:
 
             if cj.adapter:
                 try:
-                    found, tbl, residual = self._read_source_via_adapter(jn, cj, cat, joint, group)
+                    found, tbl, residual = await self._read_source_via_adapter(jn, cj, cat, joint, group)
                 except Exception as exc:
                     read_ms = (time.monotonic() - read_start) * 1000
                     if stats_collector is not None:
@@ -2010,7 +2342,7 @@ class Executor:
                     continue
 
             try:
-                tbl = self._read_source_fallback(jn, cj, cat, joint)
+                tbl = await self._read_source_fallback(jn, cj, cat, joint)
             except Exception as exc:
                 read_ms = (time.monotonic() - read_start) * 1000
                 if stats_collector is not None:
@@ -2032,7 +2364,7 @@ class Executor:
                 input_tables[jn] = tbl
         return merged_adapter_residual
 
-    def _execute_python_joint(
+    async def _execute_python_joint(
         self,
         cj: CompiledJoint,
         materials: dict[str, MaterializedRef],
@@ -2092,9 +2424,9 @@ class Executor:
 
             # Support async functions
             if inspect.iscoroutinefunction(func):
-                result = asyncio.run(func(*args, **kwargs))
+                result = await func(*args, **kwargs)
             else:
-                result = func(*args, **kwargs)
+                result = await asyncio.to_thread(func, *args, **kwargs)
         except ExecutionError:
             raise
         except Exception as exc:
@@ -2115,7 +2447,7 @@ class Executor:
             table, MaterializationContext(joint_name=cj.name, strategy_name="arrow", options={})
         )
 
-    def _dispatch_sink_write(
+    async def _dispatch_sink_write(
         self,
         cj: CompiledJoint,
         ref: MaterializedRef,
@@ -2144,6 +2476,6 @@ class Executor:
                 table=cj.table, materialized_ref=ref, state="materialized",
             )
             joint = Joint(name=cj.name, joint_type="sink", catalog=cj.catalog, table=cj.table)
-            sink.write(cat, joint, mat, cj.write_strategy or "replace")
+            await asyncio.to_thread(sink.write, cat, joint, mat, cj.write_strategy or "replace")
         except Exception:
             pass  # Write failures handled by audit phase

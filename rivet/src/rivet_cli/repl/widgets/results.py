@@ -758,17 +758,48 @@ if _TEXTUAL_AVAILABLE:
                 dt.add_row("[red]Error[/]", e)
 
         def _render_inspect_execution_order(self, dt: DataTable, eo: Any) -> None:  # type: ignore[type-arg]
-            """Render the Execution Order section."""
+            """Render the Execution Order section with wave grouping."""
             dt.add_row("", "")
             dt.add_row("[bold cyan]═══ Execution Order ═══[/]", "")
+
+            # Group steps by wave_number
+            waves: dict[int, list[Any]] = {}
             for step in eo.steps:
-                fused = " [magenta](fused)[/]" if step.is_fused else ""
-                mat = " ⚡" if step.has_materialization else ""
-                joints = ", ".join(step.joints)
-                dt.add_row(
-                    f"Step {step.step_number}",
-                    f"{step.id} [{step.engine}]{fused}{mat} — {joints}",
-                )
+                wn = getattr(step, "wave_number", 0)
+                waves.setdefault(wn, []).append(step)
+
+            has_waves = any(w != 0 for w in waves)
+
+            if has_waves:
+                for wave_num in sorted(waves):
+                    if wave_num == 0:
+                        for step in waves[wave_num]:
+                            fused = " [magenta](fused)[/]" if step.is_fused else ""
+                            mat = " ⚡" if step.has_materialization else ""
+                            joints = ", ".join(step.joints)
+                            dt.add_row(
+                                f"Step {step.step_number}",
+                                f"{step.id} [{step.engine}]{fused}{mat} — {joints}",
+                            )
+                    else:
+                        dt.add_row(f"[bold]Wave {wave_num}[/]", "")
+                        for step in waves[wave_num]:
+                            fused = " [magenta](fused)[/]" if step.is_fused else ""
+                            mat = " ⚡" if step.has_materialization else ""
+                            joints = ", ".join(step.joints)
+                            dt.add_row(
+                                f"  Step {step.step_number}",
+                                f"{step.id} [{step.engine}]{fused}{mat} — {joints}",
+                            )
+            else:
+                for step in eo.steps:
+                    fused = " [magenta](fused)[/]" if step.is_fused else ""
+                    mat = " ⚡" if step.has_materialization else ""
+                    joints = ", ".join(step.joints)
+                    dt.add_row(
+                        f"Step {step.step_number}",
+                        f"{step.id} [{step.engine}]{fused}{mat} — {joints}",
+                    )
 
         def _render_inspect_fused_groups(self, dt: DataTable, fg: Any) -> None:  # type: ignore[type-arg]
             """Render the Fused Groups section."""

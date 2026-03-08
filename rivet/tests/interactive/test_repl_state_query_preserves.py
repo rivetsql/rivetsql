@@ -65,7 +65,7 @@ def test_execute_query_preserves_repl_state(
 
     before = session.repl_state
 
-    with patch("rivet_core.executor.Executor.run_query", return_value=_MOCK_TABLE):
+    with patch("rivet_core.executor.Executor.run_query_with_stats_sync", return_value=(_MOCK_TABLE, None)):
         session.execute_query("SELECT 1")
 
     after = session.repl_state

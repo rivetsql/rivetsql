@@ -179,6 +179,7 @@ class ExecutionStep:
     joints: list[str]
     is_fused: bool
     has_materialization: bool
+    wave_number: int
 
 
 @dataclass(frozen=True)

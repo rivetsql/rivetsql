@@ -419,7 +419,7 @@ class InteractiveSession:
             from rivet_core.executor import Executor  # noqa: PLC0415
 
             executor = Executor(registry=self._registry)
-            table, run_stats = executor.run_query_with_stats(compiled, target_joint="__display")
+            table, run_stats = executor.run_query_with_stats_sync(compiled, target_joint="__display")
 
             table, truncated = self._apply_truncation(table)
             elapsed = (time.monotonic() - t0) * 1000

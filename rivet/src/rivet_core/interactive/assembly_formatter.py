@@ -202,6 +202,12 @@ class AssemblyFormatter:
             mat_joints.add(m.from_joint)
             mat_joints.add(m.to_joint)
 
+        # Build group_id → wave_number mapping from parallel execution plan
+        wave_map: dict[str, int] = {}
+        for wave in assembly.parallel_execution_plan:
+            for gid in wave.groups:
+                wave_map[gid] = wave.wave_number
+
         steps: list[ExecutionStep] = []
         step_num = 0
         for step_id in assembly.execution_order:
@@ -219,6 +225,7 @@ class AssemblyFormatter:
                         joints=joints_in_step,
                         is_fused=len(g.joints) > 1,
                         has_materialization=any(n in mat_joints for n in g.joints),
+                        wave_number=wave_map.get(step_id, 0),
                     )
                 )
             elif step_id in joint_map and step_id in filtered_names:
@@ -232,6 +239,7 @@ class AssemblyFormatter:
                         joints=[step_id],
                         is_fused=False,
                         has_materialization=step_id in mat_joints,
+                        wave_number=wave_map.get(step_id, 0),
                     )
                 )
         return ExecutionOrderSection(steps=steps)
@@ -527,16 +535,44 @@ class AssemblyFormatter:
         self, eo: ExecutionOrderSection, *, ansi: bool
     ) -> str:
         lines: list[str] = [self._section_header("Execution Order", ansi=ansi)]
+
+        # Group steps by wave_number for parallel wave display
+        waves: dict[int, list[ExecutionStep]] = {}
         for step in eo.steps:
-            fused_marker = " [fused]" if step.is_fused else ""
-            mat_marker = " ⚡" if step.has_materialization else ""
-            step_label = f"  {step.step_number}. {step.id}"
-            if ansi and step.is_fused:
-                step_label = f"  {step.step_number}. {_BOLD}{step.id}{_RESET}"
-            lines.append(f"{step_label} ({step.engine}){fused_marker}{mat_marker}")
-            if len(step.joints) > 1 or (len(step.joints) == 1 and step.joints[0] != step.id):
-                lines.append(f"     joints: {', '.join(step.joints)}")
+            waves.setdefault(step.wave_number, []).append(step)
+
+        has_waves = any(w != 0 for w in waves)
+
+        if has_waves:
+            for wave_num in sorted(waves):
+                if wave_num == 0:
+                    # Fallback steps without wave assignment
+                    for step in waves[wave_num]:
+                        lines.append(self._format_step_line(step, ansi=ansi))
+                else:
+                    wave_label = f"  Wave {wave_num}:"
+                    if ansi:
+                        wave_label = f"  {_BOLD}Wave {wave_num}:{_RESET}"
+                    lines.append(wave_label)
+                    for step in waves[wave_num]:
+                        lines.append(self._format_step_line(step, ansi=ansi, indent=4))
+        else:
+            for step in eo.steps:
+                lines.append(self._format_step_line(step, ansi=ansi))
+
         return "\n".join(lines)
+    def _format_step_line(self, step: ExecutionStep, *, ansi: bool, indent: int = 2) -> str:
+        """Format a single execution step as a text line."""
+        prefix = " " * indent
+        fused_marker = " [fused]" if step.is_fused else ""
+        mat_marker = " ⚡" if step.has_materialization else ""
+        step_label = f"{prefix}{step.step_number}. {step.id}"
+        if ansi and step.is_fused:
+            step_label = f"{prefix}{step.step_number}. {_BOLD}{step.id}{_RESET}"
+        line = f"{step_label} ({step.engine}){fused_marker}{mat_marker}"
+        if len(step.joints) > 1 or (len(step.joints) == 1 and step.joints[0] != step.id):
+            line += f"\n{prefix}   joints: {', '.join(step.joints)}"
+        return line
 
     def _render_fused_groups_text(
         self, fg: FusedGroupsSection, *, ansi: bool

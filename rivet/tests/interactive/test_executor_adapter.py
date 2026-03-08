@@ -8,6 +8,7 @@ Validates Requirements 7.1, 7.2, 7.3, 7.4, 10.4.
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import MagicMock
 
 import pyarrow
@@ -132,12 +133,12 @@ class TestAdapterDispatchPrecedence:
 
         executor = Executor(registry=registry)
         input_tables: dict[str, pyarrow.Table] = {}
-        executor._read_sources_into(
+        asyncio.run(executor._read_sources_into(
             input_tables,
             group=group,
             joint_map=joint_map,
             catalog_map=catalog_map,
-        )
+        ))
 
         mock_adapter.read_dispatch.assert_called_once()
         # source.read() should NOT have been called — no source plugin registered
@@ -175,12 +176,12 @@ class TestAdapterDispatchPrecedence:
 
         executor = Executor(registry=registry)
         input_tables: dict[str, pyarrow.Table] = {}
-        executor._read_sources_into(
+        asyncio.run(executor._read_sources_into(
             input_tables,
             group=group,
             joint_map=joint_map,
             catalog_map=catalog_map,
-        )
+        ))
 
         mock_source.read.assert_called_once()
 
@@ -219,12 +220,12 @@ class TestAdapterDeferredMaterializedRef:
 
         executor = Executor(registry=registry)
         input_tables: dict[str, pyarrow.Table] = {}
-        executor._read_sources_into(
+        asyncio.run(executor._read_sources_into(
             input_tables,
             group=group,
             joint_map=joint_map,
             catalog_map=catalog_map,
-        )
+        ))
 
         mock_mat.to_arrow.assert_called_once()
 
@@ -250,12 +251,12 @@ class TestMissingAdapterError:
         executor = Executor(registry=registry)
         with pytest.raises(ExecutionError) as exc_info:
             input_tables: dict[str, pyarrow.Table] = {}
-            executor._read_sources_into(
+            asyncio.run(executor._read_sources_into(
                 input_tables,
                 group=group,
                 joint_map=joint_map,
                 catalog_map=catalog_map,
-            )
+            ))
 
         err = exc_info.value.error
         assert err.code == "RVT-501"
@@ -284,12 +285,12 @@ class TestMissingAdapterError:
         executor = Executor(registry=registry)
         with pytest.raises(ExecutionError) as exc_info:
             input_tables: dict[str, pyarrow.Table] = {}
-            executor._read_sources_into(
+            asyncio.run(executor._read_sources_into(
                 input_tables,
                 group=group,
                 joint_map=joint_map,
                 catalog_map=catalog_map,
-            )
+            ))
 
         err = exc_info.value.error
         assert err.code == "RVT-501"
@@ -374,12 +375,12 @@ class TestAdapterDispatchPrecedenceProperty:
 
         executor = Executor(registry=registry)
         input_tables: dict[str, pyarrow.Table] = {}
-        executor._read_sources_into(
+        asyncio.run(executor._read_sources_into(
             input_tables,
             group=group,
             joint_map=joint_map,
             catalog_map=catalog_map,
-        )
+        ))
 
         # Adapter's read_dispatch must have been called
         mock_adapter.read_dispatch.assert_called_once()

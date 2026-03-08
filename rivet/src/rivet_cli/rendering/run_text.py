@@ -20,6 +20,7 @@ from rivet_cli.rendering.colors import (
 )
 from rivet_core.compiler import CompiledAssembly, CompiledJoint
 from rivet_core.executor import ExecutionResult, JointExecutionResult
+from rivet_core.optimizer import FusedGroup
 
 
 def render_run_text(
@@ -32,6 +33,8 @@ def render_run_text(
     lines: list[str] = []
     joint_map = {j.name: j for j in compiled.joints}
     group_map = {fg.id: fg for fg in compiled.fused_groups}
+
+    _render_execution_plan(lines, compiled, group_map, color)
 
     for jr in result.joint_results:
         cj = joint_map.get(jr.name)
@@ -48,6 +51,26 @@ def render_run_text(
         _render_fused_sql(lines, compiled, group_map, color)
 
     return "\n".join(lines)
+
+
+def _render_execution_plan(
+    lines: list[str],
+    compiled: CompiledAssembly,
+    group_map: dict[str, FusedGroup],
+    color: bool,
+) -> None:
+    """Render the parallel execution plan grouped by wave."""
+    if not compiled.parallel_execution_plan:
+        return
+    lines.append(colorize("Execution Plan:", BOLD, color))
+    for wave in compiled.parallel_execution_plan:
+        entries: list[str] = []
+        for gid in wave.groups:
+            fg = group_map.get(gid)
+            engine = fg.engine if fg else "unknown"  # type: ignore[union-attr]
+            entries.append(f"{gid} (engine: {engine})")
+        lines.append(f"  Wave {wave.wave_number}: [{', '.join(entries)}]")
+    lines.append("")
 
 
 def _render_joint_result(

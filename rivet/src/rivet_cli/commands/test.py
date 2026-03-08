@@ -399,7 +399,7 @@ def run_single_test(
         has_expected = test_def.expected is not None
 
         if has_expected:
-            result_table = executor.run_query(compiled, test_def.target)
+            result_table = executor.run_query_sync(compiled, test_def.target)
 
             # Snapshot update: write actual output to expected file path (file refs only)
             if update_snapshots and isinstance(test_def.expected, dict) and "file" in test_def.expected:
@@ -425,7 +425,7 @@ def run_single_test(
             )
 
         # Assertion-only test (no expected): run full execution for check results
-        exec_result = executor.run(compiled, fail_fast=False)
+        exec_result = executor.run_sync(compiled, fail_fast=False)
         check_results: list[Any] = []
         target_passed = True
         for jr in exec_result.joint_results:
@@ -465,7 +465,7 @@ def _run_multi_target(
     all_comparisons: list[ComparisonResult] = []
 
     for target_name, target_spec in test_def.targets.items():  # type: ignore[union-attr]
-        result_table = executor.run_query(compiled, target_name)
+        result_table = executor.run_query_sync(compiled, target_name)
         expected_spec = target_spec.get("expected")
         if expected_spec is not None:
             # Snapshot update for file-based expected

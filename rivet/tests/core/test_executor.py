@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pyarrow
 import pytest
 
@@ -132,7 +134,7 @@ class TestExecutorRefusesFailedCompilation:
         )
         executor = Executor()
         with pytest.raises(CompilationError) as exc_info:
-            executor.run(assembly)
+            asyncio.run(executor.run(assembly))
         assert len(exc_info.value.errors) == 1
         assert exc_info.value.errors[0].code == "RVT-401"
 
@@ -158,7 +160,7 @@ class TestExecutionOrder:
         )
 
         executor = Executor()
-        result = executor.run(assembly)
+        result = asyncio.run(executor.run(assembly))
 
         assert result.success is True
         assert len(result.joint_results) == 2
@@ -168,7 +170,7 @@ class TestExecutionOrder:
     def test_empty_execution_order(self) -> None:
         assembly = _make_compiled_assembly(joints=[], groups=[], execution_order=[])
         executor = Executor()
-        result = executor.run(assembly)
+        result = asyncio.run(executor.run(assembly))
         assert result.success is True
         assert result.total_failures == 0
         assert result.joint_results == []
@@ -195,7 +197,7 @@ class TestCTEStrategy:
             joints=[j1], groups=[g1], execution_order=["g1"]
         )
         executor = Executor()
-        result = executor.run(assembly)
+        result = asyncio.run(executor.run(assembly))
         assert result.success is True
 
     def test_cte_falls_back_to_fused_sql(self) -> None:
@@ -212,7 +214,7 @@ class TestCTEStrategy:
             joints=[j1], groups=[g1], execution_order=["g1"]
         )
         executor = Executor()
-        result = executor.run(assembly)
+        result = asyncio.run(executor.run(assembly))
         assert result.success is True
 
 
@@ -245,7 +247,7 @@ class TestTempViewStrategy:
             joints=[j1, j2], groups=[g1], execution_order=["g1"]
         )
         executor = Executor()
-        result = executor.run(assembly)
+        result = asyncio.run(executor.run(assembly))
         assert result.success is True
 
     def test_temp_view_single_joint_no_views(self) -> None:
@@ -262,7 +264,7 @@ class TestTempViewStrategy:
             joints=[j1], groups=[g1], execution_order=["g1"]
         )
         executor = Executor()
-        result = executor.run(assembly)
+        result = asyncio.run(executor.run(assembly))
         assert result.success is True
 
 
@@ -376,7 +378,7 @@ class TestMaterialization:
         )
 
         executor = Executor()
-        result = executor.run(assembly)
+        result = asyncio.run(executor.run(assembly))
         assert result.success is True
         assert result.total_materializations >= 1
 
@@ -395,7 +397,7 @@ class TestExecutionResultStructure:
             joints=[j1], groups=[g1], execution_order=["g1"]
         )
         executor = Executor()
-        result = executor.run(assembly)
+        result = asyncio.run(executor.run(assembly))
 
         assert isinstance(result, ExecutionResult)
         assert isinstance(result.success, bool)
@@ -416,7 +418,7 @@ class TestExecutionResultStructure:
             joints=[j1], groups=[g1], execution_order=["g1"]
         )
         executor = Executor()
-        result = executor.run(assembly)
+        result = asyncio.run(executor.run(assembly))
 
         jr = result.joint_results[0]
         assert isinstance(jr, JointExecutionResult)
@@ -434,7 +436,7 @@ class TestExecutionResultStructure:
             joints=[j1], groups=[g1], execution_order=["g1"]
         )
         executor = Executor()
-        result = executor.run(assembly)
+        result = asyncio.run(executor.run(assembly))
 
         gr = result.group_results[0]
         assert isinstance(gr, FusedGroupExecutionResult)
@@ -468,7 +470,7 @@ class TestMultiJointGroup:
             joints=[j1, j2], groups=[g1], execution_order=["g1"]
         )
         executor = Executor()
-        result = executor.run(assembly)
+        result = asyncio.run(executor.run(assembly))
 
         assert result.success is True
         assert len(result.joint_results) == 2

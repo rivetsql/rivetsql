@@ -148,6 +148,15 @@ class CompilationStats:
 
 
 @dataclass(frozen=True)
+class ExecutionWave:
+    """A set of fused groups that can execute concurrently."""
+
+    wave_number: int
+    groups: list[str]  # fused group IDs
+    engines: dict[str, list[str]]  # engine_name → group_ids on that engine
+
+
+@dataclass(frozen=True)
 class CompiledAssembly:
     success: bool
     profile_name: str
@@ -162,6 +171,7 @@ class CompiledAssembly:
     warnings: list[str]
     engine_boundaries: list[EngineBoundary] = field(default_factory=list)
     compilation_stats: CompilationStats | None = None
+    parallel_execution_plan: list[ExecutionWave] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -1251,6 +1261,9 @@ def _finalize_assembly(
             seen_groups.add(gid)
             execution_order.append(gid)
 
+    # Compute parallel execution plan (wave assignment)
+    parallel_execution_plan = _compute_parallel_execution_plan(fused_groups, cj_map)
+
     return CompiledAssembly(
         success=len(errors) == 0,
         profile_name=profile_name,
@@ -1273,7 +1286,86 @@ def _finalize_assembly(
             introspection_failed=introspection_failed,
             introspection_skipped=introspection_skipped,
         ),
+        parallel_execution_plan=parallel_execution_plan,
     )
+
+def _compute_parallel_execution_plan(
+    fused_groups: list[FusedGroup],
+    cj_map: dict[str, CompiledJoint],
+) -> list[ExecutionWave]:
+    """Compute the parallel execution plan using wavefront analysis.
+
+    Locally reimplements the DependencyGraph edge-building logic to avoid
+    circular imports (compiler → executor).
+
+    Algorithm:
+    1. Build upstream/in-degree maps from fused groups and compiled joints.
+    2. Groups with in-degree 0 → wave 1.
+    3. Remove wave 1 groups, find new in-degree 0 groups → wave 2.
+    4. Repeat until all groups are assigned.
+    """
+    if not fused_groups:
+        return []
+
+    # Map each joint name to its owning fused group ID
+    joint_to_group: dict[str, str] = {}
+    group_by_id: dict[str, FusedGroup] = {}
+    for group in fused_groups:
+        group_by_id[group.id] = group
+        for joint_name in group.joints:
+            joint_to_group[joint_name] = group.id
+
+    # Build upstream and downstream edges
+    upstream: dict[str, set[str]] = {g.id: set() for g in fused_groups}
+    downstream: dict[str, set[str]] = {g.id: set() for g in fused_groups}
+
+    for group in fused_groups:
+        for joint_name in group.joints:
+            compiled_joint = cj_map.get(joint_name)
+            if compiled_joint is None:
+                continue
+            for up_name in compiled_joint.upstream:
+                up_group_id = joint_to_group.get(up_name)
+                if up_group_id is None or up_group_id == group.id:
+                    continue
+                upstream[group.id].add(up_group_id)
+                downstream[up_group_id].add(group.id)
+
+    in_degree: dict[str, int] = {gid: len(ups) for gid, ups in upstream.items()}
+
+    # Wavefront assignment
+    remaining = set(in_degree.keys())
+    waves: list[ExecutionWave] = []
+    wave_number = 0
+
+    while remaining:
+        wave_number += 1
+        ready = [gid for gid in remaining if in_degree[gid] == 0]
+        if not ready:
+            # Safety: break if no progress (shouldn't happen with a valid DAG)
+            break
+
+        # Build engine mapping for this wave
+        engines: dict[str, list[str]] = {}
+        for gid in ready:
+            engine_name = group_by_id[gid].engine
+            engines.setdefault(engine_name, []).append(gid)
+
+        waves.append(ExecutionWave(
+            wave_number=wave_number,
+            groups=ready,
+            engines=engines,
+        ))
+
+        # Remove ready groups and decrement downstream in-degrees
+        for gid in ready:
+            remaining.discard(gid)
+            for ds_id in downstream.get(gid, set()):
+                in_degree[ds_id] -= 1
+
+    return waves
+
+
 
 
 def compile(

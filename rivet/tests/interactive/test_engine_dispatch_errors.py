@@ -61,7 +61,7 @@ def test_execution_error_propagates_without_wrapping() -> None:
         "build_transient_pipeline",
         return_value=(transient, []),
     ), patch("rivet_core.interactive.session.core_compile", return_value=compiled):
-        with patch("rivet_core.executor.Executor.run_query_with_stats", side_effect=exec_error):
+        with patch("rivet_core.executor.Executor.run_query_with_stats_sync", side_effect=exec_error):
             with pytest.raises(ExecutionError) as exc_info:
                 session.execute_query("SELECT 1")
 

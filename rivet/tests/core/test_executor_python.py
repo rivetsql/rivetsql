@@ -1,6 +1,8 @@
 """Tests for PythonJoint execution (task 14.3)."""
 from __future__ import annotations
 
+import asyncio
+
 import pyarrow
 import pytest
 
@@ -112,7 +114,7 @@ class TestPythonJointSingleInput:
                   function=f"{_FIXTURE_MOD}.transform_arrow", fused_group_id="g1")
         asm = _asm([src, pj], [_grp("g0", ["src"]), _grp("g1", ["pj"])], [_mat("src", "pj")])
 
-        result = Executor().run(asm)
+        result = asyncio.run(Executor().run(asm))
         assert result.success
         pj_r = next(r for r in result.joint_results if r.name == "pj")
         assert pj_r.success
@@ -131,7 +133,7 @@ class TestPythonJointMultiInput:
                   function=f"{_FIXTURE_MOD}.transform_multi", fused_group_id="g2")
         asm = _asm([s1, s2, pj], [_grp("g0", ["s1"]), _grp("g1", ["s2"]), _grp("g2", ["pj"])])
 
-        result = Executor().run(asm)
+        result = asyncio.run(Executor().run(asm))
         assert result.success
 
 
@@ -147,7 +149,7 @@ class TestPythonJointErrors:
                   function=f"{_FIXTURE_MOD}.transform_raises", fused_group_id="g1")
         asm = _asm([src, pj], [_grp("g0", ["src"]), _grp("g1", ["pj"])], [_mat("src", "pj")])
 
-        result = Executor().run(asm, fail_fast=True)
+        result = asyncio.run(Executor().run(asm, fail_fast=True))
         assert not result.success
         pj_r = next(r for r in result.joint_results if r.name == "pj")
         assert not pj_r.success
@@ -159,7 +161,7 @@ class TestPythonJointErrors:
                   function=f"{_FIXTURE_MOD}.transform_returns_none", fused_group_id="g1")
         asm = _asm([src, pj], [_grp("g0", ["src"]), _grp("g1", ["pj"])], [_mat("src", "pj")])
 
-        result = Executor().run(asm, fail_fast=True)
+        result = asyncio.run(Executor().run(asm, fail_fast=True))
         assert not result.success
 
     def test_unsupported_return_type_produces_failure(self) -> None:
@@ -168,7 +170,7 @@ class TestPythonJointErrors:
                   function=f"{_FIXTURE_MOD}.transform_returns_string", fused_group_id="g1")
         asm = _asm([src, pj], [_grp("g0", ["src"]), _grp("g1", ["pj"])], [_mat("src", "pj")])
 
-        result = Executor().run(asm, fail_fast=True)
+        result = asyncio.run(Executor().run(asm, fail_fast=True))
         assert not result.success
 
 
@@ -184,7 +186,7 @@ class TestPythonJointAsync:
                   function=f"{_FIXTURE_MOD}.transform_async", fused_group_id="g1")
         asm = _asm([src, pj], [_grp("g0", ["src"]), _grp("g1", ["pj"])], [_mat("src", "pj")])
 
-        result = Executor().run(asm)
+        result = asyncio.run(Executor().run(asm))
         assert result.success
 
 
@@ -200,5 +202,5 @@ class TestPythonJointContext:
                   function=f"{_FIXTURE_MOD}.transform_with_context", fused_group_id="g1")
         asm = _asm([src, pj], [_grp("g0", ["src"]), _grp("g1", ["pj"])], [_mat("src", "pj")])
 
-        result = Executor().run(asm)
+        result = asyncio.run(Executor().run(asm))
         assert result.success

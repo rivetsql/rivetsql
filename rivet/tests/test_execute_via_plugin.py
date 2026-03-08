@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pyarrow
@@ -109,7 +110,7 @@ class TestExecuteViaPlugin:
         group = _make_group("g1", ["transform"], fused_sql="SELECT * FROM src",
                             engine="fake_engine", engine_type="fake")
 
-        result, adapter_residual = executor._execute_via_plugin(group, materials, joint_map, None, plugin)
+        result, adapter_residual = asyncio.run(executor._execute_via_plugin(group, materials, joint_map, None, plugin))
 
         assert len(plugin.calls) == 1
         call_engine, call_sql, call_tables = plugin.calls[0]
@@ -133,7 +134,7 @@ class TestExecuteViaPlugin:
         j = _make_joint("t", "sql", engine="fake_engine")
 
         with pytest.raises(ExecutionError) as exc_info:
-            executor._execute_via_plugin(group, {}, {"t": j}, None, plugin)
+            asyncio.run(executor._execute_via_plugin(group, {}, {"t": j}, None, plugin))
 
         assert exc_info.value.error.code == "RVT-503"
         assert "boom" in exc_info.value.error.message
@@ -150,7 +151,7 @@ class TestExecuteViaPlugin:
         j = _make_joint("t", "sql", upstream=["src"])
         group = _make_group("g1", ["t"], fused_sql=None)
 
-        result, _ = executor._execute_via_plugin(group, materials, {"t": j}, None, plugin)
+        result, _ = asyncio.run(executor._execute_via_plugin(group, materials, {"t": j}, None, plugin))
         assert result.equals(src_table)
         assert len(plugin.calls) == 0  # execute_sql not called
 
@@ -162,7 +163,7 @@ class TestExecuteViaPlugin:
         j = _make_joint("t", "sql")
         group = _make_group("g1", ["t"], fused_sql=None)
 
-        result, _ = executor._execute_via_plugin(group, {}, {"t": j}, None, plugin)
+        result, _ = asyncio.run(executor._execute_via_plugin(group, {}, {"t": j}, None, plugin))
         assert result.num_rows == 0
 
     def test_uses_fusion_result_resolved_sql(self) -> None:
@@ -186,7 +187,7 @@ class TestExecuteViaPlugin:
                             fusion_result=fr)
         j = _make_joint("t", "sql", engine="fake_engine")
 
-        executor._execute_via_plugin(group, {}, {"t": j}, None, plugin)
+        asyncio.run(executor._execute_via_plugin(group, {}, {"t": j}, None, plugin))
 
         assert plugin.calls[0][1] == "SELECT * FROM resolved"
 
@@ -209,7 +210,7 @@ class TestExecuteViaPlugin:
         j = _make_joint("t", "sql", engine="fake_engine")
 
         with pytest.raises(ExecutionError) as exc_info:
-            executor._execute_via_plugin(group, {}, {"t": j}, None, plugin)
+            asyncio.run(executor._execute_via_plugin(group, {}, {"t": j}, None, plugin))
 
         # Should be the original RVT-502, not wrapped in RVT-503
         assert exc_info.value.error.code == "RVT-502"
@@ -237,7 +238,7 @@ class TestExecuteViaPlugin:
         group = _make_group("g1", ["t"], fused_sql="SELECT * FROM s1 JOIN s2",
                             engine="fake_engine", engine_type="fake")
 
-        executor._execute_via_plugin(group, materials, joint_map, None, plugin)
+        asyncio.run(executor._execute_via_plugin(group, materials, joint_map, None, plugin))
 
         call_tables = plugin.calls[0][2]
         assert "s1" in call_tables

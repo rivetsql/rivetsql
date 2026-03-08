@@ -179,6 +179,15 @@ class ComputeEnginePlugin(ABC):
         """Preferred materialization strategy name, or None for default (arrow)."""
         return None
 
+    @property
+    def default_concurrency_limit(self) -> int:
+        """Default pool size for this engine type.
+
+        Plugins can override to reflect their backend's natural parallelism.
+        Users can further override via config["concurrency_limit"].
+        """
+        return 1
+
     def get_reference_resolver(self) -> ReferenceResolver | None:
         return None
 

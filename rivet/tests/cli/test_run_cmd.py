@@ -148,7 +148,7 @@ class TestSuccessfulExecution:
         mock_config.return_value = MagicMock(success=True, profile=MagicMock())
         mock_bridge.return_value = MagicMock(assembly=MagicMock(), catalogs={}, engines={})
         mock_compile.return_value = _compiled()
-        mock_executor_cls.return_value.run.return_value = _exec_result()
+        mock_executor_cls.return_value.run_sync.return_value = _exec_result()
         code = run_run(None, [], False, True, "text", _globals())
         assert code == SUCCESS
 
@@ -166,7 +166,7 @@ class TestAssertionFailure:
         mock_config.return_value = MagicMock(success=True, profile=MagicMock())
         mock_bridge.return_value = MagicMock(assembly=MagicMock(), catalogs={}, engines={})
         mock_compile.return_value = _compiled()
-        mock_executor_cls.return_value.run.return_value = _exec_result(
+        mock_executor_cls.return_value.run_sync.return_value = _exec_result(
             check_results=[
                 CheckExecutionResult(type="not_null", severity="error", passed=False, message="null found", phase="assertion"),
             ],
@@ -188,7 +188,7 @@ class TestAuditFailure:
         mock_config.return_value = MagicMock(success=True, profile=MagicMock())
         mock_bridge.return_value = MagicMock(assembly=MagicMock(), catalogs={}, engines={})
         mock_compile.return_value = _compiled()
-        mock_executor_cls.return_value.run.return_value = _exec_result(
+        mock_executor_cls.return_value.run_sync.return_value = _exec_result(
             check_results=[
                 CheckExecutionResult(type="row_count", severity="error", passed=False, message="mismatch", phase="audit"),
             ],
@@ -210,7 +210,7 @@ class TestAssertionPrecedence:
         mock_config.return_value = MagicMock(success=True, profile=MagicMock())
         mock_bridge.return_value = MagicMock(assembly=MagicMock(), catalogs={}, engines={})
         mock_compile.return_value = _compiled()
-        mock_executor_cls.return_value.run.return_value = _exec_result(
+        mock_executor_cls.return_value.run_sync.return_value = _exec_result(
             check_results=[
                 CheckExecutionResult(type="not_null", severity="error", passed=False, message="null", phase="assertion"),
                 CheckExecutionResult(type="row_count", severity="error", passed=False, message="mismatch", phase="audit"),
@@ -233,7 +233,7 @@ class TestPartialFailure:
         mock_config.return_value = MagicMock(success=True, profile=MagicMock())
         mock_bridge.return_value = MagicMock(assembly=MagicMock(), catalogs={}, engines={})
         mock_compile.return_value = _compiled()
-        mock_executor_cls.return_value.run.return_value = _exec_result(
+        mock_executor_cls.return_value.run_sync.return_value = _exec_result(
             success=False, status="partial_failure",
         )
         code = run_run(None, [], False, False, "text", _globals())
@@ -254,7 +254,7 @@ class TestJsonFormat:
         mock_config.return_value = MagicMock(success=True, profile=MagicMock())
         mock_bridge.return_value = MagicMock(assembly=MagicMock(), catalogs={}, engines={})
         mock_compile.return_value = _compiled()
-        mock_executor_cls.return_value.run.return_value = _exec_result()
+        mock_executor_cls.return_value.run_sync.return_value = _exec_result()
         code = run_run(None, [], False, True, "json", _globals())
         assert code == SUCCESS
         output = capsys.readouterr().out
@@ -276,7 +276,7 @@ class TestQuietFormat:
         mock_config.return_value = MagicMock(success=True, profile=MagicMock())
         mock_bridge.return_value = MagicMock(assembly=MagicMock(), catalogs={}, engines={})
         mock_compile.return_value = _compiled()
-        mock_executor_cls.return_value.run.return_value = _exec_result()
+        mock_executor_cls.return_value.run_sync.return_value = _exec_result()
         code = run_run(None, [], False, True, "quiet", _globals())
         assert code == SUCCESS
         captured = capsys.readouterr()
@@ -291,7 +291,7 @@ class TestQuietFormat:
         mock_config.return_value = MagicMock(success=True, profile=MagicMock())
         mock_bridge.return_value = MagicMock(assembly=MagicMock(), catalogs={}, engines={})
         mock_compile.return_value = _compiled()
-        mock_executor_cls.return_value.run.return_value = _exec_result(
+        mock_executor_cls.return_value.run_sync.return_value = _exec_result(
             success=False, status="failure",
             joint_error=RivetError(code="RVT-500", message="exec failed", remediation="check logs"),
         )
@@ -343,7 +343,7 @@ class TestProperty13ExitCodeMatchesOutcome:
         status = "partial_failure" if scenario["is_partial"] else "success"
         success = not scenario["is_partial"] and not scenario["has_assertion"] and not scenario["has_audit"]
 
-        mock_executor_cls.return_value.run.return_value = _exec_result(
+        mock_executor_cls.return_value.run_sync.return_value = _exec_result(
             success=success, status=status, check_results=checks,
         )
 
