@@ -839,6 +839,7 @@ class RivetRepl(App):  # type: ignore[type-arg]
                     self.call_from_thread(
                         self.query_one(CompilationView).show_assembly,
                         assembly,
+                        1,
                     )
             except Exception:  # noqa: BLE001
                 pass

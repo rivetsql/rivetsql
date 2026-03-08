@@ -25,7 +25,7 @@ _IGNORED_EXTENSIONS = (".txt", ".md", ".csv", ".json", ".py")
 
 _identifier = st.from_regex(r"[a-z][a-z0-9]{0,10}", fullmatch=True)
 
-_SOURCE_YAML = "name: {name}\ntype: source\ncatalog: pg"
+_SOURCE_YAML = "name: '{name}'\ntype: source\ncatalog: pg"
 _SQL_CONTENT = "-- rivet:name: {name}\nSELECT 1"
 
 

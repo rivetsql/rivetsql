@@ -38,6 +38,7 @@ class MaterializationStats:
     row_count: int
     byte_size: int
     column_stats: list[ColumnExecutionStats]
+    sampled: bool = False
 
 
 @dataclass(frozen=True)

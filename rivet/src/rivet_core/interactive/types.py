@@ -15,6 +15,7 @@ import pyarrow as pa
 from rivet_core.compiler import CompiledAssembly
 from rivet_core.executor import CheckExecutionResult
 from rivet_core.models import Joint
+from rivet_core.stats import RunStats
 
 
 @dataclass(frozen=True)
@@ -40,6 +41,7 @@ class QueryResult:
     query_plan: QueryPlan | None
     quality_results: list[CheckExecutionResult] | None
     truncated: bool  # True if row limit was applied
+    run_stats: RunStats | None = None
 
 
 @dataclass(frozen=True)
@@ -424,6 +426,3 @@ class JointPreviewData:
     tags: list[str]
     schema: list[SchemaField] | None
     preview_rows: pa.Table | None
-
-
-

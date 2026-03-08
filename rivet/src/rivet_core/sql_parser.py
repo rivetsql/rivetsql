@@ -637,6 +637,14 @@ class SQLParser:
         if select is None:
             return []
 
+        # Build alias → joint name map from FROM/JOIN table references
+        alias_map: dict[str, str] = {}
+        for table in ast.find_all(exp.Table):
+            tname = table.name
+            talias = table.alias
+            if talias and tname and tname in upstream_schemas:
+                alias_map[talias] = tname
+
         # Expand SELECT * if upstream schemas available
         expressions = self._resolve_star(select, upstream_schemas)
 
@@ -651,7 +659,8 @@ class SQLParser:
             output_col = alias or inner.sql()
             source_cols = list(inner.find_all(exp.Column))
             transform, origins, expr_str = self._classify_transform(
-                inner, source_cols, alias, upstream_schemas, joint_name
+                inner, source_cols, alias, upstream_schemas, joint_name,
+                alias_map=alias_map,
             )
             lineage.append(
                 ColumnLineage(
@@ -703,23 +712,24 @@ class SQLParser:
         alias: str | None,
         upstream_schemas: dict[str, Schema],
         joint_name: str,
+        alias_map: dict[str, str] | None = None,
     ) -> tuple[str, list[ColumnOrigin], str | None]:
         """Classify a projection expression's transform type and extract origins."""
         # Window function
         if inner.find(exp.Window):
-            origins = SQLParser._cols_to_origins(source_cols, upstream_schemas, joint_name)
+            origins = SQLParser._cols_to_origins(source_cols, upstream_schemas, joint_name, alias_map)
             return "window", origins, inner.sql()
 
         # Aggregate function
         if inner.find(exp.AggFunc):
-            origins = SQLParser._cols_to_origins(source_cols, upstream_schemas, joint_name)
+            origins = SQLParser._cols_to_origins(source_cols, upstream_schemas, joint_name, alias_map)
             return "aggregation", origins, inner.sql()
 
         # Literal (no column references)
         if not source_cols:
             return "literal", [], inner.sql()
 
-        origins = SQLParser._cols_to_origins(source_cols, upstream_schemas, joint_name)
+        origins = SQLParser._cols_to_origins(source_cols, upstream_schemas, joint_name, alias_map)
 
         # Single column reference — direct or renamed
         if len(source_cols) == 1 and isinstance(inner, exp.Column):
@@ -740,15 +750,21 @@ class SQLParser:
         cols: list[exp.Column],
         upstream_schemas: dict[str, Schema],
         joint_name: str,
+        alias_map: dict[str, str] | None = None,
     ) -> list[ColumnOrigin]:
         """Convert sqlglot Column nodes to ColumnOrigin records."""
         origins: list[ColumnOrigin] = []
         seen: set[tuple[str, str]] = set()
+        _alias_map = alias_map or {}
         for col in cols:
             table = col.table or ""
             col_name = col.name
-            # Resolve table to joint name if possible; fall back to joint_name
-            origin_joint = table if table and table in upstream_schemas else joint_name
+            # Resolve table alias to joint name, then check upstream_schemas
+            resolved = _alias_map.get(table, table)
+            if resolved and resolved in upstream_schemas:
+                origin_joint = resolved
+            else:
+                origin_joint = joint_name
             key = (origin_joint, col_name)
             if key not in seen:
                 seen.add(key)

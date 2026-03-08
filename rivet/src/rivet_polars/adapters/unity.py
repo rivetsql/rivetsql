@@ -130,10 +130,14 @@ class _PolarsUnityMaterializedRef(MaterializedRef):
         self._storage_location = storage_location
         self._file_format = file_format
         self._storage_options = storage_options
+        self._cached_table: pyarrow.Table | None = None
 
     def to_arrow(self) -> pyarrow.Table:
+        if self._cached_table is not None:
+            return self._cached_table
         try:
-            return self._read().to_arrow()
+            self._cached_table = self._read().to_arrow()
+            return self._cached_table
         except ExecutionError:
             raise
         except Exception as exc:

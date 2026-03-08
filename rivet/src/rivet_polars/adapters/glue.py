@@ -193,8 +193,9 @@ class GluePolarsReadRef(MaterializedRef):
         self._catalog_options = catalog_options
         self._table_name = table_name
         self._partition_filter = partition_filter
+        self._cached_table: pyarrow.Table | None = None
 
-    def to_arrow(self) -> pyarrow.Table:
+    def _read(self) -> pyarrow.Table:
         import polars as pl
 
         location, fmt, partition_keys, partition_locations = _resolve_glue_table(
@@ -244,6 +245,11 @@ class GluePolarsReadRef(MaterializedRef):
             ) from exc
 
         return df.to_arrow()
+
+    def to_arrow(self) -> pyarrow.Table:
+        if self._cached_table is None:
+            self._cached_table = self._read()
+        return self._cached_table
 
     @property
     def schema(self) -> Schema:

@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.9] - 2026-03-08
+
+### Added
+- Cross-group predicate pushdown: propagates WHERE filters across materialization boundaries to upstream source reads using column lineage
+- Cross-group projection pushdown: prunes unused columns at source reads when only a subset is needed downstream
+- Cross-group limit pushdown: pushes LIMIT down to source adapter reads when safe
+- Join-equality propagation: derives `b.col = 'value'` from `WHERE a.col = 'value'` + `ON a.col = b.col` and pushes to source groups
+- `per_joint_predicates`, `per_joint_projections`, `per_joint_limits` fields on `FusedGroup` for cross-group pushdown plans
+- `RunStats` and `StatsCollector` in `rivet_core.stats` for detailed per-group/per-joint execution statistics
+- Engine/rivet time breakdown in REPL execute output footer
+- Selective plugin loading: only imports plugins needed by the active profile (`register_optional_plugins(only=...)`)
+- Plugin discovery guard (`is_discovered` property) prevents redundant entry-point scanning
+- Glue catalog: parallel `list_tables` across databases with `ThreadPoolExecutor` and TTL cache
+- DuckDB engine: connection pooling — reuses a single DuckDB connection instead of creating a new one per query
+- `skip_catalog_probe` option on `InteractiveSession` for faster non-interactive execution
+- New docs: `compilation.md`, `cross-group-predicate-pushdown.md`
+
+### Changed
+- Fusion pass now merges all eligible upstream groups for multi-input joints (e.g. JOINs), not just the largest
+- Compiler adapter resolution uses a cache to avoid redundant registry lookups
+- `_resolve_engine` simplified: no longer falls back to `registry.get_compute_engine()`
+
+### Fixed
+- Quote YAML name values in property tests to prevent boolean coercion (`on` → `True`)
+
+### Performance
+- Skip history persistence for temp/ephemeral directories (prevents history.json bloat from pytest runs)
+
 ## [0.1.8] - 2026-03-06
 
 ### Fixed

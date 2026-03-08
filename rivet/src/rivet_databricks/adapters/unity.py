@@ -199,7 +199,7 @@ class DatabricksUnityAdapter(ComputeEngineAdapter):
 
     target_engine_type = "databricks"
     catalog_type = "unity"
-    capabilities = ["read", "write"]
+    capabilities = ["read", "write", "projection_pushdown", "predicate_pushdown", "limit_pushdown"]
     source = "catalog_plugin"
     source_plugin = "rivet_databricks"
 

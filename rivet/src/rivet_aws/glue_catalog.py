@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING, Any
 
 from botocore.exceptions import ClientError
@@ -10,6 +12,8 @@ from botocore.exceptions import ClientError
 from rivet_core.errors import PluginValidationError, plugin_error
 from rivet_core.models import Catalog
 from rivet_core.plugins import CatalogPlugin
+
+MAX_GLUE_WORKERS = 4
 
 logger = logging.getLogger(__name__)
 
@@ -237,6 +241,10 @@ class GlueCatalogPlugin(CatalogPlugin):
     credential_groups: dict[str, list[str]] = _CREDENTIAL_GROUPS
     env_var_hints: dict[str, str] = _ENV_VAR_HINTS
 
+    def __init__(self, cache_ttl: float = 300.0) -> None:
+        self._table_cache: dict[str, tuple[float, list[CatalogNode]]] = {}
+        self._cache_ttl = cache_ttl
+
     def validate(self, options: dict[str, Any]) -> None:
         for key in options:
             if key not in _KNOWN_OPTIONS:
@@ -367,15 +375,50 @@ class GlueCatalogPlugin(CatalogPlugin):
             raise handle_glue_error(exc, database=database, action="glue:GetTables") from exc
         return nodes
 
+    def _cache_key(self, catalog: Catalog) -> str:
+        """Build a cache key from catalog name and relevant options."""
+        database = catalog.options.get("database", "")
+        catalog_id = catalog.options.get("catalog_id", "")
+        region = catalog.options.get("region", "")
+        return f"{catalog.name}:{database}:{catalog_id}:{region}"
+
     def list_tables(self, catalog: Catalog) -> list[CatalogNode]:
+        # Check TTL cache first
+        key = self._cache_key(catalog)
+        cached = self._table_cache.get(key)
+        if cached is not None:
+            ts, nodes = cached
+            if time.monotonic() - ts < self._cache_ttl:
+                return nodes
+            # Expired — remove stale entry
+            del self._table_cache[key]
+
         database = catalog.options.get("database")
         if database:
-            return self._list_tables_in_database(catalog, database)
-        # No database configured — list tables across all databases
-        nodes: list[CatalogNode] = []
-        for db in self._list_databases(catalog):
-            nodes.extend(self._list_tables_in_database(catalog, db))
-        return nodes
+            result = self._list_tables_in_database(catalog, database)
+        else:
+            # No database configured — list tables across all databases in parallel
+            databases = self._list_databases(catalog)
+            if not databases:
+                self._table_cache[key] = (time.monotonic(), [])
+                return []
+            result = []
+            with ThreadPoolExecutor(max_workers=min(MAX_GLUE_WORKERS, len(databases))) as pool:
+                futures = {
+                    pool.submit(self._list_tables_in_database, catalog, db): db
+                    for db in databases
+                }
+                for future in as_completed(futures):
+                    db = futures[future]
+                    try:
+                        result.extend(future.result())
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed to list tables in Glue database '%s': %s", db, exc
+                        )
+
+        self._table_cache[key] = (time.monotonic(), result)
+        return result
 
     def get_schema(self, catalog: Catalog, table: str) -> ObjectSchema:
         from rivet_core.introspection import ColumnDetail, ObjectSchema

@@ -53,6 +53,7 @@ def run_execute(
         read_only=False,
         max_results=max_rows,
         loader=_make_loader(),
+        skip_catalog_probe=True,
     )
 
     try:
@@ -158,7 +159,13 @@ def _print_table(result: QueryResult) -> None:
 
     # Footer
     trunc = " (truncated)" if result.truncated else ""
-    print(f"\n({result.row_count} rows, {result.elapsed_ms:.0f} ms{trunc})")
+    stats_note = ""
+    if result.run_stats is not None:
+        rs = result.run_stats
+        engine_pct = (rs.total_engine_ms / rs.total_time_ms * 100) if rs.total_time_ms > 0 else 0
+        rivet_pct = (rs.total_rivet_ms / rs.total_time_ms * 100) if rs.total_time_ms > 0 else 0
+        stats_note = f" | engine: {rs.total_engine_ms:.0f}ms ({engine_pct:.0f}%) rivet: {rs.total_rivet_ms:.0f}ms ({rivet_pct:.0f}%)"
+    print(f"\n({result.row_count} rows, {result.elapsed_ms:.0f}ms{trunc}{stats_note})")
 
 
 def _arrow_scalar_to_python(scalar: pa.Scalar) -> object:

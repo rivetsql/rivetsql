@@ -27,8 +27,10 @@ def render_compile_json(compiled: CompiledAssembly) -> str:
 
 def render_run_json(result: ExecutionResult, compiled: CompiledAssembly) -> str:
     """Serialize ExecutionResult to JSON."""
-    data = {
+    data: dict[str, Any] = {
         "execution": asdict(result),
         "compilation": asdict(compiled),
     }
+    if result.run_stats is not None:
+        data["run_stats"] = result.run_stats.to_dict()
     return json.dumps(data, indent=2, default=_default)

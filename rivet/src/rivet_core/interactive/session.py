@@ -95,21 +95,32 @@ class InteractiveSession:
         read_only: bool = False,
         max_results: int = 10_000,
         loader: ProjectLoader | None = None,
+        skip_catalog_probe: bool = False,
     ) -> None:
         self._project_path = project_path
         self._profile_name = profile or "default"
         self._read_only = read_only
         self._max_results = max_results
         self._loader = loader
+        self._skip_catalog_probe = skip_catalog_probe
 
         # Core services
         self._material_cache = MaterialCache()
         self._query_planner = QueryPlanner()
-        self._differ = Differ()
-        self._profiler = Profiler()
-        self._completion_engine = CompletionEngine()
-        self._catalog_search = CatalogSearch()
-        self._formatter = AssemblyFormatter()
+
+        # TUI-only services — deferred when running headless (skip_catalog_probe)
+        if not skip_catalog_probe:
+            self._differ = Differ()
+            self._profiler = Profiler()
+            self._completion_engine = CompletionEngine()
+            self._catalog_search = CatalogSearch()
+            self._formatter = AssemblyFormatter()
+        else:
+            self._differ: Differ | None = None  # type: ignore[assignment, no-redef]
+            self._profiler: Profiler | None = None  # type: ignore[assignment, no-redef]
+            self._completion_engine: CompletionEngine | None = None  # type: ignore[assignment, no-redef]
+            self._catalog_search: CatalogSearch | None = None  # type: ignore[assignment, no-redef]
+            self._formatter: AssemblyFormatter | None = None  # type: ignore[assignment, no-redef]
 
         # State set by start() or init_from()
         self._assembly: CompiledAssembly | None = None
@@ -197,24 +208,30 @@ class InteractiveSession:
         )
         self._metrics["compilations"] += 1
 
-        try:
-            self._explorer = CatalogExplorer(
-                catalogs=self._catalogs,
-                engines=self._engines,
-                registry=self._registry,
-            )
-        except Exception:
-            logger.debug("Catalog explorer init failed", exc_info=True)
+        if not self._skip_catalog_probe:
+            try:
+                self._explorer = CatalogExplorer(
+                    catalogs=self._catalogs,
+                    engines=self._engines,
+                    registry=self._registry,
+                )
+            except Exception:
+                logger.debug("Catalog explorer init failed", exc_info=True)
 
-        self._query_planner = QueryPlanner(catalog_explorer=self._explorer)
+            self._query_planner = QueryPlanner(catalog_explorer=self._explorer)
+        else:
+            self._query_planner = QueryPlanner()
+
         self._metrics["startup_ms"] = (time.monotonic() - t0) * 1000
-        self._history = load_history(self._project_path)
-        self._repl_state = self._load_repl_state()
+        if not self._skip_catalog_probe:
+            self._history = load_history(self._project_path)
+            self._repl_state = self._load_repl_state()
 
     def stop(self) -> None:
         """Close connections, flush cache, save history."""
         self._material_cache.clear()
-        save_history(self._project_path, self._history)
+        if not self._skip_catalog_probe:
+            save_history(self._project_path, self._history)
         if self._start_time is not None:
             self._metrics["session_duration_ms"] = (
                 (time.monotonic() - self._start_time) * 1000
@@ -402,7 +419,7 @@ class InteractiveSession:
             from rivet_core.executor import Executor  # noqa: PLC0415
 
             executor = Executor(registry=self._registry)
-            table = executor.run_query(compiled, target_joint="__display")
+            table, run_stats = executor.run_query_with_stats(compiled, target_joint="__display")
 
             table, truncated = self._apply_truncation(table)
             elapsed = (time.monotonic() - t0) * 1000
@@ -440,6 +457,7 @@ class InteractiveSession:
                 query_plan=query_plan,
                 quality_results=None,
                 truncated=truncated,
+                run_stats=run_stats,
             )
 
             self._metrics["queries"] += 1

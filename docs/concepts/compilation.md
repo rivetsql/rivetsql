@@ -179,6 +179,26 @@ Fusion is broken by:
 - A Python joint between two SQL joints
 - An engine instance change
 - An explicit `eager: true` flag
+- An assertion (quality check) on the upstream joint
+
+#### Multi-Upstream Fusion
+
+When a multi-input joint such as a SQL JOIN references several upstream joints, the optimizer merges all eligible upstream groups into a single fused group. This avoids wasteful standalone executions — for example, a bare `SELECT * FROM ...` adapter read for a source whose data is already available server-side inside the fused query.
+
+```mermaid
+graph LR
+    S1[customers<br/><small>source</small>] --> J[customer_orders<br/><small>sql JOIN</small>]
+    S2[orders<br/><small>source</small>] --> J
+    J --> K[sink<br/><small>sink</small>]
+
+    style S1 fill:#6c63ff,color:#fff,stroke:none
+    style S2 fill:#6c63ff,color:#fff,stroke:none
+    style J fill:#6c63ff,color:#fff,stroke:none
+```
+
+In the diagram above, both source joints and the JOIN are fused into a single CTE chain executed as one query. Without multi-upstream fusion, each source would run as a separate standalone group.
+
+The same fusion-breaking conditions apply to each upstream independently — if one upstream is on a different engine or has `eager: true`, only that upstream stays in its own group while the remaining eligible upstreams are still merged.
 
 ### Execution Order
 

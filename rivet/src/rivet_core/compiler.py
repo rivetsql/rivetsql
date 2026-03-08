@@ -23,6 +23,7 @@ from rivet_core.optimizer import (
     FusionJoint,
     _compose_cte,
     _compose_temp_view,
+    cross_group_pushdown_pass,
     fusion_pass,
     pushdown_pass,
 )
@@ -171,20 +172,19 @@ class CompiledAssembly:
 def _resolve_engine(
     joint: Joint,
     engines: dict[str, ComputeEngine],
-    registry: PluginRegistry,
     default_engine: str | None,
 ) -> tuple[str, str, str | None]:
     """Resolve engine for a joint. Returns (engine_name, engine_type, resolution_path) or raises."""
     # Joint-level override
     if joint.engine:
-        engine = engines.get(joint.engine) or registry.get_compute_engine(joint.engine)
+        engine = engines.get(joint.engine)
         if engine:
             return engine.name, engine.engine_type, "joint_override"
         return joint.engine, "", "joint_override"  # will error on adapter lookup
 
     # Profile-level default
     if default_engine:
-        engine = engines.get(default_engine) or registry.get_compute_engine(default_engine)
+        engine = engines.get(default_engine)
         if engine:
             return engine.name, engine.engine_type, "project_default"
         return default_engine, "", "project_default"
@@ -286,13 +286,23 @@ def _resolve_adapter(
     joint_name: str,
     registry: PluginRegistry,
     errors: list[RivetError],
+    adapter_cache: dict[tuple[str, str], str | None] | None = None,
 ) -> str | None:
     """Resolve adapter for an engine/catalog pair. Returns adapter key or None."""
     if not engine_type or not catalog_type:
         return None
+
+    key = (engine_type, catalog_type)
+    if adapter_cache is not None and key in adapter_cache:
+        return adapter_cache[key]
+
     adapter = registry.get_adapter(engine_type, catalog_type)
     if adapter:
-        return f"{engine_type}:{catalog_type}"
+        result = f"{engine_type}:{catalog_type}"
+        if adapter_cache is not None:
+            adapter_cache[key] = result
+        return result
+
     caps = registry.resolve_capabilities(engine_type, catalog_type)
     if caps is None and engine_name:
         errors.append(
@@ -310,6 +320,9 @@ def _resolve_adapter(
                 f"or use an engine that supports this catalog type.",
             )
         )
+
+    if adapter_cache is not None:
+        adapter_cache[key] = None
     return None
 
 
@@ -443,6 +456,7 @@ def _compile_joint(
     warnings: list[str],
     introspect: bool = True,
     introspect_timeout: float = 5.0,
+    adapter_cache: dict[tuple[str, str], str | None] | None = None,
 ) -> CompiledJoint:
     """Compile a single joint: resolve engine, adapter, parse SQL, validate."""
     catalog = catalog_map.get(joint.catalog) if joint.catalog else None
@@ -451,7 +465,7 @@ def _compile_joint(
 
     # Engine resolution
     engine_name, engine_type, resolution = _resolve_engine(
-        joint, engine_map, registry, default_engine
+        joint, engine_map, default_engine
     )
     if not engine_name:
         errors.append(
@@ -468,13 +482,14 @@ def _compile_joint(
         resolution = ""
 
     if engine_name and not engine_type:
-        eng = engine_map.get(engine_name) or registry.get_compute_engine(engine_name)
+        eng = engine_map.get(engine_name)
         if eng:
             engine_type = eng.engine_type
 
     # Adapter lookup
     adapter_name = _resolve_adapter(
-        engine_type, catalog_type, engine_name, joint.name, registry, errors
+        engine_type, catalog_type, engine_name, joint.name, registry, errors,
+        adapter_cache=adapter_cache,
     )
 
     # Introspection for sources
@@ -592,7 +607,7 @@ def _build_compiled_adapters(
             used_keys.add((cj.engine, cj.catalog_type))
     result: list[CompiledAdapter] = []
     for et, ct in used_keys:
-        eng = engine_map.get(et) or registry.get_compute_engine(et)
+        eng = engine_map.get(et)
         e_type = eng.engine_type if eng else et
         adapter = registry.get_adapter(e_type, ct)
         if adapter:
@@ -679,7 +694,7 @@ def _discover_resolver(
 ) -> ReferenceResolver | None:
     """Find the first available reference resolver from engine plugins."""
     for cj in compiled_joints:
-        eng = engine_map.get(cj.engine) or registry.get_compute_engine(cj.engine)
+        eng = engine_map.get(cj.engine)
         if eng:
             plugin = registry.get_engine_plugin(eng.engine_type)
             if plugin:
@@ -752,21 +767,30 @@ def _resolve_references(
                 )
     return result
 
+def _build_downstream_map(cj_map: dict[str, CompiledJoint]) -> dict[str, list[str]]:
+    """Build a downstream dependency map in O(V+E).
+
+    For each joint, collect the list of joints that depend on it by iterating
+    each joint's upstream list once.
+    """
+    downstream: dict[str, list[str]] = {jn: [] for jn in cj_map}
+    for cj in cj_map.values():
+        for up in cj.upstream:
+            if up in downstream:
+                downstream[up].append(cj.name)
+    return downstream
+
+
 
 def _determine_materializations(
     cj_map: dict[str, CompiledJoint],
     joint_to_group: dict[str, str],
     engine_map: dict[str, ComputeEngine],
-    registry: PluginRegistry,
     default_materialization_strategy: str,
 ) -> list[Materialization]:
     """Determine materialization points between joints."""
     VALID_MATERIALIZATION = {"arrow", "temp_table"}
-    downstream_map: dict[str, list[str]] = {jn: [] for jn in cj_map}
-    for cj in cj_map.values():
-        for up in cj.upstream:
-            if up in downstream_map:
-                downstream_map[up].append(cj.name)
+    downstream_map = _build_downstream_map(cj_map)
 
     materializations: list[Materialization] = []
     for cj in cj_map.values():
@@ -788,8 +812,8 @@ def _determine_materializations(
                 trigger = "multi_consumer"
                 detail = f"Joint '{cj.name}' has {len(downstream_map[cj.name])} downstream consumers"
             else:
-                eng_from = engine_map.get(cj.engine) or registry.get_compute_engine(cj.engine)
-                eng_to = engine_map.get(ds.engine) or registry.get_compute_engine(ds.engine)
+                eng_from = engine_map.get(cj.engine)
+                eng_to = engine_map.get(ds.engine)
                 if eng_from and eng_to and eng_from.name != eng_to.name:
                     trigger = "engine_instance_change"
                     detail = f"Engine changes from '{eng_from.name}' to '{eng_to.name}'"
@@ -822,6 +846,7 @@ def _detect_engine_boundaries(
     boundary_joints_map: dict[tuple[str, str], list[str]] = {}
 
     for group in fused_groups:
+        group_et = group.engine_type
         for jn in group.entry_joints or group.joints:
             cj = cj_map.get(jn)
             if not cj:
@@ -830,13 +855,15 @@ def _detect_engine_boundaries(
                 up_gid = joint_to_group.get(up)
                 if not up_gid or up_gid == group.id:
                     continue
-                up_group = group_map.get(up_gid)
-                if not up_group or up_group.engine_type == group.engine_type:
+                # up_gid is guaranteed to be in group_map since it came from
+                # joint_to_group which is built from the same fused_groups list.
+                up_et = group_map[up_gid].engine_type
+                if up_et == group_et:
                     continue
                 key = (up_gid, group.id)
-                boundary_joints_map.setdefault(key, [])
-                if up not in boundary_joints_map[key]:
-                    boundary_joints_map[key].append(up)
+                bj = boundary_joints_map.setdefault(key, [])
+                if up not in bj:
+                    bj.append(up)
 
     boundaries: list[EngineBoundary] = []
     for (prod_gid, cons_gid), joints in boundary_joints_map.items():
@@ -974,32 +1001,86 @@ def _compile_all_joints(
     introspection_failed = 0
     introspection_skipped = 0
 
+    # ── Submit all source introspections concurrently via a shared pool ──
+    introspection_futures: dict[str, Any] = {}
+    source_joints: list[str] = []
+    if introspect:
+        for jn in topo_order:
+            joint = pruned.joints[jn]
+            if joint.joint_type == "source":
+                source_joints.append(jn)
+
+    pool: ThreadPoolExecutor | None = None
+    if introspect and source_joints:
+        pool = ThreadPoolExecutor(max_workers=min(8, len(source_joints)))
+        for jn in source_joints:
+            joint = pruned.joints[jn]
+            catalog = catalog_map.get(joint.catalog) if joint.catalog else None
+            catalog_type = catalog.type if catalog else None
+            catalog_plugin = registry.get_catalog_plugin(catalog_type) if catalog_type else None
+            if catalog and catalog_plugin:
+                future = pool.submit(
+                    _do_introspect, joint, catalog, catalog_plugin, warnings
+                )
+                introspection_futures[jn] = future
+
+    # ── Compile joints (introspection disabled inline; results attached after) ──
     introspected_sources: set[str] = set()
     compiled_joints: list[CompiledJoint] = []
-    for jn in topo_order:
-        joint = pruned.joints[jn]
-        is_source = joint.joint_type == "source"
+    adapter_cache: dict[tuple[str, str], str | None] = {}
+    try:
+        for jn in topo_order:
+            joint = pruned.joints[jn]
+            is_source = joint.joint_type == "source"
 
-        if is_source and not introspect:
-            introspection_skipped += 1
-        elif is_source and introspect:
-            introspection_attempted += 1
+            if is_source and not introspect:
+                introspection_skipped += 1
+            elif is_source and introspect:
+                introspection_attempted += 1
 
-        warnings_before = len(warnings)
-        cj = _compile_joint(
-            joint, catalog_map, engine_map, registry,
-            default_engine, parser, upstream_schemas, errors, warnings,
-            introspect=introspect, introspect_timeout=introspect_timeout,
-        )
+            # Compile without inline introspection — we handle it from the pool
+            cj = _compile_joint(
+                joint, catalog_map, engine_map, registry,
+                default_engine, parser, upstream_schemas, errors, warnings,
+                introspect=False, introspect_timeout=introspect_timeout,
+                adapter_cache=adapter_cache,
+            )
 
-        if is_source and introspect:
-            if cj.output_schema is not None:
-                introspection_succeeded += 1
-                introspected_sources.add(cj.name)
-            elif len(warnings) > warnings_before:
-                introspection_failed += 1
+            # Attach introspection results from the shared pool
+            if is_source and introspect and jn in introspection_futures:
+                try:
+                    schema, stats = introspection_futures[jn].result(
+                        timeout=introspect_timeout
+                    )
+                    if schema is not None or stats is not None:
+                        cj = replace(
+                            cj,
+                            output_schema=schema or cj.output_schema,
+                            source_stats=stats if stats is not None else cj.source_stats,
+                        )
+                except TimeoutError:
+                    warnings.append(
+                        f"Introspection timed out for source '{jn}' "
+                        f"after {introspect_timeout}s"
+                    )
+                except Exception as exc:
+                    warnings.append(
+                        f"Introspection failed for source '{jn}': {exc}"
+                    )
 
-        compiled_joints.append(cj)
+            if is_source and introspect:
+                if cj.output_schema is not None:
+                    introspection_succeeded += 1
+                    introspected_sources.add(cj.name)
+                    # Propagate schema for downstream SQL inference
+                    upstream_schemas[cj.name] = cj.output_schema
+                else:
+                    introspection_failed += 1
+
+            compiled_joints.append(cj)
+    finally:
+        if pool is not None:
+            pool.shutdown(wait=False)
 
     compiled_joints = _assign_schema_confidence(compiled_joints, introspected_sources)
     cj_map: dict[str, CompiledJoint] = {cj.name: cj for cj in compiled_joints}
@@ -1031,7 +1112,7 @@ def _run_optimizer_passes(
     # Fusion pass
     fusion_joints: list[FusionJoint] = []
     for cj in compiled_joints:
-        eng = engine_map.get(cj.engine) or registry.get_compute_engine(cj.engine)
+        eng = engine_map.get(cj.engine)
         et = eng.engine_type if eng else ""
         fusion_joints.append(
             FusionJoint(
@@ -1057,7 +1138,7 @@ def _run_optimizer_passes(
     }
     cap_map: dict[str, list[str]] = {}
     for cj in compiled_joints:
-        eng = engine_map.get(cj.engine) or registry.get_compute_engine(cj.engine)
+        eng = engine_map.get(cj.engine)
         et = eng.engine_type if eng else ""
         if et and cj.catalog_type:
             key = f"{et}:{cj.catalog_type}"
@@ -1067,6 +1148,24 @@ def _run_optimizer_passes(
                     cap_map[key] = caps
 
     fused_groups = pushdown_pass(fused_groups, logical_plans, cap_map, catalog_types_map)
+
+    # Cross-group predicate pushdown
+    fused_groups, xgroup_results = cross_group_pushdown_pass(
+        fused_groups, cj_map, cap_map, catalog_types_map,
+    )
+    # Attach cross-group optimization results to the relevant compiled joints
+    for result in xgroup_results:
+        # Extract the exit joint name from the detail string for consumer-side results,
+        # or the target joint name for applied/not_applicable results.
+        # Results reference joints in their detail — attach to all joints in cj_map
+        # that are mentioned. For simplicity, find the joint name after "source joint '"
+        # or "exit joint '" in the detail.
+        for jn, cj in cj_map.items():
+            if f"'{jn}'" in result.detail:
+                cj_map[jn] = replace(
+                    cj, optimizations=[*cj.optimizations, result]
+                )
+                break
 
     # Strategy + reference resolution
     fused_groups = _resolve_strategy(fused_groups, cj_map, default_fusion_strategy, errors)
@@ -1089,7 +1188,7 @@ def _determine_materializations_and_boundaries(
 ) -> tuple[list[Materialization], list[EngineBoundary], list[FusedGroup]]:
     """Steps 8–9b: Materializations, engine boundaries, group mat-strategy."""
     materializations = _determine_materializations(
-        cj_map, joint_to_group, engine_map, registry, default_materialization_strategy,
+        cj_map, joint_to_group, engine_map, default_materialization_strategy,
     )
     engine_boundaries = _detect_engine_boundaries(
         fused_groups, cj_map, joint_to_group, registry, warnings,
@@ -1205,6 +1304,18 @@ def compile(
     catalog_map: dict[str, Catalog] = {c.name: c for c in catalogs}
     engine_map: dict[str, ComputeEngine] = {e.name: e for e in engines}
 
+    # Build unified engine lookup map: merge registry engines for all names
+    # referenced in the assembly that aren't already in the provided engines.
+    for name in {j.engine for j in assembly.joints.values() if j.engine}:
+        if name not in engine_map:
+            eng = registry.get_compute_engine(name)
+            if eng:
+                engine_map[name] = eng
+    if default_engine and default_engine not in engine_map:
+        eng = registry.get_compute_engine(default_engine)
+        if eng:
+            engine_map[default_engine] = eng
+
     if default_engine is None and engines:
         default_engine = engines[0].name
 
@@ -1249,4 +1360,3 @@ def compile(
         introspection_failed=introspection_failed,
         introspection_skipped=introspection_skipped,
     )
-

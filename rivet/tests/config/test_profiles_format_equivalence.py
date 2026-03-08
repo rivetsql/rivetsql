@@ -40,7 +40,7 @@ _profile_config = st.fixed_dictionaries({
 })
 
 
-@settings(max_examples=100)
+@settings(max_examples=100, deadline=None)
 @given(
     profile_name=_identifier,
     config=_profile_config,

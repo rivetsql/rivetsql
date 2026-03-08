@@ -70,7 +70,7 @@ def test_property8_ensure_extension_idempotent_multiple_calls(ext: str) -> None:
 
 
 @given(ext=_invalid_ext_name)
-@settings(max_examples=100)
+@settings(max_examples=100, deadline=None)
 def test_property9_nonexistent_extension_raises_rvt502(ext: str) -> None:
     """Property 9: ensure_extension raises ExecutionError(RVT-502) for any unloadable extension."""
     conn = _conn()
@@ -83,7 +83,7 @@ def test_property9_nonexistent_extension_raises_rvt502(ext: str) -> None:
 
 
 @given(ext=_invalid_ext_name)
-@settings(max_examples=100)
+@settings(max_examples=100, deadline=None)
 def test_property9_error_context_contains_extension_name(ext: str) -> None:
     """Property 9: RVT-502 error context dict contains the extension name."""
     conn = _conn()

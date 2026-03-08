@@ -70,6 +70,7 @@ class _S3DuckDBMaterializedRef(MaterializedRef):
         self._catalog_options = catalog_options
         self._sql = sql
         self._table = table
+        self._cached_table: pyarrow.Table | None = None
 
     def _execute(self) -> pyarrow.Table:
         conn = duckdb.connect(":memory:")
@@ -78,7 +79,7 @@ class _S3DuckDBMaterializedRef(MaterializedRef):
             _configure_s3_secret(conn, self._catalog_options)
 
             if self._sql:
-                return conn.execute(self._sql).arrow().read_all()
+                return conn.execute(self._sql).arrow()
 
             s3_path = _build_s3_path(self._catalog_options, self._table)
             fmt = self._catalog_options.get("format", "parquet")
@@ -95,7 +96,7 @@ class _S3DuckDBMaterializedRef(MaterializedRef):
                         format=fmt,
                     )
                 )
-            return conn.execute(f"SELECT * FROM {reader}('{s3_path}')").arrow().read_all()
+            return conn.execute(f"SELECT * FROM {reader}('{s3_path}')").arrow()
         except ExecutionError:
             raise
         except Exception as exc:
@@ -114,11 +115,13 @@ class _S3DuckDBMaterializedRef(MaterializedRef):
             conn.close()
 
     def to_arrow(self) -> pyarrow.Table:
-        return self._execute()
+        if self._cached_table is None:
+            self._cached_table = self._execute()
+        return self._cached_table
 
     @property
     def schema(self) -> Schema:
-        table = self._execute()
+        table = self.to_arrow()
         return Schema(
             columns=[
                 Column(name=f.name, type=str(f.type), nullable=f.nullable)
@@ -128,7 +131,7 @@ class _S3DuckDBMaterializedRef(MaterializedRef):
 
     @property
     def row_count(self) -> int:
-        return self._execute().num_rows  # type: ignore[no-any-return]
+        return self.to_arrow().num_rows  # type: ignore[no-any-return]
 
     @property
     def size_bytes(self) -> int | None:

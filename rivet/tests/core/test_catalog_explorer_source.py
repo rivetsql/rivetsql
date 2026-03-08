@@ -232,6 +232,9 @@ class TestGenerateSourceErrors:
 _YAML_RESERVED = frozenset({
     "null", "true", "false", "yes", "no", "on", "off",
     "NULL", "True", "False", "YES", "NO", "ON", "OFF",
+    "TRUE", "FALSE",
+    "Null", "Yes", "No", "On", "Off",
+    "y", "Y", "n", "N",
     "~",
 })
 

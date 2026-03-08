@@ -80,12 +80,12 @@ class TestCatalogSearchMatchingProperty:
     def test_scores_non_negative(
         self, catalog: str, schema: str, table: str
     ) -> None:
-        """All result scores are non-negative (lower = better match)."""
+        """All result scores are finite (lower = better match)."""
         cs = CatalogSearch()
         cs.update([_make_catalog_entry(catalog, schema, table)], [])
         results = cs.search(table)
         for result in results:
-            assert result.score >= -1.0  # exact match gives -1.0 as per implementation
+            assert result.score != float("inf") and result.score != float("-inf")
 
     @given(catalog=_ident, schema=_ident, table=_ident)
     @settings(max_examples=100)

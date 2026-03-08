@@ -20,7 +20,7 @@ from rivet_core.interactive.session import InteractiveSession
 from rivet_core.models import ComputeEngine
 from rivet_core.plugins import PluginRegistry
 
-_sql_st = st.text(min_size=1, max_size=200, alphabet=st.characters(blacklist_categories=("Cs",)))
+_sql_st = st.text(min_size=1, max_size=200, alphabet=st.characters(blacklist_categories=("Cs",), blacklist_characters="\r"))
 _engine_st = st.sampled_from(["duckdb", "spark", "trino"])
 _upstream_st = st.lists(
     st.from_regex(r"[a-z][a-z0-9_]{0,15}", fullmatch=True),

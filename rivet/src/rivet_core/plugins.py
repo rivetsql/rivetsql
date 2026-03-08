@@ -236,6 +236,11 @@ class PluginRegistry:
         self._cross_joint_adapters: dict[tuple[str, str], CrossJointAdapter] = {}
         self._sources: dict[str, SourcePlugin] = {}
         self._sinks: dict[str, SinkPlugin] = {}
+        self._discovered: bool = False
+    @property
+    def is_discovered(self) -> bool:
+        """Return whether plugin discovery has already been performed."""
+        return self._discovered
 
     # ── Registration ──────────────────────────────────────────────────
 
@@ -438,6 +443,9 @@ class PluginRegistry:
 
         Both patterns are loaded in alphabetical order by entry point name.
         """
+        if self._discovered:
+            return
+
         # ── Monolithic plugins (rivet.plugins) ───────────────────────
         eps = sorted(entry_points(group="rivet.plugins"), key=lambda ep: ep.name)
         for ep in eps:
@@ -463,6 +471,8 @@ class PluginRegistry:
                         f"Failed to load plugin entry point '{ep.name}' "
                         f"from group '{group}': {exc}"
                     ) from exc
+
+        self._discovered = True
 
 
 class PluginRegistrationError(Exception):

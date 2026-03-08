@@ -235,8 +235,8 @@ def test_fusion_pass_multi_consumer_barrier() -> None:
 
 def test_fusion_pass_diamond_a_standalone() -> None:
     """Diamond: A→B, A→C, B→D, C→D — A has 2 consumers so A is standalone.
-    B and C each have 1 consumer (D), so D can fuse with the largest eligible
-    upstream group (B or C). Result: [A], [B, D] or [A], [C, D] + [C] or [B].
+    B and C each have 1 consumer (D), so D merges both B and C into one group.
+    Result: [A], [B, C, D].
     """
     joints = [
         _make_joint("a", engine="eng1", sql="SELECT 1"),
@@ -245,18 +245,18 @@ def test_fusion_pass_diamond_a_standalone() -> None:
         _make_joint("d", upstream=["b", "c"], engine="eng1", sql="SELECT 4"),
     ]
     groups = fusion_pass(joints)
-    # A is standalone (2 consumers). D fuses with one of B or C.
-    assert len(groups) == 3
+    # A is standalone (2 consumers). D merges both B and C.
+    assert len(groups) == 2
     # A must be its own group
     group_a = next(g for g in groups if "a" in g.joints)
     assert group_a.joints == ["a"]
-    # D must be in a group with either B or C
+    # D must be in a group with both B and C
     group_d = next(g for g in groups if "d" in g.joints)
-    assert len(group_d.joints) == 2
+    assert set(group_d.joints) == {"b", "c", "d"}
 
 
-def test_fusion_pass_multi_upstream_picks_largest_group() -> None:
-    """When a joint has multiple upstreams, pick the largest eligible group."""
+def test_fusion_pass_multi_upstream_merges_all_eligible() -> None:
+    """When a joint has multiple upstreams, merge ALL eligible groups."""
     joints = [
         _make_joint("a", engine="eng1", sql="SELECT 1"),
         _make_joint("b", upstream=["a"], engine="eng1", sql="SELECT 2"),
@@ -264,12 +264,136 @@ def test_fusion_pass_multi_upstream_picks_largest_group() -> None:
         _make_joint("d", upstream=["b", "c"], engine="eng1", sql="SELECT 4"),
     ]
     groups = fusion_pass(joints)
-    # a→b is a group of 2; c is a group of 1
-    # d should fuse with the larger group (a,b)
+    # All eligible upstreams should be merged into one group with d
     group_with_d = next(g for g in groups if "d" in g.joints)
     assert "a" in group_with_d.joints
     assert "b" in group_with_d.joints
+    assert "c" in group_with_d.joints
     assert "d" in group_with_d.joints
+    # Only one group total since everything is on the same engine
+    assert len(groups) == 1
+
+# ---------------------------------------------------------------------------
+# Integration & edge-case tests for multi-upstream fusion
+# ---------------------------------------------------------------------------
+
+
+def test_fusion_pass_two_sources_into_join() -> None:
+    """Motivating example: two Databricks source joints feed a SQL JOIN on the same engine.
+
+    The fusion pass should produce a single fused group containing both sources
+    and the join, with no wasteful standalone SELECT * FROM ... groups.
+    Validates: Requirements 7.1, 7.2, 7.3
+    """
+    src_orders = _make_joint(
+        "orders_src",
+        engine="databricks_prod",
+        engine_type="databricks",
+        joint_type="source",
+        adapter="unity",
+        sql="SELECT * FROM catalog.schema.orders",
+    )
+    src_customers = _make_joint(
+        "customers_src",
+        engine="databricks_prod",
+        engine_type="databricks",
+        joint_type="source",
+        adapter="unity",
+        sql="SELECT * FROM catalog.schema.customers",
+    )
+    join_joint = _make_joint(
+        "orders_customers_join",
+        upstream=["orders_src", "customers_src"],
+        engine="databricks_prod",
+        engine_type="databricks",
+        joint_type="sql",
+        sql="SELECT o.*, c.name FROM orders_src o JOIN customers_src c ON o.cust_id = c.id",
+    )
+    sink = _make_joint(
+        "output_sink",
+        upstream=["orders_customers_join"],
+        engine="local_duckdb",
+        engine_type="duckdb",
+        joint_type="sink",
+        sql="SELECT * FROM orders_customers_join",
+    )
+
+    groups = fusion_pass([src_orders, src_customers, join_joint, sink])
+
+    # The two sources and the join should be in a single fused group
+    fused = next(g for g in groups if "orders_customers_join" in g.joints)
+    assert "orders_src" in fused.joints
+    assert "customers_src" in fused.joints
+    assert "orders_customers_join" in fused.joints
+    assert fused.engine == "databricks_prod"
+
+    # Both sources are entry joints (no in-group upstream)
+    assert set(fused.entry_joints) == {"orders_src", "customers_src"}
+    # The join is the exit joint (its downstream sink is outside the group)
+    assert fused.exit_joints == ["orders_customers_join"]
+
+    # No standalone source groups — only the fused group + the sink group
+    assert len(groups) == 2
+    # Verify no group is a wasteful standalone source SELECT *
+    for g in groups:
+        if g.id != fused.id:
+            assert g.joints == ["output_sink"]
+
+
+def test_fusion_pass_zero_eligible_upstreams() -> None:
+    """Multi-input joint where all upstreams are on different engines.
+
+    The joint should be placed in its own standalone group.
+    Validates: Requirement 1.4
+    """
+    src_a = _make_joint("src_a", engine="eng_a", engine_type="databricks", sql="SELECT 1")
+    src_b = _make_joint("src_b", engine="eng_b", engine_type="postgres", sql="SELECT 2")
+    join_j = _make_joint(
+        "join_j",
+        upstream=["src_a", "src_b"],
+        engine="eng_c",
+        engine_type="duckdb",
+        sql="SELECT * FROM src_a JOIN src_b ON src_a.id = src_b.id",
+    )
+
+    groups = fusion_pass([src_a, src_b, join_j])
+
+    # Each joint should be in its own standalone group (3 groups total)
+    assert len(groups) == 3
+    join_group = next(g for g in groups if "join_j" in g.joints)
+    assert join_group.joints == ["join_j"]
+    assert join_group.engine == "eng_c"
+
+
+def test_fusion_pass_duplicate_upstream_self_join() -> None:
+    """A joint that references the same upstream twice (self-join).
+
+    Should fuse correctly with no duplicate group entries.
+    Validates: Requirement 2.1
+    """
+    src = _make_joint("src", engine="eng1", engine_type="duckdb", sql="SELECT * FROM t")
+    self_join = _make_joint(
+        "self_join",
+        upstream=["src", "src"],
+        engine="eng1",
+        engine_type="duckdb",
+        sql="SELECT a.*, b.val FROM src a JOIN src b ON a.id = b.parent_id",
+    )
+
+    groups = fusion_pass([src, self_join])
+
+    # Both should be fused into a single group
+    assert len(groups) == 1
+    group = groups[0]
+    assert "src" in group.joints
+    assert "self_join" in group.joints
+    # No duplicate entries for src
+    assert group.joints.count("src") == 1
+    assert group.joints.count("self_join") == 1
+    # src is entry, self_join is exit
+    assert group.entry_joints == ["src"]
+    assert group.exit_joints == ["self_join"]
+
 
 
 # ---------------------------------------------------------------------------

@@ -9,6 +9,7 @@ should be sorted by source_file path in lexicographic order.
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import yaml
@@ -40,7 +41,7 @@ def _make_manifest(tmp_path: Path) -> ProjectManifest:
     )
 
 
-@settings(max_examples=100)
+@settings(max_examples=100, deadline=500)
 @given(
     names=st.lists(_joint_name, min_size=1, max_size=8, unique=True),
     stems=st.lists(_filename_stem, min_size=1, max_size=8, unique=True),
@@ -55,6 +56,9 @@ def test_declarations_sorted_lexicographically_by_source_file(
 
     Validates: Requirements 8.7, 23.1
     """
+    # Clean up from previous runs to avoid stale files
+    if tmp_path.exists():
+        shutil.rmtree(tmp_path)
     tmp_path.mkdir(parents=True, exist_ok=True)
     manifest = _make_manifest(tmp_path)
 

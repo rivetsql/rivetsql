@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rivetsql"
-version = "0.1.8"
+version = "0.1.9"
 description = "Core SQL pipeline framework — joints, engines, catalogs"
 requires-python = ">=3.11"
 license = "MIT"
@@ -35,19 +35,19 @@ Repository = "https://github.com/rivetsql/rivetsql"
 Changelog = "https://github.com/rivetsql/rivetsql/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
-duckdb = ["rivetsql-duckdb==0.1.8"]
-polars = ["rivetsql-polars==0.1.8"]
-pyspark = ["rivetsql-pyspark==0.1.8"]
-postgres = ["rivetsql-postgres==0.1.8"]
-aws = ["rivetsql-aws==0.1.8"]
-databricks = ["rivetsql-databricks==0.1.8"]
+duckdb = ["rivetsql-duckdb==0.1.9"]
+polars = ["rivetsql-polars==0.1.9"]
+pyspark = ["rivetsql-pyspark==0.1.9"]
+postgres = ["rivetsql-postgres==0.1.9"]
+aws = ["rivetsql-aws==0.1.9"]
+databricks = ["rivetsql-databricks==0.1.9"]
 all = [
-    "rivetsql-duckdb==0.1.8",
-    "rivetsql-polars==0.1.8",
-    "rivetsql-pyspark==0.1.8",
-    "rivetsql-postgres==0.1.8",
-    "rivetsql-aws==0.1.8",
-    "rivetsql-databricks==0.1.8",
+    "rivetsql-duckdb==0.1.9",
+    "rivetsql-polars==0.1.9",
+    "rivetsql-pyspark==0.1.9",
+    "rivetsql-postgres==0.1.9",
+    "rivetsql-aws==0.1.9",
+    "rivetsql-databricks==0.1.9",
 ]
 dev = [
     "pytest>=7.0",

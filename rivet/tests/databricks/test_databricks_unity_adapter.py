@@ -50,7 +50,7 @@ class TestStaticAttributes:
     def test_capabilities(self):
         from rivet_databricks.adapters.unity import DatabricksUnityAdapter
 
-        assert DatabricksUnityAdapter.capabilities == ["read", "write"]
+        assert DatabricksUnityAdapter.capabilities == ["read", "write", "projection_pushdown", "predicate_pushdown", "limit_pushdown"]
 
     def test_source(self):
         from rivet_databricks.adapters.unity import DatabricksUnityAdapter

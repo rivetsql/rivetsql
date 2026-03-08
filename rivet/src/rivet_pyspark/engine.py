@@ -37,16 +37,20 @@ class SparkDataFrameMaterializedRef(MaterializedRef):
 
     def __init__(self, df: Any) -> None:
         self._df = df
+        self._cached_table: pyarrow.Table | None = None
 
     def to_arrow(self) -> pyarrow.Table:
-        # Prefer toArrow() (Spark >= 3.3), fall back to toPandas()
-        if hasattr(self._df, "toArrow"):
-            result = self._df.toArrow()
-            # Spark 4.0 / Spark Connect returns RecordBatchReader, not Table
-            if isinstance(result, pyarrow.RecordBatchReader):
-                return result.read_all()
-            return result
-        return _pandas_df_to_arrow(self._df.toPandas())
+        if self._cached_table is None:
+            # Prefer toArrow() (Spark >= 3.3), fall back to toPandas()
+            if hasattr(self._df, "toArrow"):
+                result = self._df.toArrow()
+                # Spark 4.0 / Spark Connect returns RecordBatchReader, not Table
+                if isinstance(result, pyarrow.RecordBatchReader):
+                    result = result.read_all()
+                self._cached_table = result
+            else:
+                self._cached_table = _pandas_df_to_arrow(self._df.toPandas())
+        return self._cached_table
 
     @property
     def schema(self) -> Any:
@@ -61,6 +65,8 @@ class SparkDataFrameMaterializedRef(MaterializedRef):
 
     @property
     def row_count(self) -> int:
+        if self._cached_table is not None:
+            return self._cached_table.num_rows  # type: ignore[no-any-return]
         return self._df.count()  # type: ignore[no-any-return]
 
     @property

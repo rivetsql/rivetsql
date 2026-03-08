@@ -49,6 +49,20 @@ def _make_loader() -> Any:
     from rivet_config import load_config  # noqa: PLC0415
     from rivet_core import Assembly, Catalog, ComputeEngine, PluginRegistry  # noqa: PLC0415
 
+    # Map catalog/engine types to the entry-point name that provides them.
+    _TYPE_TO_PLUGIN: dict[str, str] = {
+        # catalog types
+        "unity": "databricks",
+        "databricks": "databricks",
+        "glue": "aws",
+        "s3": "aws",
+        "duckdb": "duckdb",
+        "postgres": "postgres",
+        # engine types (same name as entry point)
+        "pyspark": "pyspark",
+        "polars": "polars",
+    }
+
     class _BridgeProjectLoader:
         """ProjectLoader implementation using config + bridge."""
 
@@ -62,7 +76,20 @@ def _make_loader() -> Any:
 
             registry = PluginRegistry()
             registry.register_builtins()
-            register_optional_plugins(registry)
+
+            # Determine which plugins are actually needed by this profile.
+            needed: set[str] | None = None
+            if config_result.profile is not None:
+                needed = set()
+                for cat_cfg in config_result.profile.catalogs.values():
+                    needed.add(_TYPE_TO_PLUGIN.get(cat_cfg.type, cat_cfg.type))
+                for eng_cfg in config_result.profile.engines:
+                    needed.add(_TYPE_TO_PLUGIN.get(eng_cfg.type, eng_cfg.type))
+
+            register_optional_plugins(
+                registry,
+                only=frozenset(needed) if needed is not None else None,
+            )
 
             bridge_result = build_assembly(config_result, registry)
             default_engine = (

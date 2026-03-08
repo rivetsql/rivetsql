@@ -50,6 +50,7 @@ from rivet_core.plugins import (
     PluginRegistry,
     UpstreamResolution,
 )
+from rivet_core.stats import RunStats, StatsCollector
 from rivet_core.strategies import (
     ArrowMaterialization,
     MaterializationContext,
@@ -119,6 +120,125 @@ def _merge_source_limit_into_pushdown(
     )
 
 
+def _merge_cross_group_predicates(
+    pushdown: PushdownPlan | None,
+    group: FusedGroup,
+    joint_name: str,
+) -> PushdownPlan | None:
+    """Merge cross-group predicates from ``group.per_joint_predicates`` into *pushdown*.
+
+    If the group has cross-group predicates targeting *joint_name*, they are
+    appended to the pushed predicate list.  If *pushdown* is ``None`` and there
+    are cross-group predicates, a new ``PushdownPlan`` is created with those
+    predicates as the only pushed entries.  When no cross-group predicates
+    exist for the joint, *pushdown* is returned unchanged.
+    """
+    xg_preds = group.per_joint_predicates.get(joint_name)
+    if not xg_preds:
+        return pushdown
+
+    if pushdown is None:
+        return PushdownPlan(
+            predicates=PredicatePushdownResult(pushed=list(xg_preds), residual=[]),
+            projections=ProjectionPushdownResult(pushed_columns=None, reason=None),
+            limit=LimitPushdownResult(pushed_limit=None, residual_limit=None, reason=None),
+            casts=CastPushdownResult(pushed=[], residual=[]),
+        )
+
+    merged_pushed = list(pushdown.predicates.pushed) + list(xg_preds)
+    return PushdownPlan(
+        predicates=PredicatePushdownResult(pushed=merged_pushed, residual=pushdown.predicates.residual),
+        projections=pushdown.projections,
+        limit=pushdown.limit,
+        casts=pushdown.casts,
+    )
+
+def _merge_cross_group_projections(
+    pushdown: PushdownPlan | None,
+    group: FusedGroup,
+    joint_name: str,
+) -> PushdownPlan | None:
+    """Merge cross-group projections from ``group.per_joint_projections`` into *pushdown*.
+
+    If the group has cross-group projections targeting *joint_name*, they are
+    merged with any existing intra-group projections.  When both exist, the
+    intersection is used (only columns needed by both).  When only cross-group
+    projections exist, they are used directly.  If *pushdown* is ``None`` and
+    there are cross-group projections, a new ``PushdownPlan`` is created.
+    When no cross-group projections exist for the joint, *pushdown* is returned
+    unchanged.
+    """
+    xg_cols = group.per_joint_projections.get(joint_name)
+    if not xg_cols:
+        return pushdown
+
+    if pushdown is None:
+        return PushdownPlan(
+            predicates=PredicatePushdownResult(pushed=[], residual=[]),
+            projections=ProjectionPushdownResult(pushed_columns=list(xg_cols), reason=None),
+            limit=LimitPushdownResult(pushed_limit=None, residual_limit=None, reason=None),
+            casts=CastPushdownResult(pushed=[], residual=[]),
+        )
+
+    existing = pushdown.projections.pushed_columns
+    if existing is not None:
+        merged = sorted(set(existing) & set(xg_cols))
+    else:
+        merged = list(xg_cols)
+
+    return PushdownPlan(
+        predicates=pushdown.predicates,
+        projections=ProjectionPushdownResult(pushed_columns=merged, reason=pushdown.projections.reason),
+        limit=pushdown.limit,
+        casts=pushdown.casts,
+    )
+
+
+def _merge_cross_group_limits(
+    pushdown: PushdownPlan | None,
+    group: FusedGroup,
+    joint_name: str,
+) -> PushdownPlan | None:
+    """Merge cross-group limits from ``group.per_joint_limits`` into *pushdown*.
+
+    If the group has a cross-group limit targeting *joint_name*, it is merged
+    with any existing pushed limit.  When both exist, the minimum is used (the
+    tighter constraint wins).  When only a cross-group limit exists, it is used
+    directly.  If *pushdown* is ``None`` and there is a cross-group limit, a
+    new ``PushdownPlan`` is created.  When no cross-group limit exists for the
+    joint, *pushdown* is returned unchanged.
+    """
+    xg_limit = group.per_joint_limits.get(joint_name)
+    if xg_limit is None:
+        return pushdown
+
+    if pushdown is None:
+        return PushdownPlan(
+            predicates=PredicatePushdownResult(pushed=[], residual=[]),
+            projections=ProjectionPushdownResult(pushed_columns=None, reason=None),
+            limit=LimitPushdownResult(pushed_limit=xg_limit, residual_limit=None, reason=None),
+            casts=CastPushdownResult(pushed=[], residual=[]),
+        )
+
+    existing = pushdown.limit.pushed_limit
+    if existing is not None:
+        effective = min(existing, xg_limit)
+    else:
+        effective = xg_limit
+
+    return PushdownPlan(
+        predicates=pushdown.predicates,
+        projections=pushdown.projections,
+        limit=LimitPushdownResult(
+            pushed_limit=effective,
+            residual_limit=pushdown.limit.residual_limit,
+            reason=pushdown.limit.reason,
+        ),
+        casts=pushdown.casts,
+    )
+
+
+
 # ---------------------------------------------------------------------------
 # Execution result data models
 # ---------------------------------------------------------------------------
@@ -174,6 +294,7 @@ class ExecutionResult:
     total_failures: int
     total_check_failures: int
     total_check_warnings: int
+    run_stats: RunStats | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -326,23 +447,36 @@ def _arrow_type_from_str(type_str: str) -> pyarrow.DataType | None:
     return _ARROW_TYPE_MAP.get(type_str)
 
 
+SAMPLE_THRESHOLD = 1_000_000
+SAMPLE_SIZE = 100_000
+
+
 def _compute_materialization_stats(table: pyarrow.Table) -> MaterializationStats:
     """Compute MaterializationStats for a materialized pyarrow.Table."""
+    use_sample = table.num_rows > SAMPLE_THRESHOLD
+    if use_sample:
+        indices = pc.random(SAMPLE_SIZE).cast(pyarrow.float64()).to_pylist()
+        scaled = [int(v * table.num_rows) % table.num_rows for v in indices]
+        sample = table.take(scaled)
+    else:
+        sample = table
+
     col_stats: list[ColumnExecutionStats] = []
     for col_name in table.column_names:
-        arr = table.column(col_name)
-        null_count = arr.null_count
+        full_arr = table.column(col_name)
+        sample_arr = sample.column(col_name) if use_sample else full_arr
+        null_count = full_arr.null_count
         try:
-            distinct_est = pc.count_distinct(arr).as_py()
+            distinct_est = pc.count_distinct(sample_arr).as_py()
         except Exception:
             distinct_est = 0
         try:
-            min_val = pc.min(arr).as_py()
+            min_val = pc.min(full_arr).as_py()
             min_str = str(min_val) if min_val is not None else None
         except Exception:
             min_str = None
         try:
-            max_val = pc.max(arr).as_py()
+            max_val = pc.max(full_arr).as_py()
             max_str = str(max_val) if max_val is not None else None
         except Exception:
             max_str = None
@@ -357,6 +491,7 @@ def _compute_materialization_stats(table: pyarrow.Table) -> MaterializationStats
         row_count=table.num_rows,
         byte_size=table.nbytes,
         column_stats=col_stats,
+        sampled=use_sample,
     )
 
 
@@ -661,6 +796,7 @@ class Executor:
         joint_results: list[JointExecutionResult],
         group_results: list[FusedGroupExecutionResult],
         step_ms: float = 0.0,
+        stats_collector: StatsCollector | None = None,
     ) -> None:
         """Record failure results for all joints in a group."""
         timing = PhasedTiming(
@@ -686,6 +822,16 @@ class Executor:
                 error=error,
             )
         )
+        if stats_collector is not None:
+            stats_collector.record_group_timing(
+                group.id, list(group.joints), timing, success=False, error=error,
+            )
+            for jn in group.joints:
+                stats_collector.record_joint_stats(
+                    jn, rows_in=None, rows_out=None, timing=timing,
+                    materialization_stats=None, skipped=True,
+                    skip_reason=error.message if error else "upstream failure",
+                )
 
     @staticmethod
     def _run_assertion_checks(
@@ -784,18 +930,59 @@ class Executor:
         fail_fast: bool,
         step_start: float,
         engine_start: float,
+        stats_collector: StatsCollector | None = None,
     ) -> tuple[int, int, int, int, bool]:
         """Execute a single group successfully and record results.
 
         Returns (materializations, failures, check_failures, check_warnings, stop).
         """
+        needed_keys: set[str] = set()
+        for jn in group.entry_joints or group.joints:
+            cj = joint_map.get(jn)
+            if cj:
+                needed_keys.update(cj.upstream)
+
         arrow_materials: dict[str, pyarrow.Table] = {
-            k: v.to_arrow() for k, v in materials.items()
+            k: v.to_arrow() for k, v in materials.items() if k in needed_keys
         }
         result_ref, adapter_residual = self._execute_fused_group(
             group, arrow_materials, joint_map, catalog_map, ref_materials=materials,
+            stats_collector=stats_collector,
         )
         engine_ms = (time.monotonic() - engine_start) * 1000
+
+        # Collect engine metrics via plugin.collect_metrics
+        if stats_collector is not None:
+            plugin = self._registry.get_engine_plugin(group.engine_type) if self._registry else None
+            if plugin is not None:
+                # Build execution context
+                sql = group.resolved_sql or group.fused_sql or ""
+                if group.fusion_result:
+                    sql = group.fusion_result.resolved_fused_sql or group.fusion_result.fused_sql or sql
+                execution_context: dict[str, Any] = {
+                    "sql": sql[:1000],
+                    "group_id": group.id,
+                    "engine_type": group.engine_type,
+                    "engine_ms": engine_ms,
+                }
+                # Merge response metadata if available from plugin
+                response_metadata = getattr(plugin, "_last_response_metadata", None)
+                if isinstance(response_metadata, dict):
+                    for k, v in response_metadata.items():
+                        if k not in execution_context:
+                            execution_context[k] = v
+                try:
+                    metrics = plugin.collect_metrics(execution_context)
+                    if metrics is None:
+                        metrics = PluginMetrics()
+                    stats_collector.record_engine_metrics(group.id, metrics)
+                except Exception:
+                    import logging
+                    logging.getLogger("rivet_core.executor").warning(
+                        "collect_metrics failed for group '%s'; continuing without engine metrics",
+                        group.id,
+                    )
+                    stats_collector.record_engine_metrics(group.id, PluginMetrics())
 
         residual_start = time.monotonic()
         merged_residual = _merge_residuals(group.residual, adapter_residual) if adapter_residual else group.residual
@@ -832,6 +1019,16 @@ class Executor:
             group, joint_map, result_ref,
         )
         check_ms = (time.monotonic() - check_start) * 1000
+
+        # Record assertion check stats
+        if stats_collector is not None:
+            for jn in group.joints:
+                jn_checks = all_check_results.get(jn, [])
+                if jn_checks:
+                    passed = sum(1 for c in jn_checks if c.passed)
+                    failed = sum(1 for c in jn_checks if not c.passed and c.severity == "error")
+                    warned = sum(1 for c in jn_checks if not c.passed and c.severity != "error")
+                    stats_collector.record_check_results(jn, "assertion", passed, failed, warned)
         step_ms = (time.monotonic() - step_start) * 1000
 
         timing = PhasedTiming(
@@ -876,6 +1073,22 @@ class Executor:
             )
         )
 
+        # Record stats via StatsCollector
+        if stats_collector is not None:
+            stats_collector.record_group_timing(
+                group.id, list(group.joints), timing, success=group_success,
+            )
+            for jn in group.joints:
+                jn_mat = materialized and jn == exit_joint
+                jn_rows_in = rows_in if jn == (group.entry_joints or group.joints)[0] else None
+                stats_collector.record_joint_stats(
+                    jn,
+                    rows_in=jn_rows_in,
+                    rows_out=rows_out,
+                    timing=timing,
+                    materialization_stats=mat_stats if jn_mat else None,
+                )
+
         total_failures = 0
         stop = False
         if assertion_error:
@@ -893,6 +1106,18 @@ class Executor:
         check_failures += af
         check_warnings += aw
 
+        # Record audit check stats
+        if stats_collector is not None:
+            for jr in joint_results:
+                if jr.fused_group_id == group.id:
+                    audit_checks = [c for c in jr.check_results if c.phase == "audit"]
+                    if audit_checks:
+                        passed = sum(1 for c in audit_checks if c.passed)
+                        failed = sum(1 for c in audit_checks if not c.passed and c.severity == "error")
+                        warned = sum(1 for c in audit_checks if not c.passed and c.severity != "error")
+                        read_back_rows = next((c.read_back_rows for c in audit_checks if c.read_back_rows is not None), None)
+                        stats_collector.record_check_results(jr.name, "audit", passed, failed, warned, read_back_rows=read_back_rows)
+
         return total_materializations, total_failures, check_failures, check_warnings, stop
 
     @staticmethod
@@ -905,6 +1130,7 @@ class Executor:
         total_check_failures: int,
         total_check_warnings: int,
         fail_fast: bool,
+        run_stats: RunStats | None = None,
     ) -> ExecutionResult:
         """Build the final ExecutionResult from accumulated state."""
         if total_failures == 0:
@@ -925,6 +1151,7 @@ class Executor:
             total_failures=total_failures,
             total_check_failures=total_check_failures,
             total_check_warnings=total_check_warnings,
+            run_stats=run_stats,
         )
 
     def run(
@@ -944,6 +1171,7 @@ class Executor:
             raise CompilationError(compiled.errors)
 
         start_time = time.monotonic()
+        stats_collector = StatsCollector()
 
         joint_map: dict[str, CompiledJoint] = {cj.name: cj for cj in compiled.joints}
         group_map: dict[str, FusedGroup] = {g.id: g for g in compiled.fused_groups}
@@ -982,6 +1210,7 @@ class Executor:
                 )
                 self._record_group_failure(
                     group, error, failed_joints, joint_results, group_results,
+                    stats_collector=stats_collector,
                 )
                 continue
 
@@ -993,6 +1222,7 @@ class Executor:
                     group, joint_map, catalog_map, mat_map, materials,
                     failed_joints, joint_results, group_results, fail_fast,
                     step_start, engine_start,
+                    stats_collector=stats_collector,
                 )
                 total_materializations += mats
                 total_failures += fails
@@ -1014,17 +1244,20 @@ class Executor:
                 self._record_group_failure(
                     group, error, failed_joints, joint_results, group_results,
                     step_ms=step_ms,
+                    stats_collector=stats_collector,
                 )
                 if fail_fast:
                     pipeline_stopped = True
                     break
 
         total_ms = (time.monotonic() - start_time) * 1000
+        run_stats = stats_collector.build_run_stats(total_ms)
 
         return self._build_execution_result(
             joint_results, group_results, total_ms,
             total_materializations, total_failures,
             total_check_failures, total_check_warnings, fail_fast,
+            run_stats=run_stats,
         )
     def run_query(
         self, compiled: CompiledAssembly, target_joint: str = "__query"
@@ -1065,6 +1298,80 @@ class Executor:
 
         if target_joint in materials:
             return materials[target_joint].to_arrow()
+
+        raise ExecutionError(
+            RivetError(
+                code="RVT-501",
+                message=f"Target joint '{target_joint}' not found in execution results.",
+                context={"target_joint": target_joint, "available": list(materials.keys())},
+                remediation="Check that the target joint name is correct.",
+            )
+        )
+
+    def run_query_with_stats(
+        self, compiled: CompiledAssembly, target_joint: str = "__query"
+    ) -> tuple[pyarrow.Table, RunStats]:
+        """Like run_query but also returns RunStats with timing breakdown.
+
+        Raises:
+            CompilationError: If compiled.success is False.
+            ExecutionError: If execution fails or target joint not found.
+        """
+        if not compiled.success:
+            raise CompilationError(compiled.errors)
+
+        start_time = time.monotonic()
+        stats_collector = StatsCollector()
+
+        joint_map = {cj.name: cj for cj in compiled.joints}
+        group_map = {g.id: g for g in compiled.fused_groups}
+        catalog_map = {cc.name: cc for cc in compiled.catalogs}
+        materials: dict[str, MaterializedRef] = {}
+
+        for step in compiled.execution_order:
+            group = group_map.get(step)
+            if group is None:
+                continue
+
+            step_start = time.monotonic()
+            arrow_materials: dict[str, pyarrow.Table] = {
+                k: v.to_arrow() for k, v in materials.items()
+            }
+
+            engine_start = time.monotonic()
+            result_ref, adapter_residual = self._execute_fused_group(
+                group, arrow_materials, joint_map, catalog_map,
+                ref_materials=materials, stats_collector=stats_collector,
+            )
+            engine_ms = (time.monotonic() - engine_start) * 1000
+
+            merged_residual = _merge_residuals(group.residual, adapter_residual) if adapter_residual else group.residual
+            if merged_residual is not None:
+                result_table = _apply_residuals(result_ref.to_arrow(), merged_residual)
+                result_ref = self._materialize_result(result_table, group)
+
+            step_ms = (time.monotonic() - step_start) * 1000
+            timing = PhasedTiming(
+                total_ms=step_ms, engine_ms=engine_ms,
+                materialize_ms=0.0, residual_ms=0.0, check_ms=0.0,
+            )
+            stats_collector.record_group_timing(
+                group.id, list(group.joints), timing, success=True,
+            )
+
+            for jn in group.joints:
+                materials[jn] = result_ref
+                rows_out = result_ref.to_arrow().num_rows if result_ref else None
+                stats_collector.record_joint_stats(
+                    jn, rows_in=None, rows_out=rows_out, timing=timing,
+                    materialization_stats=None,
+                )
+
+        total_ms = (time.monotonic() - start_time) * 1000
+        run_stats = stats_collector.build_run_stats(total_ms)
+
+        if target_joint in materials:
+            return materials[target_joint].to_arrow(), run_stats
 
         raise ExecutionError(
             RivetError(
@@ -1156,6 +1463,7 @@ class Executor:
         joint_map: dict[str, CompiledJoint],
         catalog_map: dict[str, CompiledCatalog] | None = None,
         ref_materials: dict[str, MaterializedRef] | None = None,
+        stats_collector: StatsCollector | None = None,
     ) -> tuple[MaterializedRef, ResidualPlan | None]:
         """Dispatch a fused group for execution and materialize the result.
 
@@ -1186,7 +1494,7 @@ class Executor:
             )
 
         # Single dispatch path: resolve upstream, build input_tables, call execute_sql
-        result_table, adapter_residual = self._execute_via_plugin(group, materials, joint_map, catalog_map, plugin)
+        result_table, adapter_residual = self._execute_via_plugin(group, materials, joint_map, catalog_map, plugin, stats_collector=stats_collector)
         return self._materialize_result(result_table, group), adapter_residual
 
     def _materialize_result(self, table: pyarrow.Table, group: FusedGroup) -> MaterializedRef:
@@ -1208,13 +1516,35 @@ class Executor:
         group: FusedGroup,
         joint_map: dict[str, CompiledJoint],
         adapter_read_sources: set[str],
+        has_materialized_inputs: bool = False,
     ) -> str | None:
         """Resolve the SQL string for CTE-strategy execution.
 
         Rewrites adapter-backed source CTE bodies to ``SELECT * FROM <name>``
-        so the in-memory engine reads from the registered Arrow table.
+        so the engine reads from the registered Arrow table (input_tables).
+        When a reference resolver has produced resolved SQL, that is returned
+        directly since it already contains fully-qualified table references.
         Falls back through fusion_result and group-level SQL attributes.
+
+        When *has_materialized_inputs* is True (upstream data was materialized
+        across an engine boundary), resolved SQL is skipped because the
+        receiving engine works with in-memory tables registered by joint name,
+        not catalog-qualified references.
         """
+        # Prefer resolved SQL (reference-resolver output) when available
+        # AND the engine can natively resolve catalog references (no
+        # materialized inputs from an engine boundary).
+        if not has_materialized_inputs:
+            resolved = None
+            if group.fusion_result:
+                resolved = group.fusion_result.resolved_fused_sql
+            if resolved is None:
+                resolved = group.resolved_sql
+            if resolved is not None:
+                return resolved
+
+        # No reference resolver ran — rewrite adapter-read sources as CTEs
+        # so the engine can resolve them from input_tables.
         sql: str | None = None
         if adapter_read_sources and len(group.joints) > 1:
             from rivet_core.optimizer import _compose_cte
@@ -1223,16 +1553,7 @@ class Executor:
             for jn in group.joints:
                 cj = joint_map.get(jn)
                 if jn in adapter_read_sources:
-                    # Only include adapter-backed sources in the CTE if they
-                    # originally had SQL.  Source joints created by the SQL
-                    # preprocessor (ad-hoc REPL queries) have sql=None; wrapping
-                    # them in a CTE as ``SELECT * FROM <name>`` produces a
-                    # self-referencing CTE that fails on server-side engines
-                    # (e.g. Databricks) which ignore input_tables.
-                    if cj and (cj.sql or cj.sql_translated or cj.sql_resolved):
-                        rewritten_joint_sql[jn] = f"SELECT * FROM {jn}"
-                    else:
-                        rewritten_joint_sql[jn] = None
+                    rewritten_joint_sql[jn] = f"SELECT * FROM {jn}"
                 elif cj:
                     rewritten_joint_sql[jn] = cj.sql_resolved or cj.sql_translated or cj.sql
                 else:
@@ -1241,12 +1562,9 @@ class Executor:
             if rewritten:
                 sql = rewritten.fused_sql
         if sql is None and group.fusion_result:
-            sql = (
-                group.fusion_result.resolved_fused_sql
-                or group.fusion_result.fused_sql
-            )
+            sql = group.fusion_result.fused_sql
         if sql is None:
-            sql = group.resolved_sql or group.fused_sql
+            sql = group.fused_sql
         return sql
 
     @staticmethod
@@ -1283,6 +1601,7 @@ class Executor:
         joint_map: dict[str, CompiledJoint],
         catalog_map: dict[str, CompiledCatalog] | None,
         plugin: ComputeEnginePlugin,
+        stats_collector: StatsCollector | None = None,
     ) -> tuple[pyarrow.Table, ResidualPlan | None]:
         """Execute via plugin's execute_sql with cross-joint adapter resolution.
 
@@ -1300,6 +1619,7 @@ class Executor:
 
         # Build input_tables from upstream materials and source reads
         input_tables: dict[str, pyarrow.Table] = {}
+        has_materialized_inputs = False
 
         for jn in group.joints:
             cj = joint_map.get(jn)
@@ -1308,9 +1628,23 @@ class Executor:
             for up in cj.upstream:
                 if up in materials:
                     input_tables[up] = materials[up]
+                    has_materialized_inputs = True
 
-        # Read source joints into input_tables
-        adapter_residual = self._read_sources_into(input_tables, group, joint_map, catalog_map)
+        # Read source joints into input_tables.
+        # When a reference resolver has rewritten the fused SQL (resolved_sql
+        # is set), table references are fully-qualified catalog names and the
+        # engine does not need adapter-read data in input_tables.  Skip adapter
+        # reads for fused sources to avoid redundant queries.
+        group_has_resolved_sql = (
+            group.resolved_sql is not None
+            or (group.fusion_result is not None and group.fusion_result.resolved_fused_sql is not None)
+        )
+        skip_source_reads = group_has_resolved_sql and len(group.joints) > 1
+        adapter_residual = self._read_sources_into(
+            input_tables, group, joint_map, catalog_map,
+            stats_collector=stats_collector,
+            skip_fused_sources=skip_source_reads,
+        )
 
         adapter_read_sources = {
             jn for jn in group.joints
@@ -1324,7 +1658,10 @@ class Executor:
             ), adapter_residual
 
         # CTE strategy
-        sql = self._resolve_sql_for_execution(group, joint_map, adapter_read_sources)
+        sql = self._resolve_sql_for_execution(
+            group, joint_map, adapter_read_sources,
+            has_materialized_inputs=has_materialized_inputs,
+        )
 
         if not sql:
             if input_tables:
@@ -1523,6 +1860,9 @@ class Executor:
         try:
             engine_instance = self._registry.get_compute_engine(cj.engine)
             effective_pushdown = _merge_source_limit_into_pushdown(group.pushdown, cj)
+            effective_pushdown = _merge_cross_group_predicates(effective_pushdown, group, jn)
+            effective_pushdown = _merge_cross_group_projections(effective_pushdown, group, jn)
+            effective_pushdown = _merge_cross_group_limits(effective_pushdown, group, jn)
             result = adapter.read_dispatch(engine_instance, cat, joint, effective_pushdown)
             if isinstance(result, AdapterPushdownResult):
                 mat = result.material
@@ -1597,11 +1937,18 @@ class Executor:
         group: FusedGroup,
         joint_map: dict[str, CompiledJoint],
         catalog_map: dict[str, CompiledCatalog] | None,
+        stats_collector: StatsCollector | None = None,
+        skip_fused_sources: bool = False,
     ) -> ResidualPlan | None:
         """Read source joints from their catalogs into input_tables dict.
 
         Returns the merged adapter residual if any adapter returned one,
         or None if no adapter residuals were produced.
+
+        When *skip_fused_sources* is True, source joints are skipped because
+        the fused SQL already contains fully-qualified table references
+        (rewritten by a reference resolver) and does not depend on
+        input_tables for these sources.
         """
         merged_adapter_residual: ResidualPlan | None = None
         if not self._registry or not catalog_map:
@@ -1611,6 +1958,8 @@ class Executor:
             if not cj or cj.type != "source" or not cj.catalog:
                 continue
             if jn in input_tables:
+                continue
+            if skip_fused_sources:
                 continue
 
             from rivet_core.models import Catalog, Joint
@@ -1626,17 +1975,60 @@ class Executor:
                 table=cj.table,
             )
 
+            adapter_name = cj.adapter or ""
+            catalog_type = cj.catalog_type or cc.type or ""
+            read_start = time.monotonic()
+
             if cj.adapter:
-                found, tbl, residual = self._read_source_via_adapter(jn, cj, cat, joint, group)
+                try:
+                    found, tbl, residual = self._read_source_via_adapter(jn, cj, cat, joint, group)
+                except Exception as exc:
+                    read_ms = (time.monotonic() - read_start) * 1000
+                    if stats_collector is not None:
+                        err = exc.error if isinstance(exc, ExecutionError) else RivetError(
+                            code="RVT-501", message=str(exc),
+                        )
+                        stats_collector.record_source_read(
+                            jn, adapter_name, catalog_type,
+                            row_count=None, read_ms=read_ms, error=err,
+                        )
+                    raise
+                read_ms = (time.monotonic() - read_start) * 1000
                 if found:
+                    row_count = tbl.num_rows if tbl is not None else None
+                    has_residual = residual is not None
+                    if stats_collector is not None:
+                        stats_collector.record_source_read(
+                            jn, adapter_name, catalog_type,
+                            row_count=row_count, read_ms=read_ms,
+                            has_residual=has_residual,
+                        )
                     if tbl is not None:
                         input_tables[jn] = tbl
                     if residual is not None:
                         merged_adapter_residual = _merge_residuals(merged_adapter_residual, residual)
                     continue
 
-            tbl = self._read_source_fallback(jn, cj, cat, joint)
+            try:
+                tbl = self._read_source_fallback(jn, cj, cat, joint)
+            except Exception as exc:
+                read_ms = (time.monotonic() - read_start) * 1000
+                if stats_collector is not None:
+                    err = exc.error if isinstance(exc, ExecutionError) else RivetError(
+                        code="RVT-501", message=str(exc),
+                    )
+                    stats_collector.record_source_read(
+                        jn, adapter_name, catalog_type,
+                        row_count=None, read_ms=read_ms, error=err,
+                    )
+                raise
+            read_ms = (time.monotonic() - read_start) * 1000
             if tbl is not None:
+                if stats_collector is not None:
+                    stats_collector.record_source_read(
+                        jn, adapter_name, catalog_type,
+                        row_count=tbl.num_rows, read_ms=read_ms,
+                    )
                 input_tables[jn] = tbl
         return merged_adapter_residual
 

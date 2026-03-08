@@ -150,11 +150,11 @@ class _PostgresDuckDBMaterializedRef(MaterializedRef):
             conn.execute(f"ATTACH '{dsn}' AS {alias} (TYPE postgres, READ_ONLY)")
 
             if self._sql:
-                result = conn.execute(self._sql).arrow().read_all()
+                result = conn.execute(self._sql).arrow()
             else:
                 pg_schema = self._catalog_options.get("schema", "public")
                 table_ref = f"{alias}.{pg_schema}.{self._table}"
-                result = conn.execute(f"SELECT * FROM {table_ref}").arrow().read_all()
+                result = conn.execute(f"SELECT * FROM {table_ref}").arrow()
 
             self._cached = result
             return result

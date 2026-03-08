@@ -79,12 +79,12 @@ class TestArrowMaterializationDeferred:
         ref.to_arrow()
         lf_mock.collect.assert_called_once_with()
 
-    def test_multiple_to_arrow_calls_each_collect(self):
-        """Each call to to_arrow() triggers a fresh collect()."""
+    def test_multiple_to_arrow_calls_collect_once(self):
+        """Multiple to_arrow() calls collect only once (cached)."""
         df = pl.DataFrame({"a": [1]})
         lf = MagicMock(spec=pl.LazyFrame)
         lf.collect.return_value = df
         ref = PolarsLazyMaterializedRef(lf)
         ref.to_arrow()
         ref.to_arrow()
-        assert lf.collect.call_count == 2
+        assert lf.collect.call_count == 1

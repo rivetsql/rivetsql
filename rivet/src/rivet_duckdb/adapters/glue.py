@@ -166,8 +166,9 @@ class GlueDuckDBMaterializedRef(MaterializedRef):
         self._partition_filter = partition_filter
         self._engine_config = engine_config or {}
         self._sql_override = sql_override
+        self._cached_table: pyarrow.Table | None = None
 
-    def to_arrow(self) -> pyarrow.Table:
+    def _execute(self) -> pyarrow.Table:
         import duckdb
 
         from rivet_duckdb.engine import apply_engine_settings
@@ -218,6 +219,11 @@ class GlueDuckDBMaterializedRef(MaterializedRef):
             ) from exc
         finally:
             conn.close()
+
+    def to_arrow(self) -> pyarrow.Table:
+        if self._cached_table is None:
+            self._cached_table = self._execute()
+        return self._cached_table
 
     @property
     def schema(self) -> Schema:

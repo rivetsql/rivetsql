@@ -26,11 +26,18 @@ class PolarsLazyMaterializedRef(MaterializedRef):
     def __init__(self, lazy_frame: Any, streaming: bool = False) -> None:
         self._lazy_frame = lazy_frame
         self._streaming = streaming
+        self._collected: Any = None  # polars.DataFrame | None
+
+    def _collect(self) -> Any:
+        if self._collected is None:
+            if self._streaming:
+                self._collected = self._lazy_frame.collect(engine="streaming")
+            else:
+                self._collected = self._lazy_frame.collect()
+        return self._collected
 
     def to_arrow(self) -> pyarrow.Table:
-        if self._streaming:
-            return self._lazy_frame.collect(engine="streaming").to_arrow()
-        return self._lazy_frame.collect().to_arrow()
+        return self._collect().to_arrow()
 
     @property
     def schema(self) -> Any:
@@ -45,7 +52,7 @@ class PolarsLazyMaterializedRef(MaterializedRef):
 
     @property
     def row_count(self) -> int:
-        return self._lazy_frame.collect().height  # type: ignore[no-any-return]
+        return self._collect().height  # type: ignore[no-any-return]
 
     @property
     def size_bytes(self) -> int | None:

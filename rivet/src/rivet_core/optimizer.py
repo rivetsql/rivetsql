@@ -11,9 +11,11 @@ import uuid
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
+from rivet_core.lineage import ColumnLineage, ColumnOrigin
 from rivet_core.sql_parser import LogicalPlan, Predicate
 
 if TYPE_CHECKING:
+    from rivet_core.compiler import CompiledJoint, OptimizationResult
     from rivet_core.models import Material
 
 
@@ -106,6 +108,9 @@ class FusedGroup:
     pushdown: PushdownPlan | None = None
     residual: ResidualPlan | None = None
     materialization_strategy_name: str = "arrow"
+    per_joint_predicates: dict[str, list[Predicate]] = field(default_factory=dict)
+    per_joint_projections: dict[str, list[str]] = field(default_factory=dict)
+    per_joint_limits: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -155,6 +160,8 @@ def _can_fuse(
     upstream_name: str,
     upstream_joint: FusionJoint,
     downstream_counts: dict[str, int],
+    *,
+    all_joints: list[FusionJoint] | None = None,
 ) -> bool:
     """Return True when *joint* can merge into the upstream joint's group.
 
@@ -163,6 +170,8 @@ def _can_fuse(
     2. No eager flag on upstream
     3. No assertions on upstream
     4. Upstream has exactly one downstream consumer (single-consumer rule)
+       — relaxed when *all_joints* is provided and every consumer of the
+       upstream is the same multi-input *joint*.
     5. Downstream joint is not a PythonJoint
     """
     if joint.engine != upstream_joint.engine:
@@ -172,7 +181,13 @@ def _can_fuse(
     if upstream_joint.has_assertions:
         return False
     if downstream_counts.get(upstream_name, 0) != 1:
-        return False
+        # Relaxation: if all downstream consumers of upstream are the same joint, allow fusion
+        if all_joints is not None:
+            consumers = [j for j in all_joints if upstream_name in j.upstream]
+            if not all(c.name == joint.name for c in consumers):
+                return False
+        else:
+            return False
     if joint.joint_type == "python":
         return False
     return True
@@ -314,17 +329,24 @@ def _assign_fusion_groups(
                 if _can_fuse(joint, up_name, up_joint, ds_counts):
                     candidate_gid = group_id_for[up_name]
             elif len(joint.upstream) > 1:
-                best_gid: str | None = None
-                best_size = -1
+                eligible_gids: list[str] = []
                 for up_name in joint.upstream:
                     up_joint = joints_by_name[up_name]
-                    if _can_fuse(joint, up_name, up_joint, ds_counts):
+                    if _can_fuse(joint, up_name, up_joint, ds_counts, all_joints=joints):
                         gid = group_id_for[up_name]
-                        size = len(group_joints[gid])
-                        if size > best_size:
-                            best_size = size
-                            best_gid = gid
-                candidate_gid = best_gid
+                        if gid not in eligible_gids:
+                            eligible_gids.append(gid)
+                if eligible_gids:
+                    target_gid = eligible_gids[0]
+                    for other_gid in eligible_gids[1:]:
+                        if other_gid != target_gid:
+                            group_joints[target_gid].extend(group_joints[other_gid])
+                            for moved_name in group_joints[other_gid]:
+                                group_id_for[moved_name] = target_gid
+                            del group_joints[other_gid]
+                            del group_engine[other_gid]
+                            del group_engine_type[other_gid]
+                    candidate_gid = target_gid
 
         if candidate_gid is not None:
             group_joints[candidate_gid].append(joint.name)
@@ -678,3 +700,820 @@ def pushdown_pass(
         result.append(replace(group, pushdown=pushdown, residual=residual))
 
     return result
+
+# ---------------------------------------------------------------------------
+# Cross-group predicate pushdown helpers
+# ---------------------------------------------------------------------------
+
+_NON_PUSHABLE_TRANSFORMS = frozenset({
+    "aggregation", "window", "expression", "multi_column", "opaque",
+})
+
+
+def _bare_column(col: str) -> str:
+    """Strip a table alias/qualifier from a column name (e.g. ``t1.col`` → ``col``)."""
+    return col.split(".")[-1] if "." in col else col
+
+
+def _find_lineage(exit_cj: CompiledJoint, col: str) -> ColumnLineage | None:
+    """Find the ColumnLineage record for *col* on *exit_cj*, matching bare names.
+
+    Both the predicate column and the lineage output_column are stripped of
+    table qualifiers before comparison so that ``ris.correlation_id`` matches
+    a lineage entry with output_column ``correlation_id`` or vice-versa.
+
+    When multiple lineage entries share the same bare name (e.g. both
+    ``ris.correlation_id`` and ``rie.correlation_id``), an exact match on the
+    full qualified name is preferred.
+    """
+    bare = _bare_column(col)
+    # First pass: exact match (handles qualified names)
+    for lin in exit_cj.column_lineage:
+        if lin.output_column == col:
+            return lin
+    # Second pass: bare-name match
+    for lin in exit_cj.column_lineage:
+        if _bare_column(lin.output_column) == bare:
+            return lin
+    return None
+
+
+def _is_cross_group_pushable(conj: Predicate, exit_cj: CompiledJoint) -> bool:
+    """Check whether a conjunct can be pushed across group boundaries.
+
+    Returns False for HAVING predicates, subquery predicates, and columns
+    whose lineage transform is not direct or renamed.  Table-qualified columns
+    resolvable via the logical plan's source_tables alias map are treated as
+    pushable (direct pass-through) without consulting lineage — this avoids
+    ambiguous bare-name matches when multiple upstream tables share a column.
+    """
+    if conj.location == "having":
+        return False
+    if _has_subquery(conj):
+        return False
+
+    alias_map = _build_alias_map(exit_cj)
+    for col in conj.columns:
+        # Table-qualified columns resolvable via alias map are always pushable
+        if "." in col and col.split(".")[0] in alias_map:
+            continue
+        lin = _find_lineage(exit_cj, col)
+        if lin is None:
+            return False
+        if lin.transform in _NON_PUSHABLE_TRANSFORMS:
+            return False
+    return True
+
+
+def _build_alias_map(cj: CompiledJoint) -> dict[str, str]:
+    """Build a table-alias → joint-name map from the logical plan's source_tables."""
+    if cj.logical_plan is None or not cj.logical_plan.source_tables:
+        return {}
+    return {
+        ref.alias: ref.name
+        for ref in cj.logical_plan.source_tables
+        if ref.alias
+    }
+
+
+def _resolve_conjunct_origins(
+    conj: Predicate,
+    exit_cj: CompiledJoint,
+    compiled_joints: dict[str, CompiledJoint],
+) -> list[ColumnOrigin] | None:
+    """Trace each column in a conjunct backward through lineage to ultimate origins.
+
+    Returns a list of ColumnOrigin objects, or None if any column has no lineage.
+
+    When a predicate column is table-qualified (e.g. ``rie.correlation_id``)
+    the function first attempts to resolve via the logical plan's alias map
+    (table alias → joint name).  This avoids ambiguity when multiple upstream
+    tables share the same bare column name (e.g. both ``ris.correlation_id``
+    and ``rie.correlation_id`` exist but lineage only records one
+    ``correlation_id`` entry).
+
+    Falls back to lineage-based resolution when the column is not
+    table-qualified or has no alias-map entry.
+    """
+    alias_map = _build_alias_map(exit_cj)
+    all_origins: list[ColumnOrigin] = []
+    for col in conj.columns:
+        # Prefer alias-map resolution for table-qualified columns to avoid
+        # ambiguous bare-name lineage matches.
+        if "." in col:
+            table_alias = col.split(".")[0]
+            bare = _bare_column(col)
+            joint_name = alias_map.get(table_alias)
+            if joint_name:
+                all_origins.append(ColumnOrigin(joint=joint_name, column=bare))
+                continue
+
+        lin = _find_lineage(exit_cj, col)
+        if lin is None:
+            return None
+
+        # Walk backward through the lineage chain
+        visited: set[tuple[str, str]] = set()
+        stack: list[tuple[str, str]] = [(o.joint, o.column) for o in lin.origins]
+        if not stack:
+            # No origins (e.g. literal) — treat as terminal at exit joint
+            all_origins.append(ColumnOrigin(joint=exit_cj.name, column=col))
+            continue
+
+        col_origins: list[ColumnOrigin] = []
+        while stack:
+            jname, cname = stack.pop()
+            if (jname, cname) in visited:
+                continue
+            visited.add((jname, cname))
+
+            upstream_cj = compiled_joints.get(jname)
+            if upstream_cj is None:
+                col_origins.append(ColumnOrigin(joint=jname, column=cname))
+                continue
+
+            upstream_lin = _find_lineage(upstream_cj, cname)
+            if upstream_lin is None or not upstream_lin.origins:
+                col_origins.append(ColumnOrigin(joint=jname, column=cname))
+            else:
+                for origin in upstream_lin.origins:
+                    stack.append((origin.joint, origin.column))
+
+        all_origins.extend(col_origins)
+
+    return all_origins
+
+
+# Regex matching a table-qualified column reference like ``t1.col_name``
+_TABLE_QUAL_RE = re.compile(r"\b(\w+)\.(\w+)\b")
+
+
+def _rewrite_predicate_for_source(
+    conj: Predicate,
+    exit_cj: CompiledJoint,
+    origins: list[ColumnOrigin],
+) -> Predicate:
+    """Rewrite a predicate expression to use source-schema column names.
+
+    Strips table aliases/qualifiers and applies column renames from lineage.
+    """
+    # Build rename map: bare consumer column -> source column
+    rename_map: dict[str, str] = {}
+    for col in conj.columns:
+        lin = _find_lineage(exit_cj, col)
+        if lin is not None and lin.origins:
+            source_col = lin.origins[0].column
+            rename_map[_bare_column(col)] = source_col
+
+    expr = conj.expression
+
+    # Step 1: Strip table aliases — replace ``alias.col`` with ``col``
+    expr = _TABLE_QUAL_RE.sub(r"\2", expr)
+
+    # Step 2: Apply column renames where source name differs
+    for consumer_col, source_col in rename_map.items():
+        if consumer_col != source_col:
+            pattern = re.compile(r"\b" + re.escape(consumer_col) + r"\b")
+            expr = pattern.sub(source_col, expr)
+
+    # Build updated columns list using source names
+    new_columns = [rename_map.get(_bare_column(c), _bare_column(c)) for c in conj.columns]
+
+    return Predicate(expression=expr, columns=new_columns, location="where")
+
+
+# Regex for simple column-equality in JOIN conditions: ``a.col = b.col`` or ``col1 = col2``
+_SIMPLE_EQ_RE = re.compile(
+    r"(\w+(?:\.\w+)?)\s*=\s*(\w+(?:\.\w+)?)"
+)
+
+
+def _has_predicate_capability(
+    target_group: FusedGroup,
+    target_joint: str,
+    capabilities: dict[str, list[str]],
+    catalog_types: dict[str, str | None],
+) -> bool:
+    """Check if a target source group's adapter supports predicate pushdown."""
+    ct = catalog_types.get(target_joint)
+    key = f"{target_group.engine_type}:{ct}" if ct else target_group.engine_type
+    caps = capabilities.get(key, [])
+    if not caps:
+        caps = capabilities.get(target_group.engine_type, [])
+    return "predicate_pushdown" in caps
+
+def _has_projection_capability(
+    target_group: FusedGroup,
+    target_joint: str,
+    capabilities: dict[str, list[str]],
+    catalog_types: dict[str, str | None],
+) -> bool:
+    """Check if a target source group's adapter supports projection pushdown."""
+    ct = catalog_types.get(target_joint)
+    key = f"{target_group.engine_type}:{ct}" if ct else target_group.engine_type
+    caps = capabilities.get(key, [])
+    if not caps:
+        caps = capabilities.get(target_group.engine_type, [])
+    return "projection_pushdown" in caps
+
+def _has_limit_capability(
+    target_group: FusedGroup,
+    target_joint: str,
+    capabilities: dict[str, list[str]],
+    catalog_types: dict[str, str | None],
+) -> bool:
+    """Check if a target source group's adapter supports limit pushdown."""
+    ct = catalog_types.get(target_joint)
+    key = f"{target_group.engine_type}:{ct}" if ct else target_group.engine_type
+    caps = capabilities.get(key, [])
+    if not caps:
+        caps = capabilities.get(target_group.engine_type, [])
+    return "limit_pushdown" in caps
+
+
+def _get_upstream_source_joints(
+    exit_cj: CompiledJoint,
+    compiled_joints: dict[str, CompiledJoint],
+    group_for_joint: dict[str, FusedGroup],
+) -> list[str]:
+    """Return upstream source joint names in other groups.
+
+    Walks the exit joint's ``upstream`` references. Joints that belong to a
+    different :class:`FusedGroup` than *exit_cj* are considered upstream source
+    joints and are collected. Joints in the same group are traversed
+    recursively so that we reach the true cross-group boundary.
+    """
+    exit_group = group_for_joint.get(exit_cj.name)
+    result: list[str] = []
+    visited: set[str] = set()
+
+    def _walk(joint_name: str) -> None:
+        if joint_name in visited:
+            return
+        visited.add(joint_name)
+        jg = group_for_joint.get(joint_name)
+        if jg is None or (exit_group is not None and jg.id != exit_group.id):
+            result.append(joint_name)
+            return
+        cj = compiled_joints.get(joint_name)
+        if cj is None:
+            return
+        for up in cj.upstream:
+            _walk(up)
+
+    for up in exit_cj.upstream:
+        _walk(up)
+
+    return result
+
+
+def _derive_join_equality_predicates(
+    conj: Predicate,
+    exit_cj: CompiledJoint,
+    compiled_joints: dict[str, CompiledJoint],
+    group_for_joint: dict[str, FusedGroup],
+    capabilities: dict[str, list[str]],
+    catalog_types: dict[str, str | None],
+) -> list[tuple[Predicate, str, FusedGroup]]:
+    """Infer equivalent predicates through INNER JOIN equality conditions.
+
+    For each predicate column that participates in an INNER JOIN equality
+    ``A = B``, derives a new predicate by substituting B for A. Only simple
+    column-reference equalities on INNER JOINs are eligible — LEFT/RIGHT/FULL/
+    CROSS joins and expression-based conditions are skipped.
+
+    Returns a list of (rewritten_predicate, target_joint_name, target_group).
+    """
+    if exit_cj.logical_plan is None or not exit_cj.logical_plan.joins:
+        return []
+
+    # Collect simple column equalities from INNER JOINs
+    equalities: list[tuple[str, str]] = []
+    for join in exit_cj.logical_plan.joins:
+        if join.type != "inner" or join.condition is None:
+            continue
+        # Split on AND to handle compound conditions
+        parts = re.split(r"\bAND\b", join.condition, flags=re.IGNORECASE)
+        for part in parts:
+            m = _SIMPLE_EQ_RE.fullmatch(part.strip())
+            if m:
+                equalities.append((m.group(1), m.group(2)))
+
+    if not equalities:
+        return []
+
+    results: list[tuple[Predicate, str, FusedGroup]] = []
+
+    for col in conj.columns:
+        col_bare = _bare_column(col)
+        for left, right in equalities:
+            # Check if the predicate column matches either side (with or without alias)
+            left_bare = left.split(".")[-1] if "." in left else left
+            right_bare = right.split(".")[-1] if "." in right else right
+
+            other_side: str | None = None
+            # Prefer exact (table-qualified) matches first to avoid
+            # ambiguity when both sides share the same bare column name.
+            if col == left:
+                other_side = right
+            elif col == right:
+                other_side = left
+            elif col_bare == left_bare and col_bare == right_bare:
+                # Both sides have the same bare column name (typical for
+                # join keys).  Disambiguate using the table qualifier on
+                # the predicate column: pick the side whose table alias
+                # differs from the predicate's table alias.
+                col_table = col.split(".")[0] if "." in col else None
+                left_table = left.split(".")[0] if "." in left else None
+                right_table = right.split(".")[0] if "." in right else None
+                if col_table and col_table == left_table:
+                    other_side = right
+                elif col_table and col_table == right_table:
+                    other_side = left
+                else:
+                    # No table qualifier on predicate — emit both sides
+                    other_side = right
+            elif col_bare == left_bare:
+                other_side = right
+            elif col_bare == right_bare:
+                other_side = left
+            else:
+                continue
+
+            other_bare = other_side.split(".")[-1] if "." in other_side else other_side
+
+            # Derive a new predicate by substituting the other-side column
+            derived_expr = conj.expression
+            # Strip table qualifiers first
+            derived_expr = _TABLE_QUAL_RE.sub(r"\2", derived_expr)
+            # Replace the predicate column with the other-side column
+            pattern = re.compile(r"\b" + re.escape(col_bare) + r"\b")
+            derived_expr = pattern.sub(other_bare, derived_expr)
+
+            # Keep the full qualified name so _resolve_conjunct_origins can
+            # use the alias map to resolve to the correct source joint.
+            derived_pred = Predicate(
+                expression=derived_expr, columns=[other_side], location="where",
+            )
+
+            # Trace the other-side column through lineage to find its source
+            derived_origins = _resolve_conjunct_origins(
+                derived_pred, exit_cj, compiled_joints,
+            )
+            if derived_origins is None:
+                continue
+
+            # Must be single-origin
+            target_joints = {o.joint for o in derived_origins}
+            if len(target_joints) != 1:
+                continue
+
+            target_joint_name = derived_origins[0].joint
+            target_group = group_for_joint.get(target_joint_name)
+            if target_group is None:
+                continue
+
+            # Check capability
+            if not _has_predicate_capability(
+                target_group, target_joint_name, capabilities, catalog_types,
+            ):
+                continue
+
+            # Rewrite for source schema
+            rewritten = _rewrite_predicate_for_source(
+                derived_pred, exit_cj, derived_origins,
+            )
+            results.append((rewritten, target_joint_name, target_group))
+
+    return results
+
+# ---------------------------------------------------------------------------
+# Cross-group predicate pushdown pass
+# ---------------------------------------------------------------------------
+
+
+def cross_group_pushdown_pass(
+    groups: list[FusedGroup],
+    compiled_joints: dict[str, CompiledJoint],
+    capabilities: dict[str, list[str]],
+    catalog_types: dict[str, str | None],
+) -> tuple[list[FusedGroup], list[OptimizationResult]]:
+    """Propagate predicates, projections, and limits across fused-group boundaries.
+
+    For each consumer group whose exit joint has a LogicalPlan, the pass:
+    1. **Predicates** — Splits, classifies, traces, rewrites, and pushes WHERE
+       predicates to upstream source groups (unchanged from original).
+    2. **Projections** — Collects all columns referenced in the consumer's
+       LogicalPlan, maps them through column lineage to source joints, and
+       stores the mapped column lists in ``per_joint_projections`` on the
+       upstream source groups.
+    3. **Limits** — Extracts LIMIT clauses with safety guards
+       and stores them in ``per_joint_limits``.
+
+    Consumer-side predicates, projections, and limits are always retained for
+    correctness — the pass can only make things faster, never incorrect.
+
+    Args:
+        groups: Fused groups (already processed by ``pushdown_pass``).
+        compiled_joints: Joint name → ``CompiledJoint`` map for lineage access.
+        capabilities: Capability map (engine_type or engine_type:catalog_type → list).
+        catalog_types: Joint name → catalog type map.
+
+    Returns:
+        A tuple of (updated groups via ``replace()``, list of ``OptimizationResult``).
+    """
+    from rivet_core.compiler import OptimizationResult
+
+    _RULE = "cross_group_predicate_pushdown"
+    _PROJ_RULE = "cross_group_projection_pushdown"
+    _LIM_RULE = "cross_group_limit_pushdown"
+
+    # Build index: joint name → its FusedGroup
+    group_for_joint: dict[str, FusedGroup] = {}
+    for g in groups:
+        for jn in g.joints:
+            group_for_joint[jn] = g
+
+    # Accumulate per-joint predicates keyed by group id, then joint name
+    # group_id → {joint_name → [Predicate, ...]}
+    pjp_updates: dict[str, dict[str, list[Predicate]]] = {}
+    # Accumulate per-joint projections keyed by group id, then joint name
+    # group_id → {joint_name → {col, ...}}
+    pjproj_updates: dict[str, dict[str, set[str]]] = {}
+    # Accumulate per-joint limits keyed by group id, then joint name
+    # group_id → {joint_name → limit}
+    pjlim_updates: dict[str, dict[str, int]] = {}
+    results: list[OptimizationResult] = []
+
+    for group in groups:
+        if not group.exit_joints:
+            continue
+        exit_joint = group.exit_joints[0]
+        cj = compiled_joints.get(exit_joint)
+        if cj is None:
+            continue
+
+        # ── Predicate pushdown (only when predicates exist) ──────────
+        pushed_predicate_cols: set[str] = set()
+        if cj.logical_plan is not None and cj.logical_plan.predicates:
+            for pred in cj.logical_plan.predicates:
+                for conj in _split_and_conjuncts(pred):
+                    # --- Classify ---
+                    if not _is_cross_group_pushable(conj, cj):
+                        results.append(OptimizationResult(
+                            rule=_RULE,
+                            status="skipped",
+                            detail=(
+                                f"Predicate '{conj.expression}' on exit joint "
+                                f"'{exit_joint}' is non-pushable (HAVING, subquery, "
+                                f"or non-direct lineage transform)"
+                            ),
+                        ))
+                        continue
+
+                    # --- Resolve origins ---
+                    origins = _resolve_conjunct_origins(conj, cj, compiled_joints)
+                    if origins is None:
+                        results.append(OptimizationResult(
+                            rule=_RULE,
+                            status="skipped",
+                            detail=(
+                                f"Predicate '{conj.expression}' on exit joint "
+                                f"'{exit_joint}' has no column lineage"
+                            ),
+                        ))
+                        continue
+
+                    target_joints = {o.joint for o in origins}
+                    if len(target_joints) != 1:
+                        results.append(OptimizationResult(
+                            rule=_RULE,
+                            status="skipped",
+                            detail=(
+                                f"Predicate '{conj.expression}' on exit joint "
+                                f"'{exit_joint}' traces to multiple source joints: "
+                                f"{sorted(target_joints)}"
+                            ),
+                        ))
+                        continue
+
+                    target_joint = origins[0].joint
+                    target_group = group_for_joint.get(target_joint)
+                    if target_group is None:
+                        results.append(OptimizationResult(
+                            rule=_RULE,
+                            status="skipped",
+                            detail=(
+                                f"Predicate '{conj.expression}' target joint "
+                                f"'{target_joint}' not found in any group"
+                            ),
+                        ))
+                        continue
+
+                    # --- Capability check ---
+                    if not _has_predicate_capability(
+                        target_group, target_joint, capabilities, catalog_types,
+                    ):
+                        results.append(OptimizationResult(
+                            rule=_RULE,
+                            status="not_applicable",
+                            detail=(
+                                f"Predicate '{conj.expression}' targets source joint "
+                                f"'{target_joint}' in group '{target_group.id}' whose "
+                                f"adapter lacks predicate_pushdown capability"
+                            ),
+                        ))
+                        continue
+
+                    # --- Rewrite and push ---
+                    rewritten = _rewrite_predicate_for_source(conj, cj, origins)
+
+                    gid = target_group.id
+                    pjp_updates.setdefault(gid, {})
+                    pjp_updates[gid].setdefault(target_joint, [])
+                    pjp_updates[gid][target_joint].append(rewritten)
+
+                    # Track columns from successfully pushed predicates (Req 10.2)
+                    pushed_predicate_cols.update(conj.columns)
+
+                    results.append(OptimizationResult(
+                        rule=_RULE,
+                        status="applied",
+                        detail=(
+                            f"Pushed predicate '{rewritten.expression}' to source "
+                            f"joint '{target_joint}' in group '{target_group.id}'"
+                        ),
+                        pushed=rewritten.expression,
+                    ))
+
+                    # --- Join-equality propagation ---
+                    derived = _derive_join_equality_predicates(
+                        conj, cj, compiled_joints, group_for_joint,
+                        capabilities, catalog_types,
+                    )
+                    for derived_pred, derived_joint, derived_group in derived:
+                        dgid = derived_group.id
+                        pjp_updates.setdefault(dgid, {})
+                        pjp_updates[dgid].setdefault(derived_joint, [])
+                        pjp_updates[dgid][derived_joint].append(derived_pred)
+
+                        results.append(OptimizationResult(
+                            rule=_RULE,
+                            status="applied",
+                            detail=(
+                                f"Pushed join-equality inferred predicate "
+                                f"'{derived_pred.expression}' to source joint "
+                                f"'{derived_joint}' in group '{derived_group.id}' "
+                                f"(derived from '{conj.expression}' via join equality)"
+                            ),
+                            pushed=derived_pred.expression,
+                        ))
+
+        # ── Projection pushdown ──────────────────────────────────────
+        if cj.logical_plan is None:
+            # No LogicalPlan → skip projection and limit pushdown (Req 1.3, 4.5)
+            continue
+
+        lp = cj.logical_plan
+
+        # Skip if SELECT *  (Req 1.2)
+        if any(p.expression.strip() == "*" for p in lp.projections):
+            results.append(OptimizationResult(
+                rule=_PROJ_RULE,
+                status="skipped",
+                detail=(
+                    f"Consumer group '{group.id}' exit joint '{exit_joint}' "
+                    f"uses SELECT * — skipping projection pushdown"
+                ),
+            ))
+        else:
+            # Collect all referenced columns from the consumer's LogicalPlan (Req 1.1)
+            consumer_cols: set[str] = set()
+            for proj in lp.projections:
+                consumer_cols.update(proj.source_columns)
+            for pred in lp.predicates:
+                consumer_cols.update(pred.columns)
+            for join in lp.joins:
+                consumer_cols.update(join.columns)
+            if lp.aggregations:
+                consumer_cols.update(lp.aggregations.group_by)
+            if lp.ordering:
+                consumer_cols.update(col for col, _ in lp.ordering.columns)
+
+            # Include columns from cross-group predicates pushed for this consumer (Req 10.2)
+            consumer_cols.update(pushed_predicate_cols)
+
+            # Map each consumer column to source joint via lineage (Req 2.1–2.4)
+            source_projections: dict[str, set[str]] = {}
+            skip_projection = False
+            for col in consumer_cols:
+                lineage = _find_lineage(cj, col)
+                if lineage is None:
+                    # No lineage → fall back to reading all columns (Req 2.3)
+                    skip_projection = True
+                    break
+                for origin in lineage.origins:
+                    source_projections.setdefault(origin.joint, set()).add(origin.column)
+
+            if not skip_projection:
+                # Check capability and store projections (Req 3.1, 3.2, 3.4)
+                for source_joint, cols in source_projections.items():
+                    target_group = group_for_joint.get(source_joint)
+                    if target_group is None:
+                        continue
+                    if not _has_projection_capability(
+                        target_group, source_joint, capabilities, catalog_types,
+                    ):
+                        results.append(OptimizationResult(
+                            rule=_PROJ_RULE,
+                            status="not_applicable",
+                            detail=(
+                                f"Source joint '{source_joint}' in group "
+                                f"'{target_group.id}' lacks projection_pushdown capability"
+                            ),
+                        ))
+                        continue
+                    gid = target_group.id
+                    pjproj_updates.setdefault(gid, {})
+                    pjproj_updates[gid].setdefault(source_joint, set())
+                    pjproj_updates[gid][source_joint] |= cols
+                    results.append(OptimizationResult(
+                        rule=_PROJ_RULE,
+                        status="applied",
+                        detail=(
+                            f"Pushed projection {sorted(cols)} to source joint "
+                            f"'{source_joint}' in group '{target_group.id}'"
+                        ),
+                    ))
+
+                # Ensure columns from pushed predicates (including join-equality
+                # derived predicates) are included in each source joint's projection.
+                # Without this, a derived predicate like ``correlation_id = 'x'``
+                # pushed to raw_ingestion_events would not cause correlation_id to
+                # appear in that source's projection, leading to a runtime error.
+                for src_gid, joint_preds in pjp_updates.items():
+                    for src_joint, preds in joint_preds.items():
+                        src_group = group_for_joint.get(src_joint)
+                        if src_group is None:
+                            continue
+                        if not _has_projection_capability(
+                            src_group, src_joint, capabilities, catalog_types,
+                        ):
+                            continue
+                        pred_cols: set[str] = set()
+                        for p in preds:
+                            for c in p.columns:
+                                pred_cols.add(_bare_column(c))
+                        if pred_cols:
+                            pjproj_updates.setdefault(src_gid, {})
+                            pjproj_updates[src_gid].setdefault(src_joint, set())
+                            pjproj_updates[src_gid][src_joint] |= pred_cols
+
+        # ── Limit pushdown ──────────────────────────────────────────
+        if lp.limit is not None and lp.limit.count is not None:
+            limit_blocked = False
+
+            if lp.aggregations:
+                results.append(OptimizationResult(
+                    rule=_LIM_RULE,
+                    status="skipped",
+                    detail=(
+                        f"Consumer group '{group.id}' exit joint '{exit_joint}' "
+                        f"has aggregations — skipping limit pushdown"
+                    ),
+                ))
+                limit_blocked = True
+
+            if not limit_blocked and lp.joins:
+                results.append(OptimizationResult(
+                    rule=_LIM_RULE,
+                    status="skipped",
+                    detail=(
+                        f"Consumer group '{group.id}' exit joint '{exit_joint}' "
+                        f"has joins — skipping limit pushdown"
+                    ),
+                ))
+                limit_blocked = True
+
+            if not limit_blocked and lp.distinct:
+                results.append(OptimizationResult(
+                    rule=_LIM_RULE,
+                    status="skipped",
+                    detail=(
+                        f"Consumer group '{group.id}' exit joint '{exit_joint}' "
+                        f"has DISTINCT — skipping limit pushdown"
+                    ),
+                ))
+                limit_blocked = True
+
+            if not limit_blocked:
+                upstream_source_joints = _get_upstream_source_joints(
+                    cj, compiled_joints, group_for_joint,
+                )
+                upstream_source_groups = {
+                    group_for_joint[j].id
+                    for j in upstream_source_joints
+                    if j in group_for_joint
+                }
+
+                if len(upstream_source_groups) != 1:
+                    results.append(OptimizationResult(
+                        rule=_LIM_RULE,
+                        status="skipped",
+                        detail=(
+                            f"Consumer group '{group.id}' exit joint '{exit_joint}' "
+                            f"references multiple upstream source groups — "
+                            f"skipping limit pushdown"
+                        ),
+                    ))
+                    limit_blocked = True
+
+            if not limit_blocked and group.residual and group.residual.predicates:
+                results.append(OptimizationResult(
+                    rule=_LIM_RULE,
+                    status="skipped",
+                    detail=(
+                        f"Consumer group '{group.id}' has residual predicates — "
+                        f"skipping limit pushdown"
+                    ),
+                ))
+                limit_blocked = True
+
+            if not limit_blocked:
+                limit_val = lp.limit.count
+                for source_joint in upstream_source_joints:
+                    target_group = group_for_joint.get(source_joint)
+                    if target_group is None:
+                        continue
+                    if not _has_limit_capability(
+                        target_group, source_joint, capabilities, catalog_types,
+                    ):
+                        results.append(OptimizationResult(
+                            rule=_LIM_RULE,
+                            status="not_applicable",
+                            detail=(
+                                f"Source joint '{source_joint}' in group "
+                                f"'{target_group.id}' lacks limit_pushdown capability"
+                            ),
+                        ))
+                        continue
+                    gid = target_group.id
+                    pjlim_updates.setdefault(gid, {})
+                    pjlim_updates[gid][source_joint] = max(
+                        pjlim_updates[gid].get(source_joint, 0),
+                        limit_val,
+                    )
+                    results.append(OptimizationResult(
+                        rule=_LIM_RULE,
+                        status="applied",
+                        detail=(
+                            f"Pushed limit {limit_val} to source joint "
+                            f"'{source_joint}' in group '{target_group.id}'"
+                        ),
+                    ))
+
+    # --- Build updated groups via replace() (immutable pattern) ---
+    new_groups: list[FusedGroup] = []
+    for group in groups:
+        pred_updates = pjp_updates.get(group.id)
+        proj_updates = pjproj_updates.get(group.id)
+        lim_updates = pjlim_updates.get(group.id)
+        kwargs: dict[str, object] = {}
+
+        if pred_updates is not None:
+            # Merge with any existing per_joint_predicates, deduplicating
+            merged = dict(group.per_joint_predicates)
+            for jn, preds in pred_updates.items():
+                existing = merged.get(jn, [])
+                seen_exprs = {p.expression for p in existing}
+                deduped = list(existing)
+                for p in preds:
+                    if p.expression not in seen_exprs:
+                        seen_exprs.add(p.expression)
+                        deduped.append(p)
+                merged[jn] = deduped
+            kwargs["per_joint_predicates"] = merged
+
+        if proj_updates is not None:
+            # Merge with any existing per_joint_projections (union, sorted)
+            merged_proj = dict(group.per_joint_projections)
+            for jn, cols in proj_updates.items():
+                existing_cols = set(merged_proj.get(jn, []))
+                existing_cols |= cols
+                merged_proj[jn] = sorted(existing_cols)
+            kwargs["per_joint_projections"] = merged_proj
+
+        if lim_updates is not None:
+            # Merge with any existing per_joint_limits (max)
+            merged_lims = dict(group.per_joint_limits)
+            for jn, lim in lim_updates.items():
+                existing = merged_lims.get(jn, 0)
+                merged_lims[jn] = max(existing, lim) if existing else lim
+            kwargs["per_joint_limits"] = merged_lims
+
+        if kwargs:
+            new_groups.append(replace(group, **kwargs))
+        else:
+            new_groups.append(group)
+
+    return new_groups, results

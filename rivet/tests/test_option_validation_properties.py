@@ -128,7 +128,7 @@ PLUGIN_SPECS = [
     (
         UnityCatalogPlugin(),
         ["host", "catalog_name"],
-        {"host", "catalog_name", "schema", "token", "client_id", "client_secret", "auth_type"},
+        {"host", "catalog_name", "schema", "token", "client_id", "client_secret", "auth_type", "table_map", "region"},
         _unity_catalog_valid,
     ),
     (

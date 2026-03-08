@@ -36,6 +36,11 @@ class DuckDBComputeEnginePlugin(ComputeEnginePlugin):
     }
     credential_options: list[str] = []
 
+    def __init__(self) -> None:
+        super().__init__()
+        self._conn: Any = None  # duckdb.DuckDBPyConnection | None
+        self._registered_views: set[str] = set()
+
     def create_engine(self, name: str, config: dict[str, Any]) -> ComputeEngine:
         return ComputeEngine(name=name, engine_type="duckdb")
 
@@ -107,22 +112,41 @@ class DuckDBComputeEnginePlugin(ComputeEnginePlugin):
             if not all(isinstance(e, str) for e in exts):
                 _fail("extensions", "all extension names must be strings")
 
+    def _get_connection(self) -> Any:
+        """Lazily create and return the reusable DuckDB connection."""
+        if self._conn is None:
+            import duckdb
+            self._conn = duckdb.connect()
+        return self._conn
+
+    def _cleanup_views(self, conn: Any) -> None:
+        """Unregister previously registered views from the connection."""
+        for view in self._registered_views:
+            try:
+                conn.unregister(view)
+            except Exception:
+                pass
+        self._registered_views.clear()
+
     def execute_sql(
         self,
         engine: ComputeEngine,
         sql: str,
         input_tables: dict[str, pyarrow.Table],
     ) -> pyarrow.Table:
-        """Execute SQL by registering Arrow tables in a DuckDB in-memory connection."""
-        import duckdb
-
-        conn = duckdb.connect()
+        """Execute SQL by registering Arrow tables in a reusable DuckDB connection."""
+        conn = self._get_connection()
         try:
+            self._cleanup_views(conn)
             for name, table in input_tables.items():
                 conn.register(name, table)
+                self._registered_views.add(name)
             return conn.execute(sql).fetch_arrow_table()
-        finally:
-            conn.close()
+        except Exception:
+            # Discard connection on unrecoverable error
+            self._conn = None
+            self._registered_views.clear()
+            raise
 
 
 def apply_engine_settings(conn: Any, config: dict[str, Any]) -> None:

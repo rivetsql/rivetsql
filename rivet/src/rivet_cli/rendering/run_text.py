@@ -41,6 +41,9 @@ def render_run_text(
     _render_summary(lines, result, color)
     _render_quality_summary(lines, result, color)
 
+    if result.run_stats is not None:
+        _render_stats_summary(lines, result, verbosity, color)
+
     if verbosity >= 2:
         _render_fused_sql(lines, compiled, group_map, color)
 
@@ -161,6 +164,70 @@ def _render_quality_summary(lines: list[str], result: ExecutionResult, color: bo
             f"  Quality: {total} checks (assertions: {assertion_count}, audits: {audit_count})"
             f" | {assertion_failures + audit_failures} failures | {warnings} warnings"
         )
+
+def _render_stats_summary(
+    lines: list[str],
+    result: ExecutionResult,
+    verbosity: int,
+    color: bool,
+) -> None:
+    """Render per-group timing summary table and optional per-joint detail."""
+    run_stats = result.run_stats
+    if run_stats is None:
+        return
+
+    lines.append("")
+    # Pipeline-level time breakdown
+    engine_pct = (run_stats.total_engine_ms / run_stats.total_time_ms * 100) if run_stats.total_time_ms > 0 else 0
+    rivet_pct = (run_stats.total_rivet_ms / run_stats.total_time_ms * 100) if run_stats.total_time_ms > 0 else 0
+    lines.append(
+        f"  Time: {run_stats.total_time_ms:.0f}ms total"
+        f" | engine: {run_stats.total_engine_ms:.0f}ms ({engine_pct:.0f}%)"
+        f" | rivet: {run_stats.total_rivet_ms:.0f}ms ({rivet_pct:.0f}%)"
+    )
+
+    lines.append("")
+    lines.append(colorize("  Group Stats:", BOLD, color))
+    # Header
+    header = f"  {'GROUP':<20} {'JOINTS':>6} {'TOTAL_MS':>10} {'ENGINE_MS':>10} {'RIVET_MS':>10} {'ROWS_OUT':>10}"
+    lines.append(colorize(header, DIM, color))
+
+    for gs in run_stats.group_stats:
+        # Sum rows_out for joints in this group
+        rows_out = 0
+        for jname in gs.joints:
+            js = run_stats.joint_stats.get(jname)
+            if js and js.rows_out is not None:
+                rows_out += js.rows_out
+        rivet_ms = gs.timing.total_ms - gs.timing.engine_ms
+        row = (
+            f"  {gs.group_id:<20} {len(gs.joints):>6} "
+            f"{gs.timing.total_ms:>10.0f} {gs.timing.engine_ms:>10.0f} {rivet_ms:>10.0f} {rows_out:>10}"
+        )
+        lines.append(row)
+
+        # Verbosity >= 2: per-joint detail rows
+        if verbosity >= 2:
+            for jname in gs.joints:
+                js = run_stats.joint_stats.get(jname)
+                if js is None:
+                    continue
+                ri = js.rows_in if js.rows_in is not None else "-"
+                ro = js.rows_out if js.rows_out is not None else "-"
+                mat = ""
+                if js.materialization_stats is not None:
+                    ms = js.materialization_stats
+                    mat = f"mat: {ms.row_count} rows, {ms.byte_size} bytes"
+                detail = f"    {jname}: rows_in={ri} rows_out={ro}"
+                if mat:
+                    detail += f" | {mat}"
+                lines.append(colorize(detail, DIM, color))
+
+            # Engine metadata at verbosity >= 2
+            if gs.plugin_metrics and gs.plugin_metrics.well_known:
+                for cat_name, cat in gs.plugin_metrics.well_known.items():
+                    lines.append(colorize(f"    engine[{cat_name}]: {cat}", DIM, color))
+
 
 
 def _render_fused_sql(lines: list[str], compiled: CompiledAssembly, group_map: dict, color: bool) -> None:  # type: ignore[type-arg]
