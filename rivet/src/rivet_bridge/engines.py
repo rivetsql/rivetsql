@@ -6,6 +6,9 @@ from rivet_bridge.errors import BridgeError
 from rivet_config import ResolvedProfile
 from rivet_core import ComputeEngine, PluginRegistry
 
+# Keys handled by the framework (executor), not by individual engine plugins.
+_FRAMEWORK_KEYS = frozenset({"concurrency_limit"})
+
 
 class EngineInstantiator:
     def instantiate_all(
@@ -28,8 +31,9 @@ class EngineInstantiator:
                     )
                 )
                 continue
+            plugin_options = {k: v for k, v in eng_config.options.items() if k not in _FRAMEWORK_KEYS}
             try:
-                plugin.validate(eng_config.options)
+                plugin.validate(plugin_options)
             except Exception as exc:
                 errors.append(
                     BridgeError(
