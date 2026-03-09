@@ -46,11 +46,46 @@ def _register_with_fallback(registry, only=None):
 
 @pytest.fixture(autouse=True, scope="session")
 def _ensure_duckdb_plugin():
-    """Patch register_optional_plugins so DuckDB is always available in e2e tests."""
+    """Patch register_optional_plugins so DuckDB is always available in e2e tests.
+
+    The function is imported by name into many CLI command modules at
+    import time, so patching only ``rivet_bridge.plugins`` is not enough.
+    We must also patch every module that already holds a local reference.
+    """
+    import contextlib
+    import rivet_bridge
     import rivet_bridge.plugins as _bp
+
     global _original_register
     _original_register = _bp.register_optional_plugins
-    with patch.object(_bp, "register_optional_plugins", _register_with_fallback):
+
+    # All modules that bind ``register_optional_plugins`` as a local name.
+    _targets = [
+        (_bp, "register_optional_plugins"),
+        (rivet_bridge, "register_optional_plugins"),
+    ]
+
+    # CLI command modules that do top-level imports.
+    for mod_name in (
+        "rivet_cli.commands.compile",
+        "rivet_cli.commands.run",
+        "rivet_cli.commands.test",
+        "rivet_cli.commands.engine",
+        "rivet_cli.commands.catalog",
+        "rivet_cli.commands.catalog_create",
+        "rivet_cli.commands.engine_create",
+    ):
+        import importlib
+        try:
+            mod = importlib.import_module(mod_name)
+            if hasattr(mod, "register_optional_plugins"):
+                _targets.append((mod, "register_optional_plugins"))
+        except ImportError:
+            pass
+
+    with contextlib.ExitStack() as stack:
+        for target_mod, attr in _targets:
+            stack.enter_context(patch.object(target_mod, attr, _register_with_fallback))
         yield
 
 # ---------------------------------------------------------------------------
