@@ -4,11 +4,44 @@ from __future__ import annotations
 
 import dataclasses
 from pathlib import Path
+from unittest.mock import patch
 
 import pyarrow.csv as pcsv
 import pytest
 
 from rivet_cli.app import _main
+
+# ---------------------------------------------------------------------------
+# Ensure DuckDB plugin is available even without installed entry points.
+# On CI the sub-packages (rivet_duckdb, etc.) are on sys.path via
+# pytest's ``pythonpath`` but are NOT installed as packages, so
+# ``importlib.metadata.entry_points(group="rivet.plugins")`` returns
+# nothing.  We wrap ``register_optional_plugins`` to fall back to a
+# direct import when entry-point discovery misses the DuckDB plugin.
+# ---------------------------------------------------------------------------
+
+_original_register = None
+
+
+def _register_with_fallback(registry, only=None):
+    """Call the real register_optional_plugins, then ensure DuckDB is present."""
+    _original_register(registry, only=only)
+    if "duckdb" not in registry._engine_plugins:
+        try:
+            from rivet_duckdb import DuckDBPlugin
+            DuckDBPlugin(registry)
+        except Exception:
+            pass
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _ensure_duckdb_plugin():
+    """Patch register_optional_plugins so DuckDB is always available in e2e tests."""
+    import rivet_bridge.plugins as _bp
+    global _original_register
+    _original_register = _bp.register_optional_plugins
+    with patch.object(_bp, "register_optional_plugins", _register_with_fallback):
+        yield
 
 # ---------------------------------------------------------------------------
 # rivet.yaml and profiles.yaml templates

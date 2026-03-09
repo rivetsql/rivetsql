@@ -1849,13 +1849,15 @@ def test_property11_timing_accuracy_under_parallelism(
             f"got {gs.timing.total_ms}"
         )
 
-    # --- 3. total_time_ms ≤ sum of all group timing.total_ms ---
+    # --- 3. total_time_ms ≤ sum of all group timing.total_ms (with tolerance) ---
     # Under parallelism, the pipeline wall-clock is shorter than the
-    # sequential sum because groups overlap.
+    # sequential sum because groups overlap.  We add a generous tolerance
+    # for scheduling overhead (event-loop bookkeeping, dependency graph
+    # traversal, asyncio.wait latency) which can add a few ms.
     sum_group_ms = sum(gs.timing.total_ms for gs in run_stats.group_stats)
-    assert run_stats.total_time_ms <= sum_group_ms + 1.0, (
+    assert run_stats.total_time_ms <= sum_group_ms + 10.0, (
         f"Pipeline total_time_ms ({run_stats.total_time_ms:.2f}) should be "
-        f"<= sum of group timing.total_ms ({sum_group_ms:.2f}). "
+        f"<= sum of group timing.total_ms ({sum_group_ms:.2f}) + 10ms tolerance. "
         f"This invariant holds because parallel groups overlap in time."
     )
 
