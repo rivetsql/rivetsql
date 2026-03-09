@@ -28,16 +28,16 @@ jobs:
         include:
           - python-version: "3.11"
             os: ubuntu-latest
-            test-scope: "tests/core tests/config tests/bridge"
+            test-scope: "tests/unit tests/integration"
           - python-version: "3.12"
             os: ubuntu-latest
             test-scope: "tests"
           - python-version: "3.12"
             os: macos-latest
-            test-scope: "tests/core tests/config tests/bridge"
+            test-scope: "tests/unit tests/integration"
           - python-version: "3.13"
             os: ubuntu-latest
-            test-scope: "tests/core tests/config tests/bridge"
+            test-scope: "tests/unit tests/integration"
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
