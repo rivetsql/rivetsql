@@ -39,6 +39,7 @@ def _register_with_fallback(registry, only=None):
     if "duckdb" not in registry._engine_plugins:
         try:
             from rivet_duckdb import DuckDBPlugin
+
             DuckDBPlugin(registry)
         except Exception:
             pass
@@ -53,6 +54,7 @@ def _ensure_duckdb_plugin():
     We must also patch every module that already holds a local reference.
     """
     import contextlib
+
     import rivet_bridge
     import rivet_bridge.plugins as _bp
 
@@ -76,6 +78,7 @@ def _ensure_duckdb_plugin():
         "rivet_cli.commands.engine_create",
     ):
         import importlib
+
         try:
             mod = importlib.import_module(mod_name)
             if hasattr(mod, "register_optional_plugins"):
@@ -87,6 +90,7 @@ def _ensure_duckdb_plugin():
         for target_mod, attr in _targets:
             stack.enter_context(patch.object(target_mod, attr, _register_with_fallback))
         yield
+
 
 # ---------------------------------------------------------------------------
 # rivet.yaml and profiles.yaml templates
