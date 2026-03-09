@@ -203,8 +203,8 @@ def _resolve_engine(
 
 
 def _verify_callable(function_path: str) -> bool:
-    """Check if a dotted function path is importable."""
-    parts = function_path.rsplit(".", 1)
+    """Check if a colon-separated function path (module:func) is importable."""
+    parts = function_path.rsplit(":", 1)
     if len(parts) != 2:
         return False
     module_path, func_name = parts

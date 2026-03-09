@@ -25,13 +25,29 @@ class ParsedAnnotation:
     line_number: int
 
 
+class _StringSafeLoader(yaml.SafeLoader):
+    """SafeLoader that treats YAML boolean literals as plain strings.
+
+    yaml.safe_load coerces 'yes', 'no', 'on', 'off', 'true', 'false' to
+    Python bools. Rivet annotation values (joint names, tags, etc.) are
+    always strings, so we override the bool resolver to keep them as-is.
+    """
+
+
+# Remove the implicit bool resolver so yes/no/on/off stay as strings.
+_StringSafeLoader.add_constructor(
+    "tag:yaml.org,2002:bool",
+    lambda loader, node: loader.construct_scalar(node),  # type: ignore[arg-type]
+)
+
+
 def _parse_value(raw: str) -> str | bool | list[Any] | dict[str, Any]:
     """Parse annotation value: list, bool, dict, or string."""
     stripped = raw.strip()
     if stripped in ("true", "false"):
         return stripped == "true"
     if stripped.startswith("[") or stripped.startswith("{"):
-        return yaml.safe_load(stripped)  # type: ignore[no-any-return]
+        return yaml.load(stripped, Loader=_StringSafeLoader)  # type: ignore[no-any-return]  # noqa: S506
     return stripped
 
 

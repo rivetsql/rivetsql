@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import pathlib
 from pathlib import Path
 from unittest.mock import patch
 
@@ -10,6 +11,15 @@ import pyarrow.csv as pcsv
 import pytest
 
 from rivet_cli.app import _main
+
+_E2E_DIR = pathlib.Path(__file__).resolve().parent
+
+
+def pytest_collection_modifyitems(items):
+    for item in items:
+        if _E2E_DIR in pathlib.Path(item.fspath).resolve().parents:
+            item.add_marker(pytest.mark.e2e)
+
 
 # ---------------------------------------------------------------------------
 # Ensure DuckDB plugin is available even without installed entry points.

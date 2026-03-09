@@ -165,7 +165,7 @@ def _can_fuse(
 ) -> bool:
     """Return True when *joint* can merge into the upstream joint's group.
 
-    All five conditions from Req 18.2 must hold:
+    All six conditions from Req 18.2 must hold:
     1. Same engine instance
     2. No eager flag on upstream
     3. No assertions on upstream
@@ -173,6 +173,8 @@ def _can_fuse(
        — relaxed when *all_joints* is provided and every consumer of the
        upstream is the same multi-input *joint*.
     5. Downstream joint is not a PythonJoint
+    6. Upstream joint is not a PythonJoint (Python joints must be standalone
+       groups so the executor can dispatch them via _execute_python_joint)
     """
     if joint.engine != upstream_joint.engine:
         return False
@@ -189,6 +191,8 @@ def _can_fuse(
         else:
             return False
     if joint.joint_type == "python":
+        return False
+    if upstream_joint.joint_type == "python":
         return False
     return True
 

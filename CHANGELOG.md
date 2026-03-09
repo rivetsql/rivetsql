@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.11] - 2026-03-09
+
+### Changed
+- Complete test suite overhaul: reorganized from flat `tests/` into `tests/unit/`, `tests/integration/`, and `tests/e2e/` with pytest markers (`@pytest.mark.unit`, `integration`, `e2e`)
+- Removed ~93K lines of redundant/duplicated test code across all plugin test directories
+
+### Fixed
+- Python joint function path parsing: changed from dot-separated (`module.func`) to colon-separated (`module:func`) in `_verify_callable`, `_check_custom`, and `_execute_python_joint` — aligns with Python entry-point convention
+- YAML annotation parser: added `_StringSafeLoader` that preserves boolean-like strings (`yes`, `no`, `on`, `off`) as-is instead of coercing to Python bools
+- Optimizer fusion: PythonJoints now blocked from fusing as upstream (condition 6) so executor can dispatch them via `_execute_python_joint`
+
 ## [0.1.10] - 2026-03-08
 
 ### Added

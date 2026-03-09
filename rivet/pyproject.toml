@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rivetsql"
-version = "0.1.10"
+version = "0.1.11"
 description = "Core SQL pipeline framework — joints, engines, catalogs"
 requires-python = ">=3.11"
 license = "MIT"
@@ -76,8 +76,13 @@ packages = ["src/rivet_core", "src/rivet_config", "src/rivet_bridge", "src/rivet
 packages = ["src/rivet_core", "src/rivet_config", "src/rivet_bridge", "src/rivet_cli"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests/e2e", "tests/integration", "tests/unit"]
 pythonpath = ["src"]
+markers = [
+    "unit: Unit tests for complex algorithmic logic only",
+    "integration: Integration tests exercising multiple components",
+    "e2e: End-to-end CLI lifecycle tests",
+]
 
 [tool.ruff]
 target-version = "py311"

@@ -684,7 +684,7 @@ def _check_expression(cfg: dict[str, Any], table: pyarrow.Table) -> tuple[bool, 
 def _check_custom(cfg: dict[str, Any], table: pyarrow.Table) -> tuple[bool, str]:
     func_path = cfg.get("function", "")
     try:
-        mod_path, func_name = func_path.rsplit(".", 1)
+        mod_path, func_name = func_path.rsplit(":", 1)
         mod = importlib.import_module(mod_path)
         func = getattr(mod, func_name)
         result = func(table)
@@ -2378,7 +2378,7 @@ class Executor:
         """
         # Import the callable
         func_path = cj.function or ""
-        mod_path, func_name = func_path.rsplit(".", 1)
+        mod_path, func_name = func_path.rsplit(":", 1)
         try:
             mod = importlib.import_module(mod_path)
             func = getattr(mod, func_name)
@@ -2441,10 +2441,12 @@ class Executor:
                 )
             )
 
-        # Normalize return to Arrow and materialize
-        table = _normalize_python_result(cj.name, func_path, result)
+        # Normalize return to Material, then extract Arrow table and materialize
+        material = _normalize_python_result(cj.name, func_path, result)
+        assert material.materialized_ref is not None  # guaranteed by _normalize_python_result
+        arrow_table = material.materialized_ref.to_arrow()
         return self._get_materialization_strategy("arrow").materialize(
-            table, MaterializationContext(joint_name=cj.name, strategy_name="arrow", options={})
+            arrow_table, MaterializationContext(joint_name=cj.name, strategy_name="arrow", options={})
         )
 
     async def _dispatch_sink_write(

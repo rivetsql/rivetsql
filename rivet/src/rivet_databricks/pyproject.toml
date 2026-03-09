@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rivetsql-databricks"
-version = "0.1.10"
+version = "0.1.11"
 description = "Databricks and Unity Catalog plugin for Rivet SQL"
 readme = "README.md"
 requires-python = ">=3.11"
