@@ -23,6 +23,7 @@ default:
         token: ${DATABRICKS_TOKEN}
         wait_timeout: "30s"
         max_rows_per_chunk: 100000
+        concurrency_limit: 4
       catalogs: [unity_catalog, dbx_catalog]
 ```
 
@@ -35,6 +36,7 @@ default:
 | `token` | yes | `str` | — | Personal access token |
 | `wait_timeout` | no | `str` | `"30s"` | Statement execution timeout |
 | `max_rows_per_chunk` | no | `int` | `100000` | Max rows per Arrow chunk |
+| `concurrency_limit` | no | `int` | `1` | Max fused groups executing in parallel on this engine. Set higher to run independent pipeline branches concurrently against the warehouse. See [Parallel Execution](../concepts/engines.md#parallel-execution--concurrency). |
 
 ### Supported Write Strategies
 

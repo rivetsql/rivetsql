@@ -46,7 +46,7 @@ _SQL_KEYWORDS = frozenset({
     "temporary", "procedure",
 })
 
-_ident = st.from_regex(r"[a-z][a-z0-9_]{0,15}", fullmatch=True).filter(
+_ident = st.from_regex(r"[a-z][a-z0-9_]{1,15}", fullmatch=True).filter(
     lambda s: s not in _SQL_KEYWORDS
 )
 

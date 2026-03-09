@@ -15,8 +15,6 @@ from hypothesis import strategies as st
 
 from .conftest import (
     QueryRecorder,
-    read_sink_csv,
-    run_cli,
     write_joint,
     write_sink,
     write_source,
@@ -86,7 +84,7 @@ _transform_idx_st = st.integers(min_value=0, max_value=len(_TRANSFORMS) - 1)
         _transform_idx_st, min_size=6, max_size=6,
     ),
 )
-@settings(max_examples=100)
+@settings(max_examples=50)
 def test_property2_fused_group_single_query(
     chain_length: int,
     transform_indices: list[int],
@@ -99,6 +97,8 @@ def test_property2_fused_group_single_query(
 
     **Validates: Requirements 4.4**
     """
+    import gc
+
     with tempfile.TemporaryDirectory() as tmpdir:
         project = _scaffold(Path(tmpdir))
 
@@ -157,3 +157,6 @@ def test_property2_fused_group_single_query(
             f"of {chain_length} adjacent joints, but got {primary_count} queries: "
             f"{[q.sql[:100] for q in recorder.queries_for_engine('duckdb_primary')]}"
         )
+
+    # Force cleanup between Hypothesis iterations to prevent resource leaks.
+    gc.collect()

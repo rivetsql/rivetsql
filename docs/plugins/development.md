@@ -189,6 +189,16 @@ class ComputeEnginePlugin(ABC):
     def collect_metrics(self, execution_context: Any) -> PluginMetrics | None:
         """Collect engine-specific metrics after execution, or None."""
         return None
+
+    @property
+    def default_concurrency_limit(self) -> int:
+        """Default max fused groups executing in parallel on this engine.
+
+        Override to reflect the backend's natural parallelism (e.g., 4 for
+        Databricks SQL warehouses). Users can further override per-engine
+        via config["concurrency_limit"] in profiles.yaml.
+        """
+        return 1
 ```
 
 ### ComputeEngineAdapter

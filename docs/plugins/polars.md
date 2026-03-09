@@ -29,6 +29,7 @@ default:
 | `streaming` | `bool` | `false` | Enable streaming engine for reduced memory |
 | `n_threads` | `int` | `None` | Threads for parallel execution |
 | `check_dtypes` | `bool` | `true` | Validate data types during operations |
+| `concurrency_limit` | `int` | `1` | Max fused groups executing in parallel. Keep at `1` for Polars (in-process, CPU-bound). |
 
 ### Supported Catalog Types
 

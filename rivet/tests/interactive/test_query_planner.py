@@ -328,10 +328,34 @@ class TestCatalogTableReference:
 # Property-based tests
 # ---------------------------------------------------------------------------
 
-_catalog_name = st.from_regex(r"[a-z][a-z0-9]{2,7}", fullmatch=True)
-_table_name = st.from_regex(r"[a-z][a-z0-9_]{2,9}", fullmatch=True)
-_schema_name = st.from_regex(r"[a-z][a-z0-9]{2,7}", fullmatch=True)
-_joint_name = st.from_regex(r"[a-z][a-z0-9_]{2,14}", fullmatch=True)
+# SQL keywords that sqlglot tokenizes specially — must be excluded from
+# generated identifiers to avoid parse ambiguity.
+_sql_keywords = frozenset({
+    "add", "all", "alter", "and", "any", "as", "asc", "at", "between", "by",
+    "case", "cast", "copy", "create", "cross", "cube", "date", "delete",
+    "desc", "distinct", "div", "do", "drop", "else", "end", "enum", "exec",
+    "exists", "false", "fetch", "first", "for", "from", "full", "grant",
+    "group", "having", "if", "in", "index", "inner", "insert", "int", "into",
+    "is", "join", "key", "kill", "left", "like", "limit", "load", "lock",
+    "map", "merge", "next", "not", "null", "of", "offset", "on", "only",
+    "open", "or", "order", "outer", "over", "pivot", "range", "right", "row",
+    "rows", "select", "set", "show", "some", "table", "then", "time", "to",
+    "top", "true", "type", "union", "update", "using", "values", "view",
+    "when", "where", "while", "with",
+})
+
+_catalog_name = st.from_regex(r"[a-z][a-z0-9]{2,7}", fullmatch=True).filter(
+    lambda s: s not in _sql_keywords
+)
+_table_name = st.from_regex(r"[a-z][a-z0-9_]{2,9}", fullmatch=True).filter(
+    lambda s: s not in _sql_keywords
+)
+_schema_name = st.from_regex(r"[a-z][a-z0-9]{2,7}", fullmatch=True).filter(
+    lambda s: s not in _sql_keywords
+)
+_joint_name = st.from_regex(r"[a-z][a-z0-9_]{2,14}", fullmatch=True).filter(
+    lambda s: s not in _sql_keywords
+)
 
 
 @given(
@@ -347,6 +371,16 @@ def test_cross_catalog_generates_per_catalog_sources(
     catalog_table_pairs: list[tuple[str, str, str]],
 ) -> None:
     """Property 5: SQL referencing N catalogs produces source joints for each."""
+    from hypothesis import assume
+
+    # Ensure no schema or table name collides with any catalog name — such
+    # collisions create ambiguous 3-part references that the SQL preprocessor
+    # cannot reliably resolve.
+    all_catalogs = {c for c, _, _ in catalog_table_pairs}
+    for _cat, schema, table in catalog_table_pairs:
+        assume(schema not in all_catalogs)
+        assume(table not in all_catalogs)
+
     seen_catalogs: set[str] = set()
     unique_pairs: list[tuple[str, str, str]] = []
     for catalog, schema, table in catalog_table_pairs:

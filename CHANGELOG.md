@@ -5,17 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.10.0] - 2026-03-08
+## [0.1.10] - 2026-03-08
 
 ### Added
 - `scripts/dev-install.sh` for installing core (editable) + all plugins from local source in one command
+- `concurrency_limit` documentation across all engine plugin docs (DuckDB, Polars, Postgres, PySpark, Databricks)
+- Parallel execution & concurrency guide in `docs/concepts/engines.md`
+- `default_concurrency_limit` property documented in plugin development guide
+- DuckDB per-engine thread-safe connection pooling with `_engine_conns`, `_engine_views`, and per-engine locks
 
 ### Changed
 - Inter-package dependency pins relaxed from `==` exact to `>=X.Y.0,<X.(Y+1).0` compatible ranges so editable/local installs work without all plugins on PyPI
 - `scripts/bump-version.sh` updated to manage range pins automatically on minor version bumps
+- Optimizer `cross_group_pushdown_pass` uses `dict[str, Any]` for kwargs (mypy fix)
+- Renamed shadowed variable `existing` → `existing_lim` in limit merge logic
 
 ### Fixed
 - Engine option validation now strips framework-level keys (`concurrency_limit`) before calling plugin `validate()`, preventing false BRG-204 errors that cascaded into BRG-207 unknown engine references
+- Unused import `field` removed from executor, unused import `OptimizationResult` removed from tests
+- Property test filter tightened to avoid substring collisions in column names
+- E2e test harness and optimizer property test fixes
 
 ## [0.1.9] - 2026-03-08
 

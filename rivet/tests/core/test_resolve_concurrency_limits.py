@@ -9,7 +9,6 @@ from rivet_core.executor import _resolve_concurrency_limits
 from rivet_core.models import ComputeEngine
 from rivet_core.plugins import PluginRegistry
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

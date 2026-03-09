@@ -321,7 +321,7 @@ def _rewrite_scenario(draw: st.DrawFn) -> dict:
     column rename and/or table alias, for testing expression rewriting.
     """
     source_col = draw(_col_name_st)
-    consumer_col = draw(_col_name_st.filter(lambda c: c != source_col))
+    consumer_col = draw(_col_name_st.filter(lambda c: c != source_col and c not in source_col and source_col not in c))
     use_alias = draw(st.booleans())
 
     source_name = "src_joint"

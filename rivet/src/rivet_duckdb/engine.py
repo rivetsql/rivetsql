@@ -38,8 +38,14 @@ class DuckDBComputeEnginePlugin(ComputeEnginePlugin):
 
     def __init__(self) -> None:
         super().__init__()
-        self._conn: Any = None  # duckdb.DuckDBPyConnection | None
-        self._registered_views: set[str] = set()
+        import threading
+        self._conn: Any = None  # duckdb.DuckDBPyConnection | None (backward compat)
+        self._registered_views: set[str] = set()  # backward compat
+        # Per-engine-name connections and view sets for thread-safe parallel execution.
+        self._engine_conns: dict[str, Any] = {}
+        self._engine_views: dict[str, set[str]] = {}
+        self._engine_locks: dict[str, threading.Lock] = {}
+        self._meta_lock = threading.Lock()
 
     def create_engine(self, name: str, config: dict[str, Any]) -> ComputeEngine:
         return ComputeEngine(name=name, engine_type="duckdb")
@@ -128,25 +134,64 @@ class DuckDBComputeEnginePlugin(ComputeEnginePlugin):
                 pass
         self._registered_views.clear()
 
+    def _get_engine_lock(self, engine_name: str) -> Any:
+        """Return a per-engine lock, creating one if needed."""
+        import threading
+        with self._meta_lock:
+            if engine_name not in self._engine_locks:
+                self._engine_locks[engine_name] = threading.Lock()
+            return self._engine_locks[engine_name]
+
     def execute_sql(
         self,
         engine: ComputeEngine,
         sql: str,
         input_tables: dict[str, pyarrow.Table],
     ) -> pyarrow.Table:
-        """Execute SQL by registering Arrow tables in a reusable DuckDB connection."""
-        conn = self._get_connection()
-        try:
-            self._cleanup_views(conn)
-            for name, table in input_tables.items():
-                conn.register(name, table)
-                self._registered_views.add(name)
-            return conn.execute(sql).fetch_arrow_table()
-        except Exception:
-            # Discard connection on unrecoverable error
-            self._conn = None
-            self._registered_views.clear()
-            raise
+        """Execute SQL by registering Arrow tables in a per-engine DuckDB connection.
+
+        Each engine instance (e.g. ``duckdb_primary``, ``duckdb_secondary``)
+        gets its own connection and lock so that the parallel executor can
+        dispatch groups on different engines concurrently without races on
+        shared state.  Falls back to a shared connection when *engine* is
+        ``None`` (e.g. interactive / REPL queries).
+        """
+        engine_name = engine.name if engine is not None else "__default__"
+        lock = self._get_engine_lock(engine_name)
+
+        with lock:
+            conn = self._engine_conns.get(engine_name)
+            if conn is None:
+                import duckdb
+                conn = duckdb.connect()
+                self._engine_conns[engine_name] = conn
+                self._engine_views[engine_name] = set()
+
+            # Also maintain _conn / _registered_views for backward compat
+            self._conn = conn
+            views = self._engine_views[engine_name]
+
+            try:
+                # Unregister previously registered views on this connection
+                for view in list(views):
+                    try:
+                        conn.unregister(view)
+                    except Exception:
+                        pass
+                views.clear()
+
+                for name, table in input_tables.items():
+                    conn.register(name, table)
+                    views.add(name)
+                self._registered_views = views
+                return conn.execute(sql).fetch_arrow_table()
+            except Exception:
+                # Discard connection on unrecoverable error
+                self._engine_conns.pop(engine_name, None)
+                self._engine_views.pop(engine_name, None)
+                self._conn = None
+                self._registered_views = set()
+                raise
 
 
 def apply_engine_settings(conn: Any, config: dict[str, Any]) -> None:

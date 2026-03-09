@@ -34,6 +34,7 @@ default:
 | `spark_home` | `str` | `None` | Path to Spark installation |
 | `packages` | `list[str]` | `[]` | Maven coordinates to include |
 | `connect_url` | `str` | `None` | Spark Connect remote URL |
+| `concurrency_limit` | `int` | `1` | Max fused groups executing in parallel on this engine. Start with `2`–`4` depending on cluster resources. |
 
 ### Supported Catalog Types
 

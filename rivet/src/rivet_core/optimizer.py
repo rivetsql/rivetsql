@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 import uuid
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from rivet_core.lineage import ColumnLineage, ColumnOrigin
 from rivet_core.sql_parser import LogicalPlan, Predicate
@@ -1478,7 +1478,7 @@ def cross_group_pushdown_pass(
         pred_updates = pjp_updates.get(group.id)
         proj_updates = pjproj_updates.get(group.id)
         lim_updates = pjlim_updates.get(group.id)
-        kwargs: dict[str, object] = {}
+        kwargs: dict[str, Any] = {}
 
         if pred_updates is not None:
             # Merge with any existing per_joint_predicates, deduplicating
@@ -1507,8 +1507,8 @@ def cross_group_pushdown_pass(
             # Merge with any existing per_joint_limits (max)
             merged_lims = dict(group.per_joint_limits)
             for jn, lim in lim_updates.items():
-                existing = merged_lims.get(jn, 0)
-                merged_lims[jn] = max(existing, lim) if existing else lim
+                existing_lim = merged_lims.get(jn, 0)
+                merged_lims[jn] = max(existing_lim, lim) if existing_lim else lim
             kwargs["per_joint_limits"] = merged_lims
 
         if kwargs:

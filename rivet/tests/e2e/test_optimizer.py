@@ -130,6 +130,13 @@ def test_optimizer_rich_pipeline(rivet_project: Path, query_recorder, capsys) ->
     expected_amounts = {100, 75, 200}
     expected_names = ["Alice", "Alice", "Charlie"]
 
+    # Verify all sink output files were created
+    data_files = sorted(f.name for f in (project / "data").iterdir())
+    for expected_file in ("orders_main.csv", "orders_limited.csv", "orders_cross.csv"):
+        assert expected_file in data_files, (
+            f"{expected_file} not found in data dir. Files: {data_files}"
+        )
+
     # sink_main: 3 rows with amount > 50, columns id/customer_name/amount
     main_tbl = read_sink_csv(project, "orders_main")
     assert main_tbl.num_rows == 3

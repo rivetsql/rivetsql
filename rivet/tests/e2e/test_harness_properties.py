@@ -48,8 +48,11 @@ _str_value_st = st.text(
     # Exclude strings that look numeric (e.g. "00", "123", "3.14") because
     # CSV readers auto-detect types and would parse them as int/float,
     # breaking the string round-trip.
+    # Also exclude boolean-looking strings ("true", "false", etc.) because
+    # CSV readers auto-detect them as booleans.
     lambda s: not s.strip().replace(".", "", 1).replace("-", "", 1).replace("+", "", 1).isdigit()
     and len(s.strip()) > 0
+    and s.strip().lower() not in ("true", "false", "yes", "no", "null", "nan", "none")
 )
 
 # A column strategy: pick a type and generate a list of values

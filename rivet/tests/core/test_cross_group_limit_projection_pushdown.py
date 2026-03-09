@@ -9,12 +9,12 @@ from __future__ import annotations
 
 import uuid
 
-from rivet_core.compiler import CompiledJoint, OptimizationResult
+from rivet_core.compiler import CompiledJoint
 from rivet_core.lineage import ColumnLineage, ColumnOrigin
 from rivet_core.optimizer import (
     FusedGroup,
-    cross_group_pushdown_pass,
     ResidualPlan,
+    cross_group_pushdown_pass,
 )
 from rivet_core.sql_parser import (
     Aggregation,
@@ -1532,16 +1532,16 @@ class TestLimitConsumerRetainsResidual:
 from dataclasses import replace
 
 from rivet_core.executor import (
-    _merge_cross_group_projections,
     _merge_cross_group_limits,
+    _merge_cross_group_projections,
     _merge_source_limit_into_pushdown,
 )
 from rivet_core.optimizer import (
-    PushdownPlan,
+    CastPushdownResult,
+    LimitPushdownResult,
     PredicatePushdownResult,
     ProjectionPushdownResult,
-    LimitPushdownResult,
-    CastPushdownResult,
+    PushdownPlan,
 )
 
 

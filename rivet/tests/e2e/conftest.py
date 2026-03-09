@@ -169,9 +169,8 @@ def write_sink(
     (project / "sinks" / f"{name}.sql").write_text(content)
 
 
-def read_sink_csv(project: Path, table: str) -> "pyarrow.Table":  # noqa: F821
+def read_sink_csv(project: Path, table: str) -> pyarrow.Table:  # noqa: F821
     """Read a filesystem sink output CSV file via ``pyarrow.csv.read_csv``."""
-    import pyarrow
 
     path = project / "data" / f"{table}.csv"
     return pcsv.read_csv(str(path))
@@ -210,7 +209,7 @@ class QueryRecorder:
         self.queries: list[RecordedQuery] = []
         self._original_execute_sql = None
 
-    def __enter__(self) -> "QueryRecorder":
+    def __enter__(self) -> QueryRecorder:
         from rivet_duckdb.engine import DuckDBComputeEnginePlugin
 
         self._original_execute_sql = DuckDBComputeEnginePlugin.execute_sql
@@ -263,3 +262,17 @@ class QueryRecorder:
 def query_recorder() -> QueryRecorder:
     """Provide a :class:`QueryRecorder` that patches DuckDB ``execute_sql``."""
     return QueryRecorder()
+
+
+@pytest.fixture(autouse=True)
+def _reset_default_thread_pool() -> None:  # type: ignore[return]
+    """Force garbage collection after each test to clean up DuckDB connections.
+
+    DuckDB in-process connections created inside ``asyncio.to_thread()``
+    worker threads can survive across test boundaries.  A GC pass ensures
+    they are finalized promptly.
+    """
+    yield
+    import gc
+
+    gc.collect()

@@ -13,7 +13,7 @@ import inspect
 import time
 import traceback
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 import pyarrow

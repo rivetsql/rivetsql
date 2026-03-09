@@ -19,7 +19,7 @@ import uuid
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from rivet_core.compiler import CompiledJoint, OptimizationResult
+from rivet_core.compiler import CompiledJoint
 from rivet_core.lineage import ColumnLineage, ColumnOrigin
 from rivet_core.optimizer import (
     FusedGroup,
@@ -514,7 +514,7 @@ def test_property2_select_star_skips_projection_pushdown(
     compiled_joints = scenario["compiled_joints"]
     capabilities = scenario["capabilities"]
     catalog_types = scenario["catalog_types"]
-    source_name = scenario["source_name"]
+    scenario["source_name"]
 
     new_groups, results = cross_group_pushdown_pass(
         groups, compiled_joints, capabilities, catalog_types,
@@ -629,7 +629,6 @@ def test_property4_capability_gate_prevents_pushdown(
 # Import ResidualPlan for Property 8
 # ---------------------------------------------------------------------------
 from rivet_core.optimizer import ResidualPlan
-
 
 # ---------------------------------------------------------------------------
 # Strategy: Property 5 — Limit extraction without blocking constructs
@@ -1119,7 +1118,7 @@ def test_property6_blocking_constructs_prevent_limit_pushdown(
     compiled_joints = scenario["compiled_joints"]
     capabilities = scenario["capabilities"]
     catalog_types = scenario["catalog_types"]
-    source_name = scenario["source_name"]
+    scenario["source_name"]
     blocker = scenario["blocker"]
 
     new_groups, results = cross_group_pushdown_pass(
@@ -1266,15 +1265,14 @@ def test_property9_multi_consumer_projection_union_and_limit_maximum(
 # ---------------------------------------------------------------------------
 from dataclasses import replace
 
-from rivet_core.executor import _merge_cross_group_projections, _merge_cross_group_limits
+from rivet_core.executor import _merge_cross_group_limits, _merge_cross_group_projections
 from rivet_core.optimizer import (
-    PushdownPlan,
+    CastPushdownResult,
+    LimitPushdownResult,
     PredicatePushdownResult,
     ProjectionPushdownResult,
-    LimitPushdownResult,
-    CastPushdownResult,
+    PushdownPlan,
 )
-
 
 # ---------------------------------------------------------------------------
 # Strategy: Property 10 — Executor projection merge scenario

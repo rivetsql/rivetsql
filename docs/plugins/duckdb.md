@@ -31,6 +31,7 @@ default:
 | `memory_limit` | `str` | `"4GB"` | Max memory (e.g. `"4GB"`, `"512MB"`) |
 | `temp_directory` | `str` | `None` | Spill-to-disk directory |
 | `extensions` | `list[str]` | `[]` | Extensions to load at startup |
+| `concurrency_limit` | `int` | `1` | Max fused groups executing in parallel. Keep at `1` for DuckDB (in-process, single-writer). |
 
 ### Supported Catalog Types
 

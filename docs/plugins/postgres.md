@@ -35,6 +35,7 @@ default:
 | `application_name` | `str` | `"rivet"` | Visible in `pg_stat_activity` |
 | `connect_timeout` | `int` | `30` | Connection timeout in seconds |
 | `fetch_batch_size` | `int` | `10000` | Rows per batch for server-side cursors |
+| `concurrency_limit` | `int` | `1` | Max fused groups executing in parallel. Match your connection pool size, typically `2`–`8`. |
 
 ### Supported Write Strategies
 
