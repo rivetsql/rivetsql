@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from rivet_core.fuzzy import fuzzy_match
 from rivet_core.interactive.types import Completion, CompletionKind
 
 # Sort key tiers: lower = higher priority
@@ -22,29 +23,123 @@ _SORT_ANNOTATION = 400
 _SORT_SNIPPET = 500
 
 _SQL_KEYWORDS: list[str] = [
-    "SELECT", "FROM", "WHERE", "JOIN", "LEFT", "RIGHT", "INNER", "OUTER",
-    "FULL", "CROSS", "ON", "AND", "OR", "NOT", "IN", "EXISTS", "BETWEEN",
-    "LIKE", "IS", "NULL", "AS", "ORDER", "BY", "GROUP", "HAVING", "LIMIT",
-    "OFFSET", "UNION", "ALL", "DISTINCT", "INSERT", "INTO", "VALUES",
-    "UPDATE", "SET", "DELETE", "CREATE", "TABLE", "DROP", "ALTER", "INDEX",
-    "VIEW", "WITH", "CASE", "WHEN", "THEN", "ELSE", "END", "CAST",
-    "COALESCE", "COUNT", "SUM", "AVG", "MIN", "MAX", "ASC", "DESC",
-    "TRUE", "FALSE", "OVER", "PARTITION", "ROW_NUMBER", "RANK",
-    "DENSE_RANK", "LAG", "LEAD", "FIRST_VALUE", "LAST_VALUE",
-    "NTILE", "ROWS", "RANGE", "UNBOUNDED", "PRECEDING", "FOLLOWING",
-    "CURRENT", "ROW", "FILTER", "QUALIFY", "PIVOT", "UNPIVOT",
-    "LATERAL", "FLATTEN", "EXCEPT", "INTERSECT", "FETCH", "NEXT",
-    "ONLY", "RECURSIVE", "MATERIALIZED", "TEMPORARY", "TEMP",
-    "IF", "REPLACE", "CASCADE", "RESTRICT", "NULLS", "FIRST", "LAST",
+    "SELECT",
+    "FROM",
+    "WHERE",
+    "JOIN",
+    "LEFT",
+    "RIGHT",
+    "INNER",
+    "OUTER",
+    "FULL",
+    "CROSS",
+    "ON",
+    "AND",
+    "OR",
+    "NOT",
+    "IN",
+    "EXISTS",
+    "BETWEEN",
+    "LIKE",
+    "IS",
+    "NULL",
+    "AS",
+    "ORDER",
+    "BY",
+    "GROUP",
+    "HAVING",
+    "LIMIT",
+    "OFFSET",
+    "UNION",
+    "ALL",
+    "DISTINCT",
+    "INSERT",
+    "INTO",
+    "VALUES",
+    "UPDATE",
+    "SET",
+    "DELETE",
+    "CREATE",
+    "TABLE",
+    "DROP",
+    "ALTER",
+    "INDEX",
+    "VIEW",
+    "WITH",
+    "CASE",
+    "WHEN",
+    "THEN",
+    "ELSE",
+    "END",
+    "CAST",
+    "COALESCE",
+    "COUNT",
+    "SUM",
+    "AVG",
+    "MIN",
+    "MAX",
+    "ASC",
+    "DESC",
+    "TRUE",
+    "FALSE",
+    "OVER",
+    "PARTITION",
+    "ROW_NUMBER",
+    "RANK",
+    "DENSE_RANK",
+    "LAG",
+    "LEAD",
+    "FIRST_VALUE",
+    "LAST_VALUE",
+    "NTILE",
+    "ROWS",
+    "RANGE",
+    "UNBOUNDED",
+    "PRECEDING",
+    "FOLLOWING",
+    "CURRENT",
+    "ROW",
+    "FILTER",
+    "QUALIFY",
+    "PIVOT",
+    "UNPIVOT",
+    "LATERAL",
+    "FLATTEN",
+    "EXCEPT",
+    "INTERSECT",
+    "FETCH",
+    "NEXT",
+    "ONLY",
+    "RECURSIVE",
+    "MATERIALIZED",
+    "TEMPORARY",
+    "TEMP",
+    "IF",
+    "REPLACE",
+    "CASCADE",
+    "RESTRICT",
+    "NULLS",
+    "FIRST",
+    "LAST",
 ]
 
 _ANNOTATION_TYPES: list[str] = [
-    "assert:not_null", "assert:unique", "assert:accepted_values",
-    "assert:relationships", "assert:expression", "assert:row_count",
-    "assert:freshness", "assert:custom",
-    "audit:not_null", "audit:unique", "audit:accepted_values",
-    "audit:relationships", "audit:expression", "audit:row_count",
-    "audit:freshness", "audit:custom",
+    "assert:not_null",
+    "assert:unique",
+    "assert:accepted_values",
+    "assert:relationships",
+    "assert:expression",
+    "assert:row_count",
+    "assert:freshness",
+    "assert:custom",
+    "audit:not_null",
+    "audit:unique",
+    "audit:accepted_values",
+    "audit:relationships",
+    "audit:expression",
+    "audit:row_count",
+    "audit:freshness",
+    "audit:custom",
 ]
 
 _SNIPPETS: list[tuple[str, str]] = [
@@ -58,41 +153,15 @@ _SNIPPETS: list[tuple[str, str]] = [
 ]
 
 # Pattern to detect if cursor is in a FROM/JOIN clause context
-_FROM_CONTEXT_RE = re.compile(
-    r"(?:FROM|JOIN)\s+(?:\S+\s*,\s*)*$", re.IGNORECASE
-)
+_FROM_CONTEXT_RE = re.compile(r"(?:FROM|JOIN)\s+(?:\S+\s*,\s*)*$", re.IGNORECASE)
 
 # Pattern to detect annotation context
 _ANNOTATION_RE = re.compile(r"--\s*rivet:\s*$", re.IGNORECASE)
 
 
-def _fuzzy_match(query: str, text: str) -> list[int] | None:
-    """Subsequence fuzzy match. Returns match positions or None."""
-    q = query.lower()
-    t = text.lower()
-    positions: list[int] = []
-    qi = 0
-    for ti, ch in enumerate(t):
-        if qi < len(q) and ch == q[qi]:
-            positions.append(ti)
-            qi += 1
-    return positions if qi == len(q) else None
-
-
-def _match_score(query: str, text: str, positions: list[int]) -> float:
-    """Lower = better. Rewards prefix and contiguous matches."""
-    if not positions:
-        return float("inf")
-    if query.lower() == text.lower():
-        return -1.0
-    consecutive = sum(1 for a, b in zip(positions, positions[1:]) if b == a + 1)
-    prefix_bonus = 1.0 if positions[0] == 0 else 0.0
-    span = positions[-1] - positions[0] + 1
-    return span / max(len(text), 1) - consecutive * 0.1 - prefix_bonus * 0.2
-
-
 class _CatalogEntry:
     """An indexed catalog item for completion."""
+
     __slots__ = ("catalog", "schema", "table", "columns")
 
     def __init__(
@@ -110,6 +179,7 @@ class _CatalogEntry:
 
 class _JointEntry:
     """An indexed joint for completion."""
+
     __slots__ = ("name", "joint_type", "engine", "columns")
 
     def __init__(
@@ -248,9 +318,7 @@ class CompletionEngine:
 
         return self._filter_and_sort(prefix, candidates)
 
-    def _complete_dot(
-        self, prefix: str, catalog_context: str | None
-    ) -> list[Completion]:
+    def _complete_dot(self, prefix: str, catalog_context: str | None) -> list[Completion]:
         """Handle dot-triggered completions: catalog.schema, catalog.schema.table, table.column."""
         parts = prefix.split(".")
         typed = parts[-1]  # text after last dot
@@ -268,17 +336,13 @@ class CompletionEngine:
         elif len(scope) == 2:
             catalog_name, schema_name = scope
             # catalog.schema. → show tables
-            candidates.extend(
-                self._table_completions(catalog_name, schema_name, typed)
-            )
+            candidates.extend(self._table_completions(catalog_name, schema_name, typed))
 
         elif len(scope) == 3:
             catalog_name, schema_name, table_name = scope
             # catalog.schema.table. → show columns
             candidates.extend(
-                self._catalog_column_completions(
-                    catalog_name, schema_name, table_name, typed
-                )
+                self._catalog_column_completions(catalog_name, schema_name, table_name, typed)
             )
 
         return self._filter_and_sort(typed, candidates)
@@ -286,9 +350,7 @@ class CompletionEngine:
     def _joint_completions(self, prefix: str) -> list[Completion]:
         results: list[Completion] = []
         for j in self._joint_entries:
-            icon = {"source": "⚪", "sql": "🔵", "python": "🟣", "sink": "🟢"}.get(
-                j.joint_type, ""
-            )
+            icon = {"source": "⚪", "sql": "🔵", "python": "🟣", "sink": "🟢"}.get(j.joint_type, "")
             detail = f"{icon} joint — {j.joint_type}"
             if j.engine:
                 detail += f", {j.engine}"
@@ -304,9 +366,7 @@ class CompletionEngine:
             )
         return results
 
-    def _catalog_completions(
-        self, prefix: str, catalog_context: str | None
-    ) -> list[Completion]:
+    def _catalog_completions(self, prefix: str, catalog_context: str | None) -> list[Completion]:
         results: list[Completion] = []
         seen: set[str] = set()
         for entry in self._catalog_entries:
@@ -368,9 +428,7 @@ class CompletionEngine:
             for trigger, body in _SNIPPETS
         ]
 
-    def _schema_completions(
-        self, catalog_name: str, typed: str
-    ) -> list[Completion]:
+    def _schema_completions(self, catalog_name: str, typed: str) -> list[Completion]:
         """Schemas within a catalog."""
         results: list[Completion] = []
         seen: set[str] = set()
@@ -393,9 +451,7 @@ class CompletionEngine:
                 )
         return results
 
-    def _column_completions(
-        self, table_or_joint: str, typed: str
-    ) -> list[Completion]:
+    def _column_completions(self, table_or_joint: str, typed: str) -> list[Completion]:
         """Columns for a joint or catalog table by short name."""
         results: list[Completion] = []
         # Check joints first
@@ -415,11 +471,7 @@ class CompletionEngine:
                 return results
         # Check catalog tables
         for entry in self._catalog_entries:
-            if (
-                entry.table
-                and entry.table.lower() == table_or_joint.lower()
-                and entry.columns
-            ):
+            if entry.table and entry.table.lower() == table_or_joint.lower() and entry.columns:
                 for col_name, col_type in entry.columns:
                     results.append(
                         Completion(
@@ -490,9 +542,7 @@ class CompletionEngine:
         return results
 
     @staticmethod
-    def _filter_and_sort(
-        prefix: str, candidates: list[Completion]
-    ) -> list[Completion]:
+    def _filter_and_sort(prefix: str, candidates: list[Completion]) -> list[Completion]:
         """Filter by fuzzy match on prefix, then sort by (sort_key, match_score)."""
         if not prefix:
             candidates.sort(key=lambda c: (c.sort_key, c.label.lower()))
@@ -500,9 +550,9 @@ class CompletionEngine:
 
         scored: list[tuple[float, Completion]] = []
         for c in candidates:
-            positions = _fuzzy_match(prefix, c.label)
-            if positions is not None:
-                ms = _match_score(prefix, c.label, positions)
+            result = fuzzy_match(prefix, c.label)
+            if result is not None:
+                ms, _positions = result
                 scored.append((ms, c))
 
         scored.sort(key=lambda x: (x[1].sort_key, x[0], x[1].label.lower()))

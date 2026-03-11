@@ -59,6 +59,7 @@ from rivet_core.interactive.types import (
 )
 from rivet_core.models import Catalog, ComputeEngine, Joint
 from rivet_core.plugins import PluginRegistry
+from rivet_core.smart_cache import CacheMode, SmartCache
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +130,7 @@ class InteractiveSession:
         self._engines: dict[str, ComputeEngine] = {}
         self._registry: PluginRegistry | None = None
         self._explorer: CatalogExplorer | None = None
+        self._smart_cache: SmartCache | None = None
         self._history: list[QueryHistoryEntry] = []
         self._cancel_event = threading.Event()
         # Engine override cascade state
@@ -178,13 +180,21 @@ class InteractiveSession:
         self._catalogs = catalogs
         self._engines = engines
         self._registry = registry
-        self._default_engine = default_engine if default_engine is not None else (next(iter(engines)) if engines else None)
+        self._default_engine = (
+            default_engine
+            if default_engine is not None
+            else (next(iter(engines)) if engines else None)
+        )
 
     def start(self) -> None:
         """Load project, connect catalogs, compile assembly.
 
         If init_from() was called, uses those objects. Otherwise uses the
         ProjectLoader protocol (which the TUI layer provides).
+
+        Creates a ``SmartCache`` in ``READ_WRITE`` mode and passes it to
+        ``CatalogExplorer`` so that cached catalog trees are available
+        immediately (warm-start).
         """
         t0 = time.monotonic()
         self._start_time = t0
@@ -210,10 +220,13 @@ class InteractiveSession:
 
         if not self._skip_catalog_probe:
             try:
+                self._smart_cache = SmartCache(profile=self._profile_name)
                 self._explorer = CatalogExplorer(
                     catalogs=self._catalogs,
                     engines=self._engines,
                     registry=self._registry,
+                    smart_cache=self._smart_cache,
+                    cache_mode=CacheMode.READ_WRITE,
                 )
             except Exception:
                 logger.debug("Catalog explorer init failed", exc_info=True)
@@ -228,14 +241,16 @@ class InteractiveSession:
             self._repl_state = self._load_repl_state()
 
     def stop(self) -> None:
-        """Close connections, flush cache, save history."""
+        """Close connections, flush SmartCache to disk, save history."""
         self._material_cache.clear()
+        if self._smart_cache is not None:
+            self._smart_cache.flush()
+        if self._explorer is not None:
+            self._explorer.close()
         if not self._skip_catalog_probe:
             save_history(self._project_path, self._history)
         if self._start_time is not None:
-            self._metrics["session_duration_ms"] = (
-                (time.monotonic() - self._start_time) * 1000
-            )
+            self._metrics["session_duration_ms"] = (time.monotonic() - self._start_time) * 1000
 
     # --- Query Execution ---
 
@@ -252,9 +267,7 @@ class InteractiveSession:
     def _execution_guard(self) -> Iterator[None]:
         """Acquire execution lock, set EXECUTING, guarantee release."""
         if not self._exec_lock.acquire(blocking=False):
-            raise ExecutionInProgressError(
-                "Execution in progress — cancel first (Ctrl+C)"
-            )
+            raise ExecutionInProgressError("Execution in progress — cancel first (Ctrl+C)")
         try:
             self._set_activity(Activity_State.EXECUTING)
             yield
@@ -276,14 +289,16 @@ class InteractiveSession:
         if callback is None:
             return
         try:
-            callback(QueryProgress(
-                joint_name=joint_name,
-                status=status,  # type: ignore[arg-type]
-                current=current,
-                total=total,
-                rows=rows,
-                elapsed_ms=(time.monotonic() - t0) * 1000,
-            ))
+            callback(
+                QueryProgress(
+                    joint_name=joint_name,
+                    status=status,  # type: ignore[arg-type]
+                    current=current,
+                    total=total,
+                    rows=rows,
+                    elapsed_ms=(time.monotonic() - t0) * 1000,
+                )
+            )
         except Exception:
             logger.warning("on_progress callback failed", exc_info=True)
 
@@ -360,14 +375,24 @@ class InteractiveSession:
         with self._execution_guard():
             t0 = time.monotonic()
 
-            self._emit_log(Execution_Log(
-                timestamp=datetime.now(tz=UTC),
-                level="INFO",
-                source="session",
-                message="Compiling ad-hoc query",
-            ))
+            self._emit_log(
+                Execution_Log(
+                    timestamp=datetime.now(tz=UTC),
+                    level="INFO",
+                    source="session",
+                    message="Compiling ad-hoc query",
+                )
+            )
 
-            self._invoke_progress(on_progress, joint_name="__query", status="compiling", current=0, total=1, rows=None, t0=t0)
+            self._invoke_progress(
+                on_progress,
+                joint_name="__query",
+                status="compiling",
+                current=0,
+                total=1,
+                rows=None,
+                t0=t0,
+            )
 
             compiled = self._build_and_compile_transient(sql, catalog_context, engine)
 
@@ -376,73 +401,102 @@ class InteractiveSession:
             joint_count = len(compiled.joints)
             group_count = len(compiled.fused_groups)
             total_steps = len(compiled.execution_order)
-            self._emit_log(Execution_Log(
-                timestamp=datetime.now(tz=UTC),
-                level="INFO",
-                source="compiler",
-                message=f"Compiled: {joint_count} joints, {group_count} fused groups, engines: {', '.join(engine_names) or 'none'}",
-            ))
+            self._emit_log(
+                Execution_Log(
+                    timestamp=datetime.now(tz=UTC),
+                    level="INFO",
+                    source="compiler",
+                    message=f"Compiled: {joint_count} joints, {group_count} fused groups, engines: {', '.join(engine_names) or 'none'}",
+                )
+            )
             if compiled.warnings:
                 for w in compiled.warnings:
-                    self._emit_log(Execution_Log(
-                        timestamp=datetime.now(tz=UTC),
-                        level="WARNING",
-                        source="compiler",
-                        message=w,
-                    ))
+                    self._emit_log(
+                        Execution_Log(
+                            timestamp=datetime.now(tz=UTC),
+                            level="WARNING",
+                            source="compiler",
+                            message=w,
+                        )
+                    )
 
             # Log execution order
             for step_idx, step_id in enumerate(compiled.execution_order, 1):
                 group = next((g for g in compiled.fused_groups if g.id == step_id), None)
                 if group:
-                    self._emit_log(Execution_Log(
-                        timestamp=datetime.now(tz=UTC),
-                        level="DEBUG",
-                        source="executor",
-                        message=f"Step {step_idx}: group '{step_id}' — joints: {', '.join(group.joints)}, engine: {group.engine}",
-                    ))
+                    self._emit_log(
+                        Execution_Log(
+                            timestamp=datetime.now(tz=UTC),
+                            level="DEBUG",
+                            source="executor",
+                            message=f"Step {step_idx}: group '{step_id}' — joints: {', '.join(group.joints)}, engine: {group.engine}",
+                        )
+                    )
 
             effective_engine = compiled.engines[0].name if compiled.engines else "unknown"
-            self._emit_log(Execution_Log(
-                timestamp=datetime.now(tz=UTC),
-                level="INFO",
-                source="engine",
-                message=f"Executing on '{effective_engine}'",
-            ))
+            self._emit_log(
+                Execution_Log(
+                    timestamp=datetime.now(tz=UTC),
+                    level="INFO",
+                    source="engine",
+                    message=f"Executing on '{effective_engine}'",
+                )
+            )
 
             # Progress: executing per fused group step
             for step_idx, step_id in enumerate(compiled.execution_order):
                 group = next((g for g in compiled.fused_groups if g.id == step_id), None)
                 step_name = group.joints[0] if group else step_id
-                self._invoke_progress(on_progress, joint_name=step_name, status="executing", current=step_idx, total=total_steps, rows=None, t0=t0)
+                self._invoke_progress(
+                    on_progress,
+                    joint_name=step_name,
+                    status="executing",
+                    current=step_idx,
+                    total=total_steps,
+                    rows=None,
+                    t0=t0,
+                )
 
             from rivet_core.executor import Executor  # noqa: PLC0415
 
             executor = Executor(registry=self._registry)
-            table, run_stats = executor.run_query_with_stats_sync(compiled, target_joint="__display")
+            table, run_stats = executor.run_query_with_stats_sync(
+                compiled, target_joint="__display"
+            )
 
             table, truncated = self._apply_truncation(table)
             elapsed = (time.monotonic() - t0) * 1000
 
             trunc_note = f" (truncated to {table.num_rows})" if truncated else ""
-            self._emit_log(Execution_Log(
-                timestamp=datetime.now(tz=UTC),
-                level="INFO",
-                source="engine",
-                message=f"Query completed: {table.num_rows} rows, {table.num_columns} cols in {elapsed:.0f}ms{trunc_note}",
-            ))
+            self._emit_log(
+                Execution_Log(
+                    timestamp=datetime.now(tz=UTC),
+                    level="INFO",
+                    source="engine",
+                    message=f"Query completed: {table.num_rows} rows, {table.num_columns} cols in {elapsed:.0f}ms{trunc_note}",
+                )
+            )
 
-            self._invoke_progress(on_progress, joint_name="__query", status="done", current=max(total_steps, 1), total=max(total_steps, 1), rows=table.num_rows, t0=t0)
+            self._invoke_progress(
+                on_progress,
+                joint_name="__query",
+                status="done",
+                current=max(total_steps, 1),
+                total=max(total_steps, 1),
+                rows=table.num_rows,
+                t0=t0,
+            )
 
             # Build QueryPlan so the TUI can show the transient assembly
             query_cj = next((j for j in compiled.joints if j.name == "__query"), None)
             source_joints = [
-                Joint(name=j.name, joint_type=j.type)
-                for j in compiled.joints if j.type == "source"
+                Joint(name=j.name, joint_type=j.type) for j in compiled.joints if j.type == "source"
             ]
             query_plan = QueryPlan(
                 sources=source_joints,
-                query_joint=Joint(name="__query", joint_type=query_cj.type if query_cj else "sql", sql=sql),
+                query_joint=Joint(
+                    name="__query", joint_type=query_cj.type if query_cj else "sql", sql=sql
+                ),
                 sink=Joint(name="__display", joint_type="sink", upstream=["__query"]),
                 resolved_references={},
                 assembly=compiled,
@@ -467,7 +521,9 @@ class InteractiveSession:
             self._last_query_sql = sql
             self._last_query_engine = effective_engine
             query_cj_compiled = next((j for j in compiled.joints if j.name == "__query"), None)
-            self._last_query_upstream = list(query_cj_compiled.upstream) if query_cj_compiled else []
+            self._last_query_upstream = (
+                list(query_cj_compiled.upstream) if query_cj_compiled else []
+            )
 
             return result
 
@@ -492,15 +548,39 @@ class InteractiveSession:
                 raise SessionError(f"Joint '{joint_name}' not found in assembly")
 
             total_steps = len(assembly.execution_order)
-            self._invoke_progress(on_progress, joint_name=joint_name, status="compiling", current=0, total=max(total_steps, 1), rows=None, t0=t0)
+            self._invoke_progress(
+                on_progress,
+                joint_name=joint_name,
+                status="compiling",
+                current=0,
+                total=max(total_steps, 1),
+                rows=None,
+                t0=t0,
+            )
 
             for step_idx, step_id in enumerate(assembly.execution_order):
                 group = next((g for g in assembly.fused_groups if g.id == step_id), None)
                 step_name = group.joints[0] if group else step_id
-                self._invoke_progress(on_progress, joint_name=step_name, status="executing", current=step_idx, total=total_steps, rows=None, t0=t0)
+                self._invoke_progress(
+                    on_progress,
+                    joint_name=step_name,
+                    status="executing",
+                    current=step_idx,
+                    total=total_steps,
+                    rows=None,
+                    t0=t0,
+                )
 
             elapsed = (time.monotonic() - t0) * 1000
-            self._invoke_progress(on_progress, joint_name=joint_name, status="done", current=max(total_steps, 1), total=max(total_steps, 1), rows=0, t0=t0)
+            self._invoke_progress(
+                on_progress,
+                joint_name=joint_name,
+                status="done",
+                current=max(total_steps, 1),
+                total=max(total_steps, 1),
+                rows=0,
+                t0=t0,
+            )
 
             result = QueryResult(
                 table=pa.table({}),
@@ -530,15 +610,39 @@ class InteractiveSession:
         with self._execution_guard():
             t0 = time.monotonic()
             total_steps = len(assembly.execution_order)
-            self._invoke_progress(on_progress, joint_name="pipeline", status="compiling", current=0, total=max(total_steps, 1), rows=None, t0=t0)
+            self._invoke_progress(
+                on_progress,
+                joint_name="pipeline",
+                status="compiling",
+                current=0,
+                total=max(total_steps, 1),
+                rows=None,
+                t0=t0,
+            )
 
             for step_idx, step_id in enumerate(assembly.execution_order):
                 group = next((g for g in assembly.fused_groups if g.id == step_id), None)
                 step_name = group.joints[0] if group else step_id
-                self._invoke_progress(on_progress, joint_name=step_name, status="executing", current=step_idx, total=total_steps, rows=None, t0=t0)
+                self._invoke_progress(
+                    on_progress,
+                    joint_name=step_name,
+                    status="executing",
+                    current=step_idx,
+                    total=total_steps,
+                    rows=None,
+                    t0=t0,
+                )
 
             elapsed = (time.monotonic() - t0) * 1000
-            self._invoke_progress(on_progress, joint_name="pipeline", status="done", current=max(total_steps, 1), total=max(total_steps, 1), rows=None, t0=t0)
+            self._invoke_progress(
+                on_progress,
+                joint_name="pipeline",
+                status="done",
+                current=max(total_steps, 1),
+                total=max(total_steps, 1),
+                rows=None,
+                t0=t0,
+            )
 
             self._metrics["executions"] += 1
             self._record_history("pipeline", "full", 0, elapsed, "success")
@@ -575,7 +679,8 @@ class InteractiveSession:
             self._metrics["compilations"] += 1
 
             changed = [
-                j.name for j in self._assembly.joints
+                j.name
+                for j in self._assembly.joints
                 if j.name in old_joints and j.sql != old_joints[j.name].sql
             ]
             if changed:
@@ -586,12 +691,21 @@ class InteractiveSession:
             self._set_activity(Activity_State.IDLE)
 
     def on_file_changed(self, paths: list[Path]) -> CompiledAssembly | None:
-        """Handle file changes — recompile if relevant files changed."""
+        """Handle file changes — recompile if relevant files changed.
+
+        When ``.yaml`` or ``.yml`` files change, the SmartCache is
+        invalidated for the entire profile since catalog connection
+        options may have changed.
+        """
         relevant_exts = {".sql", ".yaml", ".yml"}
         if not any(p.suffix in relevant_exts for p in paths):
             return None
 
         self._metrics["file_reloads"] += 1
+
+        # Invalidate SmartCache when config files change
+        if self._smart_cache is not None and any(p.suffix in {".yaml", ".yml"} for p in paths):
+            self._smart_cache.invalidate_profile()
 
         if self._loader is not None:
             try:
@@ -693,6 +807,7 @@ class InteractiveSession:
         """
         try:
             if format == "json":
+
                 def _serialize(obj: object) -> object:
                     if isinstance(obj, Enum):
                         return obj.value
@@ -794,7 +909,9 @@ class InteractiveSession:
             lines.append(f"-- rivet:engine: {self._last_query_engine}")
         if description is not None:
             lines.append(f"-- rivet:description: {description}")
-        upstream_str = "[" + ", ".join(self._last_query_upstream) + "]" if self._last_query_upstream else "[]"
+        upstream_str = (
+            "[" + ", ".join(self._last_query_upstream) + "]" if self._last_query_upstream else "[]"
+        )
         lines.append(f"-- rivet:upstream: {upstream_str}")
         lines.append(self._last_query_sql)
         lines.append("")
@@ -819,7 +936,7 @@ class InteractiveSession:
                 for line in manifest_path.read_text(encoding="utf-8").splitlines():
                     stripped = line.strip()
                     if stripped.startswith("joints:"):
-                        value = stripped[len("joints:"):].strip()
+                        value = stripped[len("joints:") :].strip()
                         if value:
                             return self._project_path / value
             except OSError:
@@ -917,10 +1034,15 @@ class InteractiveSession:
 
         return [k for k in sqlglot.Dialect.classes if k]
 
-
     def switch_profile(self, profile: str) -> None:
-        """Disconnect → resolve new profile → reconnect → recompile → clear cache."""
+        """Disconnect → resolve new profile → reconnect → recompile → clear cache.
+
+        Invalidates the SmartCache for the old profile before rebuilding
+        with a fresh ``SmartCache`` instance for the new profile.
+        """
         self._material_cache.clear()
+        if self._smart_cache is not None:
+            self._smart_cache.invalidate_profile()
         self._profile_name = profile
 
         if self._loader is not None:
@@ -950,24 +1072,27 @@ class InteractiveSession:
         self._metrics["compilations"] += 1
 
         try:
+            self._smart_cache = SmartCache(profile=self._profile_name)
             self._explorer = CatalogExplorer(
                 catalogs=self._catalogs,
                 engines=self._engines,
                 registry=self._registry,
+                smart_cache=self._smart_cache,
+                cache_mode=CacheMode.READ_WRITE,
             )
         except Exception:
             logger.debug("Explorer rebuild failed on profile switch", exc_info=True)
 
         # Reset engine/dialect overrides, preserve editor content
         self._adhoc_engine = None
-        self._repl_state = dataclasses.replace(
-            self._repl_state, adhoc_engine=None, dialect=None
-        )
+        self._repl_state = dataclasses.replace(self._repl_state, adhoc_engine=None, dialect=None)
         self._persist_repl_state()
 
     def flush_cache(self) -> None:
-        """Clear the material cache."""
+        """Clear the material cache and the SmartCache (memory + disk)."""
         self._material_cache.clear()
+        if self._smart_cache is not None:
+            self._smart_cache.clear()
 
     @property
     def history(self) -> list[QueryHistoryEntry]:

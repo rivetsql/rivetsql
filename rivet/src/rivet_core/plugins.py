@@ -140,13 +140,29 @@ class CatalogPlugin(ABC):
         all_nodes = self.list_tables(catalog)
         return [n for n in all_nodes if _is_immediate_child(n.path, path)]
 
+    def get_fingerprint(self, catalog: Catalog, path: list[str]) -> str | None:
+        """Return a lightweight fingerprint for staleness detection.
+
+        Plugins may override this to return a hash, ETag, modification
+        timestamp, or other cheap-to-compute signature for the resource at
+        the given path. The SmartCache uses this to determine whether cached
+        data is still valid without refetching the full payload.
+
+        When a cached entry's TTL expires, CatalogExplorer calls this method
+        and compares the result against the stored fingerprint:
+        - Same fingerprint → TTL is reset, cached data is reused.
+        - Different fingerprint → cached entry is invalidated and refetched.
+        - None → plugin does not support fingerprinting; falls back to
+          TTL-only expiration (expired entries are always refetched).
+
+        Returns None by default (opt-in for plugins).
+        """
+        return None
+
 
 def _is_immediate_child(node_path: list[str], parent_path: list[str]) -> bool:
     """Return True if node_path is exactly one segment deeper than parent_path with matching prefix."""
-    return (
-        len(node_path) == len(parent_path) + 1
-        and node_path[: len(parent_path)] == parent_path
-    )
+    return len(node_path) == len(parent_path) + 1 and node_path[: len(parent_path)] == parent_path
 
 
 class ComputeEnginePlugin(ABC):
@@ -206,7 +222,9 @@ class ComputeEngineAdapter(ABC):
     _registry: PluginRegistry | None = None  # set by PluginRegistry.register_adapter
 
     @abstractmethod
-    def read_dispatch(self, engine: Any, catalog: Any, joint: Any, pushdown: PushdownPlan | None = None) -> AdapterPushdownResult: ...
+    def read_dispatch(
+        self, engine: Any, catalog: Any, joint: Any, pushdown: PushdownPlan | None = None
+    ) -> AdapterPushdownResult: ...
 
     @abstractmethod
     def write_dispatch(self, engine: Any, catalog: Any, joint: Any, material: Any) -> Any: ...
@@ -246,6 +264,7 @@ class PluginRegistry:
         self._sources: dict[str, SourcePlugin] = {}
         self._sinks: dict[str, SinkPlugin] = {}
         self._discovered: bool = False
+
     @property
     def is_discovered(self) -> bool:
         """Return whether plugin discovery has already been performed."""
@@ -322,9 +341,7 @@ class PluginRegistry:
     def register_source(self, plugin: SourcePlugin) -> None:
         catalog_type = getattr(plugin, "catalog_type", None)
         if catalog_type is None:
-            raise PluginRegistrationError(
-                "SourcePlugin must have a 'catalog_type' attribute."
-            )
+            raise PluginRegistrationError("SourcePlugin must have a 'catalog_type' attribute.")
         if catalog_type in self._sources:
             raise PluginRegistrationError(
                 f"Source plugin for catalog type '{catalog_type}' is already registered."
@@ -334,9 +351,7 @@ class PluginRegistry:
     def register_sink(self, plugin: SinkPlugin) -> None:
         catalog_type = getattr(plugin, "catalog_type", None)
         if catalog_type is None:
-            raise PluginRegistrationError(
-                "SinkPlugin must have a 'catalog_type' attribute."
-            )
+            raise PluginRegistrationError("SinkPlugin must have a 'catalog_type' attribute.")
         if catalog_type in self._sinks:
             raise PluginRegistrationError(
                 f"Sink plugin for catalog type '{catalog_type}' is already registered."
@@ -366,21 +381,15 @@ class PluginRegistry:
     def get_compute_engine(self, instance_name: str) -> ComputeEngine | None:
         return self._compute_engines.get(instance_name)
 
-    def get_adapter(
-        self, engine_type: str, catalog_type: str
-    ) -> ComputeEngineAdapter | None:
+    def get_adapter(self, engine_type: str, catalog_type: str) -> ComputeEngineAdapter | None:
         return self._adapters.get((engine_type, catalog_type))
 
     def get_cross_joint_adapter(
         self, consumer_engine_type: str, producer_engine_type: str
     ) -> CrossJointAdapter | None:
-        return self._cross_joint_adapters.get(
-            (consumer_engine_type, producer_engine_type)
-        )
+        return self._cross_joint_adapters.get((consumer_engine_type, producer_engine_type))
 
-    def resolve_capabilities(
-        self, engine_type: str, catalog_type: str
-    ) -> list[str] | None:
+    def resolve_capabilities(self, engine_type: str, catalog_type: str) -> list[str] | None:
         adapter = self._adapters.get((engine_type, catalog_type))
         if adapter is not None:
             return adapter.capabilities
@@ -477,8 +486,7 @@ class PluginRegistry:
                     getattr(self, register_method)(plugin_instance)
                 except Exception as exc:
                     raise PluginRegistrationError(
-                        f"Failed to load plugin entry point '{ep.name}' "
-                        f"from group '{group}': {exc}"
+                        f"Failed to load plugin entry point '{ep.name}' from group '{group}': {exc}"
                     ) from exc
 
         self._discovered = True

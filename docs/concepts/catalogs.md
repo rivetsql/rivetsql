@@ -223,3 +223,7 @@ Some catalog types support introspection: listing tables and fetching schemas. R
 
 !!! note
     Introspection is best-effort. If a catalog doesn't support it or the connection is unavailable, Rivet logs a warning and continues. Introspection failures never block compilation or execution.
+
+### Caching
+
+Catalog introspection results are cached on disk by the [Smart Cache](smart-cache.md). Interactive commands (`repl`, `explore`) load cached data instantly on startup, while non-interactive commands (`catalog list`, `catalog search`) always fetch live data but write results back to the cache for future sessions. See [Smart Cache](smart-cache.md) for details on TTL, staleness detection, and invalidation.

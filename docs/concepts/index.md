@@ -89,3 +89,4 @@ display, execution, testing, inspection — reads from this one immutable object
 | [Compilation](compilation.md) | Deep dive into the compilation pipeline |
 | [Materialization](materialization.md) | `MaterializedRef`, `.to_arrow()`, and eviction |
 | [Assertions, Audits & Tests](assertions-audits-tests.md) | Quality and correctness guarantees |
+| [Smart Cache](smart-cache.md) | Persistent catalog metadata caching across sessions |

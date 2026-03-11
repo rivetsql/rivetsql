@@ -268,7 +268,7 @@ class ExploreController:
         else:
             self.search_query += ch
         if self.search_query:
-            self.search_results = self._explorer.search(self.search_query)
+            self.search_results = self._explorer.search(self.search_query, expand=False)
         else:
             self.search_results = []
         self.search_cursor = 0

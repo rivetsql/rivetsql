@@ -5,13 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.11] - 2026-03-09
+## [0.1.12] - 2026-03-11
+
+### Added
+- `rivet catalog list` now accepts a dot-separated path (e.g., `mycatalog.myschema`) to list children at any level of the catalog tree without using the interactive explorer
+- SmartCache integration in `InteractiveSession`: REPL and explore sessions now use persistent catalog cache with warm-start, automatic invalidation on config file changes and profile switches
+- SmartCache: unified persistent catalog metadata cache (`~/.cache/rivet/catalog/`) with per-catalog JSON files, TTL-based expiration, fingerprint-based staleness detection, LRU eviction (50 MB default), and debounced flush policy
+- Cache modes: `READ_WRITE` for interactive tools (warm-start), `WRITE_ONLY` for non-interactive CLI commands (rehydrate cache for future sessions)
+- Progressive search expansion: `search()` now seeds from SmartCache, applies access-priority scoring, and progressively expands unexplored branches within a time budget
+- `CatalogPlugin.get_fingerprint()`: optional method for plugins to support lightweight staleness detection
 
 ### Changed
+- `CatalogExplorer` now accepts optional `smart_cache` and `cache_mode` parameters for transparent cache integration
+- `explore` keystroke search uses `expand=False` for instant results without network I/O
+- `rivet catalog list <catalog>` now lists the catalog's children (schemas/databases) directly instead of showing the catalog info summary — no more need for `--depth 1` to drill in
 - Complete test suite overhaul: reorganized from flat `tests/` into `tests/unit/`, `tests/integration/`, and `tests/e2e/` with pytest markers (`@pytest.mark.unit`, `integration`, `e2e`)
 - Removed ~93K lines of redundant/duplicated test code across all plugin test directories
 
+### Removed
+- `rivet_cli.repl.catalog_cache` module retired — replaced by `rivet_core.smart_cache.SmartCache`
+
 ### Fixed
+- `rivet catalog search` Phase 2 now skips irrelevant sibling schemas when their parent already produced hits — prevents budget exhaustion on cached catalogs with many sub-schemas (e.g. `datalake_silver` with ~100 children) so unexplored catalogs like `preprod_datalake_silver` get expanded in time
+- Removed leftover debug logging (`stderr.write`) from catalog search Phase 2 expansion
+- Join-equality predicate propagation no longer breaks when a column name is a SQL keyword like `and`, `or`, `not` — the AND-split regex now requires surrounding whitespace instead of word boundaries
+- `rivet catalog search` expansion budget increased to 10s (from 2s default) for better coverage of large catalogs with high-latency backends
+- `rivet catalog search` now uses `READ_WRITE` cache mode so progressive expansion can discover catalog nodes (was returning no results due to `WRITE_ONLY` mode blocking expansion)
+- SmartCache deserialization: cached `CatalogNode` and `ObjectSchema` objects are now properly reconstructed from JSON after disk round-trip (was causing `AttributeError: 'dict' object has no attribute 'path'`)
+- Phase 2 progressive expansion now seeds frontier from already-cached catalog levels, so branches loaded from SmartCache in Phase 1 are drilled into instead of skipped
+- Phase 2 expansion no longer stops early when hit count reaches the limit — it explores until the time budget expires, then returns the best-scored matches across all discovered branches
+- Phase 2 expansion uses depth-based breadth-first ordering so top-level catalog schemas are explored before deeper sub-schemas
+- Fixed double catalog-name prefix in Phase 2 qualified names (`unity.unity.…` → `unity.…`)
+- Phase 2 expansion no longer drills into table columns — only container nodes (schemas/databases) are queued for deeper exploration
+- `rivet catalog search` Phase 2 expansion now prioritizes branches that share path segments with Phase 1 hits — e.g. if `datalake_silver.data_factory_ingest` produced results, `preprod_datalake_silver` is expanded first instead of wasting the time budget on unrelated schemas
+- Fuzzy matcher now awards a strong bonus when the query appears as a contiguous substring in the candidate, so `ingestion_event` ranks far above scattered-character matches like `grs_functional_unit`
+- `rivet catalog search` now filters out matches scoring 20+ points worse than the best hit, removing scattered-subsequence noise from results
 - Python joint function path parsing: changed from dot-separated (`module.func`) to colon-separated (`module:func`) in `_verify_callable`, `_check_custom`, and `_execute_python_joint` — aligns with Python entry-point convention
 - YAML annotation parser: added `_StringSafeLoader` that preserves boolean-like strings (`yes`, `no`, `on`, `off`) as-is instead of coercing to Python bools
 - Optimizer fusion: PythonJoints now blocked from fusing as upstream (condition 6) so executor can dispatch them via `_execute_python_joint`

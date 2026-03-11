@@ -2,16 +2,25 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from rivet_core.errors import RivetError
-from rivet_core.introspection import NodeSummary, ObjectMetadata, ObjectSchema
+from rivet_core.fuzzy import fuzzy_match
+from rivet_core.introspection import (
+    CatalogNode,
+    ColumnDetail,
+    NodeSummary,
+    ObjectMetadata,
+    ObjectSchema,
+)
+from rivet_core.smart_cache import CacheMode, CacheResult, SmartCache
 
 if TYPE_CHECKING:
-    from rivet_core.introspection import CatalogNode
     from rivet_core.models import Catalog, ComputeEngine
     from rivet_core.plugins import CatalogPlugin, PluginRegistry
 
@@ -52,7 +61,9 @@ class ExplorerNode:
     """A node in the unified catalog tree."""
 
     name: str
-    node_type: str  # "catalog", "database", "schema", "table", "view", "file", "column", "directory"
+    node_type: (
+        str  # "catalog", "database", "schema", "table", "view", "file", "column", "directory"
+    )
     path: list[str]  # full path from root
     is_expandable: bool
     depth: int
@@ -95,8 +106,6 @@ class GeneratedSource:
     column_count: int
 
 
-
-
 @dataclass(frozen=True)
 class ConnectionResult:
     """Result of a connection test."""
@@ -120,18 +129,26 @@ def sanitize_name(name: str) -> str:
 
 
 # ── Credential keys to exclude from options_summary ──────────────────────
-_CREDENTIAL_KEYS = frozenset({
-    "password", "secret", "token", "key", "credential", "credentials",
-    "secret_key", "access_key", "api_key", "private_key",
-})
+_CREDENTIAL_KEYS = frozenset(
+    {
+        "password",
+        "secret",
+        "token",
+        "key",
+        "credential",
+        "credentials",
+        "secret_key",
+        "access_key",
+        "api_key",
+        "private_key",
+    }
+)
 
 
 def _safe_options_summary(options: dict[str, Any]) -> dict[str, str]:
     """Return a safe subset of catalog options, excluding credentials."""
     return {
-        k: str(v)
-        for k, v in options.items()
-        if not any(ck in k.lower() for ck in _CREDENTIAL_KEYS)
+        k: str(v) for k, v in options.items() if not any(ck in k.lower() for ck in _CREDENTIAL_KEYS)
     }
 
 
@@ -163,53 +180,54 @@ _NODE_TYPE_BONUS: dict[str, float] = {
 }
 
 
-def fuzzy_match(query: str, candidate: str) -> tuple[float, list[int]] | None:
-    """Pure Python fuzzy matching. All query chars must appear in candidate in order.
+def _rehydrate_nodes(data: Any) -> list[CatalogNode]:
+    """Convert SmartCache data back to CatalogNode objects.
 
-    Returns (score, match_positions) or None if no match. Lower score = better.
-    Scoring: exact prefix > word boundary > consecutive > scattered.
-    Shorter candidates score better.
+    After a JSON round-trip, CatalogNode objects become plain dicts.
+    This reconstructs them. If the data is already CatalogNode objects
+    (same-process cache hit), it's returned as-is.
     """
-    if not query:
-        return (0.0, [])
+    if not isinstance(data, list):
+        return []
+    result: list[CatalogNode] = []
+    for item in data:
+        if isinstance(item, CatalogNode):
+            result.append(item)
+        elif isinstance(item, dict):
+            summary_raw = item.get("summary")
+            summary = NodeSummary(**summary_raw) if isinstance(summary_raw, dict) else None
+            result.append(
+                CatalogNode(
+                    name=item["name"],
+                    node_type=item["node_type"],
+                    path=item["path"],
+                    is_container=item["is_container"],
+                    children_count=item.get("children_count"),
+                    summary=summary,
+                    metadata=item.get("metadata", {}),
+                )
+            )
+    return result
 
-    q = query.lower()
-    c = candidate.lower()
-    positions: list[int] = []
-    ci = 0
 
-    for ch in q:
-        found = c.find(ch, ci)
-        if found == -1:
-            return None
-        positions.append(found)
-        ci = found + 1
+def _rehydrate_schema(data: Any) -> ObjectSchema | None:
+    """Convert SmartCache data back to an ObjectSchema object.
 
-    # Scoring components
-    score = 0.0
-
-    # Exact prefix match bonus (strong)
-    if c.startswith(q):
-        score -= 10.0
-
-    # Word boundary bonus: count matches at word boundaries (after _, ., or start)
-    for pos in positions:
-        if pos == 0 or candidate[pos - 1] in ("_", ".", "-", "/"):
-            score -= 2.0
-
-    # Consecutive bonus: count consecutive position pairs
-    for i in range(1, len(positions)):
-        if positions[i] == positions[i - 1] + 1:
-            score -= 1.5
-
-    # Scatter penalty: total gap between matched positions
-    if len(positions) > 1:
-        score += (positions[-1] - positions[0] - len(positions) + 1) * 0.5
-
-    # Length penalty: shorter candidates are better
-    score += len(candidate) * 0.1
-
-    return (score, positions)
+    After a JSON round-trip, ObjectSchema becomes a plain dict.
+    If already an ObjectSchema, returns as-is.
+    """
+    if isinstance(data, ObjectSchema):
+        return data
+    if not isinstance(data, dict):
+        return None
+    columns = [ColumnDetail(**c) if isinstance(c, dict) else c for c in data.get("columns", [])]
+    return ObjectSchema(
+        path=data["path"],
+        node_type=data["node_type"],
+        columns=columns,
+        primary_key=data.get("primary_key"),
+        comment=data.get("comment"),
+    )
 
 
 class CatalogExplorer:
@@ -217,6 +235,20 @@ class CatalogExplorer:
 
     Accepts instantiated catalogs, engines, and a PluginRegistry.
     All catalog browsing logic lives here — no compilation or assembly required.
+
+    When an optional ``SmartCache`` is provided, catalog metadata is
+    persisted on disk and reused across sessions.  The ``cache_mode``
+    parameter controls behaviour:
+
+    - ``CacheMode.READ_WRITE`` (interactive tools): reads from cache on
+      startup for warm-start, performs staleness checks via TTL and
+      plugin fingerprinting, and writes updates back.
+    - ``CacheMode.WRITE_ONLY`` (non-interactive CLI): always fetches
+      live data from plugins but writes results to cache so that future
+      interactive sessions benefit.
+
+    Without a ``SmartCache`` the explorer behaves identically to the
+    pre-cache implementation (backward compatible).
     """
 
     def __init__(
@@ -226,11 +258,15 @@ class CatalogExplorer:
         registry: PluginRegistry,
         max_depth: int = 10,
         skip_probe: bool = False,
+        smart_cache: SmartCache | None = None,
+        cache_mode: CacheMode = CacheMode.READ_WRITE,
     ) -> None:
         self._catalogs = catalogs
         self._engines = engines
         self._registry = registry
         self._max_depth = max_depth
+        self._smart_cache = smart_cache
+        self._cache_mode = cache_mode
         self._tables_cache: dict[str, list[CatalogNode]] = {}
         self._children_cache: dict[tuple[str, tuple[str, ...]], list[CatalogNode]] = {}
         self._schema_cache: dict[tuple[str, str], ObjectSchema] = {}
@@ -253,6 +289,13 @@ class CatalogExplorer:
                 except Exception as exc:
                     logger.debug("Catalog '%s' connection probe failed: %s", name, exc)
                     self._connection_status[name] = (False, str(exc))
+
+    def _connection_hash(self, catalog_name: str) -> str:
+        """Compute a stable hash of catalog connection options."""
+        catalog = self._catalogs.get(catalog_name)
+        options = catalog.options if catalog is not None else {}
+        serialized = json.dumps(options, sort_keys=True, default=str)
+        return hashlib.sha256(serialized.encode()).hexdigest()[:16]
 
     def list_catalogs(self) -> list[CatalogInfo]:
         """Return CatalogInfo for each catalog without calling introspection methods."""
@@ -280,6 +323,12 @@ class CatalogExplorer:
         Each expansion fetches only the immediate children via
         plugin.list_children(catalog, sub_path). Results are cached per-path
         so repeated expansions don't re-fetch.
+
+        When a SmartCache is provided:
+        - READ_WRITE mode checks SmartCache before plugin call; expired
+          entries trigger a staleness check via plugin.get_fingerprint().
+        - WRITE_ONLY mode always calls the plugin but stores the result.
+        - After any successful plugin call the result is stored in SmartCache.
 
         - Empty path: returns empty (use list_catalogs() instead).
         - [catalog_name]: fetches immediate children (e.g. schemas).
@@ -311,14 +360,80 @@ class CatalogExplorer:
 
         sub_path = path[1:]  # path within the catalog's namespace
         cache_key = (catalog_name, tuple(sub_path))
+        conn_hash = self._connection_hash(catalog_name)
 
-        # Check per-path cache first
+        # Check per-path in-memory cache first
         if cache_key not in self._children_cache:
-            try:
-                nodes = plugin.list_children(catalog, sub_path)
-            except Exception:
-                nodes = []
-            self._children_cache[cache_key] = nodes
+            # Try SmartCache in READ_WRITE mode
+            smart_hit: CacheResult | None = None
+            if self._smart_cache is not None and self._cache_mode == CacheMode.READ_WRITE:
+                smart_hit = self._smart_cache.get(
+                    "children",
+                    catalog_name,
+                    conn_hash,
+                    tuple(sub_path),
+                )
+                if smart_hit is not None and not smart_hit.expired:
+                    # Fresh hit — use cached data directly
+                    self._children_cache[cache_key] = _rehydrate_nodes(smart_hit.data)
+                elif smart_hit is not None and smart_hit.expired:
+                    # Expired — perform staleness check
+                    try:
+                        fingerprint = plugin.get_fingerprint(catalog, sub_path)
+                    except Exception:
+                        # Network error — return stale data
+                        logger.warning(
+                            "Fingerprint check failed for '%s' — returning stale cached data",
+                            ".".join(path),
+                        )
+                        self._children_cache[cache_key] = _rehydrate_nodes(smart_hit.data)
+                        fingerprint = smart_hit.fingerprint  # keep existing
+
+                    if cache_key not in self._children_cache:
+                        # Fingerprint check succeeded — compare
+                        if fingerprint is None:
+                            # Plugin doesn't support fingerprinting — refetch
+                            pass  # fall through to plugin call
+                        elif fingerprint == smart_hit.fingerprint:
+                            # Unchanged — reset TTL, use cached data
+                            self._smart_cache.reset_ttl(
+                                "children",
+                                catalog_name,
+                                conn_hash,
+                                tuple(sub_path),
+                            )
+                            self._children_cache[cache_key] = _rehydrate_nodes(smart_hit.data)
+                        else:
+                            # Changed — invalidate and refetch
+                            self._smart_cache.invalidate_entry(
+                                "children",
+                                catalog_name,
+                                conn_hash,
+                                tuple(sub_path),
+                            )
+
+            # If still not in in-memory cache, call plugin
+            if cache_key not in self._children_cache:
+                try:
+                    nodes = plugin.list_children(catalog, sub_path)
+                except Exception:
+                    nodes = []
+                self._children_cache[cache_key] = nodes
+
+                # Store in SmartCache (all modes)
+                if self._smart_cache is not None and nodes:
+                    try:
+                        fp = plugin.get_fingerprint(catalog, sub_path)
+                    except Exception:
+                        fp = None
+                    self._smart_cache.put(
+                        "children",
+                        catalog_name,
+                        conn_hash,
+                        tuple(sub_path),
+                        nodes,
+                        fp,
+                    )
 
         cached_nodes = self._children_cache[cache_key]
 
@@ -338,7 +453,9 @@ class CatalogExplorer:
             if is_file_catalog and not node.is_container:
                 raw_filename = node.path[-1] if node.path else node.name
                 has_ext = _has_recognized_extension(raw_filename)
-                has_format = node.summary is not None and getattr(node.summary, "format", None) is not None
+                has_format = (
+                    node.summary is not None and getattr(node.summary, "format", None) is not None
+                )
                 if not has_ext and not has_format:
                     continue
             is_table = node.node_type in self._TABLE_NODE_TYPES
@@ -357,14 +474,10 @@ class CatalogExplorer:
             )
         return result
 
-
-
     def get_node_detail(self, path: list[str]) -> NodeDetail:
         """Return NodeDetail for the node at path, composing ExplorerNode + schema + metadata."""
         if not path:
-            raise CatalogExplorerError(
-                RivetError(code=RVT_871, message="Empty path provided")
-            )
+            raise CatalogExplorerError(RivetError(code=RVT_871, message="Empty path provided"))
         catalog_name = path[0]
         catalog = self._catalogs.get(catalog_name)
         if catalog is None:
@@ -387,10 +500,18 @@ class CatalogExplorer:
         metadata = self.get_table_metadata(path)
         children_count = len(schema.columns) if schema is not None else None
 
-        return NodeDetail(node=node, schema=schema, metadata=metadata, children_count=children_count)
+        return NodeDetail(
+            node=node, schema=schema, metadata=metadata, children_count=children_count
+        )
 
     def get_table_schema(self, path: list[str]) -> ObjectSchema | None:
-        """Return schema for the table at path, using cache (Req 18.2)."""
+        """Return schema for the table at path, using cache.
+
+        When a SmartCache is provided the same staleness logic as
+        ``list_children()`` applies: READ_WRITE checks SmartCache first,
+        WRITE_ONLY always calls the plugin, and results are stored in
+        SmartCache after every successful plugin call.
+        """
         if not path or len(path) < 2:
             return None
         catalog_name = path[0]
@@ -403,12 +524,81 @@ class CatalogExplorer:
 
         table_key = ".".join(path[1:])
         cache_key = (catalog_name, table_key)
+        conn_hash = self._connection_hash(catalog_name)
+        schema_path = tuple(path[1:])
+
         if cache_key not in self._schema_cache:
-            try:
-                schema = plugin.get_schema(catalog, table_key)
+            # Try SmartCache in READ_WRITE mode
+            smart_hit: CacheResult | None = None
+            if self._smart_cache is not None and self._cache_mode == CacheMode.READ_WRITE:
+                smart_hit = self._smart_cache.get(
+                    "schema",
+                    catalog_name,
+                    conn_hash,
+                    schema_path,
+                )
+                if smart_hit is not None and not smart_hit.expired:
+                    rehydrated = _rehydrate_schema(smart_hit.data)
+                    if rehydrated is not None:
+                        self._schema_cache[cache_key] = rehydrated
+                elif smart_hit is not None and smart_hit.expired:
+                    # Staleness check
+                    try:
+                        fingerprint = plugin.get_fingerprint(catalog, list(path[1:]))
+                    except Exception:
+                        logger.warning(
+                            "Fingerprint check failed for schema '%s' — returning stale cached data",
+                            table_key,
+                        )
+                        rehydrated = _rehydrate_schema(smart_hit.data)
+                        if rehydrated is not None:
+                            self._schema_cache[cache_key] = rehydrated
+                        fingerprint = smart_hit.fingerprint
+
+                    if cache_key not in self._schema_cache:
+                        if fingerprint is None:
+                            pass  # fall through to plugin call
+                        elif fingerprint == smart_hit.fingerprint:
+                            self._smart_cache.reset_ttl(
+                                "schema",
+                                catalog_name,
+                                conn_hash,
+                                schema_path,
+                            )
+                            rehydrated = _rehydrate_schema(smart_hit.data)
+                            if rehydrated is not None:
+                                self._schema_cache[cache_key] = rehydrated
+                        else:
+                            self._smart_cache.invalidate_entry(
+                                "schema",
+                                catalog_name,
+                                conn_hash,
+                                schema_path,
+                            )
+
+            # If still not in in-memory cache, call plugin
+            if cache_key not in self._schema_cache:
+                try:
+                    schema = plugin.get_schema(catalog, table_key)
+                except Exception:
+                    return None
                 self._schema_cache[cache_key] = schema
-            except Exception:
-                return None
+
+                # Store in SmartCache (all modes)
+                if self._smart_cache is not None:
+                    try:
+                        fp = plugin.get_fingerprint(catalog, list(path[1:]))
+                    except Exception:
+                        fp = None
+                    self._smart_cache.put(
+                        "schema",
+                        catalog_name,
+                        conn_hash,
+                        schema_path,
+                        schema,
+                        fp,
+                    )
+
         return self._schema_cache.get(cache_key)
 
     def get_table_metadata(self, path: list[str]) -> ObjectMetadata | None:
@@ -437,8 +627,10 @@ class CatalogExplorer:
         return self.get_table_metadata(path)
 
     def refresh_catalog(self, catalog_name: str) -> None:
-        """Clear all cached data for the given catalog (Req 2.6, 18.3).
+        """Clear all cached data for the given catalog.
 
+        Clears in-memory caches and, when a SmartCache is present,
+        invalidates the catalog's persistent entries as well.
         The next call to list_children() will trigger fresh API calls.
         """
         self._tables_cache.pop(catalog_name, None)
@@ -450,6 +642,15 @@ class CatalogExplorer:
         keys_to_remove = [k for k in self._schema_cache if k[0] == catalog_name]
         for k in keys_to_remove:  # type: ignore[assignment]
             del self._schema_cache[k]  # type: ignore[arg-type]
+        # Invalidate SmartCache entries for this catalog
+        if self._smart_cache is not None:
+            conn_hash = self._connection_hash(catalog_name)
+            self._smart_cache.invalidate_catalog(catalog_name, conn_hash)
+
+    def close(self) -> None:
+        """Flush the SmartCache to disk for durability on teardown."""
+        if self._smart_cache is not None:
+            self._smart_cache.flush()
 
     def test_connection(self, catalog_name: str) -> ConnectionResult:
         """Probe the catalog and return a ConnectionResult with status, error, elapsed time (Req 4.4)."""
@@ -499,26 +700,52 @@ class CatalogExplorer:
                 elapsed_ms=elapsed_ms,
             )
 
-
     # ── Search ──────────────────────────────────────────────────────────
 
-    def search(self, query: str, limit: int = 50) -> list[SearchResult]:
-        """Fuzzy search across all cached nodes.
+    def search(
+        self,
+        query: str,
+        limit: int = 50,
+        expand: bool = True,
+        expansion_budget_seconds: float = 2.0,
+    ) -> list[SearchResult]:
+        """Fuzzy search with progressive deepening and access-priority ranking.
 
-        Searches only what has already been loaded (lazy). Does not trigger
-        new API calls — search improves as the user expands more of the tree.
+        Phase 1 (always): seed ``_children_cache`` from SmartCache
+        (READ_WRITE only, ordered by ``last_accessed`` desc), scan all
+        in-memory nodes for fuzzy matches, apply rank-based score bonus
+        for high-access entries.  This phase is always instant — no
+        network calls.
 
-        Returns SearchResult list sorted by score (ascending), capped at limit.
-        Requirements: 6.1, 6.2, 6.3, 6.4, 6.5, 6.6
+        Phase 2 (only when ``expand=True`` AND READ_WRITE mode):
+        progressively expand unexplored branches via
+        ``list_children()``, prioritised by parent ``last_accessed``
+        with depth as tiebreaker (breadth-first when priorities are
+        equal).  Stops when tree exhausted or time budget expires.
+        Results from both phases are merged, sorted by score, and
+        truncated to ``limit``.
+
+        In WRITE_ONLY mode only in-memory nodes are scanned, no expansion.
         """
         if not query:
             return []
 
+        # Phase 1: Seed in-memory cache from SmartCache (READ_WRITE only)
+        if self._smart_cache is not None and self._cache_mode == CacheMode.READ_WRITE:
+            for key, nodes, _last_accessed in self._smart_cache.get_all_children(
+                order_by_access=True,
+            ):
+                catalog_name_sc, path_tuple = key
+                cache_key = (catalog_name_sc, path_tuple)
+                if cache_key not in self._children_cache:
+                    self._children_cache[cache_key] = _rehydrate_nodes(nodes)
+
         hits: list[SearchResult] = []
         seen: set[str] = set()
 
-        # Search children_cache (per-path lazy cache)
-        for (catalog_name, _path_key), nodes in self._children_cache.items():
+        # Scan children_cache (per-path lazy cache)
+        for (catalog_name, path_key), nodes in self._children_cache.items():
+            conn_hash = self._connection_hash(catalog_name)
             for node in nodes:
                 qualified = catalog_name + "." + ".".join(node.path)
                 if qualified in seen:
@@ -529,21 +756,38 @@ class CatalogExplorer:
                     continue
                 score, positions = result
                 score += _NODE_TYPE_BONUS.get(node.node_type, 0.0)
+
+                # Rank-based access bonus (READ_WRITE only)
+                if self._smart_cache is not None and self._cache_mode == CacheMode.READ_WRITE:
+                    rank = self._smart_cache.get_access_rank(
+                        "children",
+                        catalog_name,
+                        conn_hash,
+                        path_key,
+                    )
+                    if rank is not None:
+                        bonus = max(0.0, 2.0 * (1.0 - rank / 20.0))
+                        score -= bonus
+
                 kind = node.node_type
                 if kind in ("file", "directory"):
                     kind = "table" if not node.is_container else "schema"
-                parent = catalog_name + "." + ".".join(node.path[:-1]) if len(node.path) > 1 else None
-                hits.append(SearchResult(
-                    kind=kind,
-                    qualified_name=qualified,
-                    short_name=node.name,
-                    parent=parent,
-                    match_positions=positions,
-                    score=score,
-                    node_type=node.node_type,
-                ))
+                parent = (
+                    catalog_name + "." + ".".join(node.path[:-1]) if len(node.path) > 1 else None
+                )
+                hits.append(
+                    SearchResult(
+                        kind=kind,
+                        qualified_name=qualified,
+                        short_name=node.name,
+                        parent=parent,
+                        match_positions=positions,
+                        score=score,
+                        node_type=node.node_type,
+                    )
+                )
 
-        # Also search legacy tables_cache (for plugins that don't override list_children)
+        # Also search legacy tables_cache
         for catalog_name, nodes in self._tables_cache.items():
             for node in nodes:
                 qualified = catalog_name + "." + ".".join(node.path)
@@ -558,20 +802,210 @@ class CatalogExplorer:
                 kind = node.node_type
                 if kind in ("file", "directory"):
                     kind = "table" if not node.is_container else "schema"
-                parent = catalog_name + "." + ".".join(node.path[:-1]) if len(node.path) > 1 else None
-                hits.append(SearchResult(
-                    kind=kind,
-                    qualified_name=qualified,
-                    short_name=node.name,
-                    parent=parent,
-                    match_positions=positions,
-                    score=score,
-                    node_type=node.node_type,
-                ))
+                parent = (
+                    catalog_name + "." + ".".join(node.path[:-1]) if len(node.path) > 1 else None
+                )
+                hits.append(
+                    SearchResult(
+                        kind=kind,
+                        qualified_name=qualified,
+                        short_name=node.name,
+                        parent=parent,
+                        match_positions=positions,
+                        score=score,
+                        node_type=node.node_type,
+                    )
+                )
+
+        # Phase 2: Progressive expansion (READ_WRITE + expand=True only)
+        if expand and self._cache_mode == CacheMode.READ_WRITE:
+            import heapq
+            import time as _time
+
+            deadline = _time.monotonic() + expansion_budget_seconds
+            frontier: list[tuple[float, int, list[str]]] = []
+
+            # Build a set of path-segment names that produced good Phase 1
+            # hits.  Used to prioritise structurally similar branches in
+            # Phase 2 (e.g. if datalake_silver.data_factory_ingest had
+            # hits, boost preprod_datalake_silver and its data_factory_ingest).
+            _hit_segments: set[str] = set()
+            for h in hits:
+                for seg in h.qualified_name.split(".")[:-1]:  # parent segments only
+                    _hit_segments.add(seg)
+
+            # Track which (catalog, parent_path) combos already produced
+            # Phase 1 hits so we skip re-expanding their siblings.
+            _hit_parent_keys: set[tuple[str, tuple[str, ...]]] = set()
+            for h in hits:
+                parts = h.qualified_name.split(".")
+                if len(parts) >= 3:
+                    # e.g. ("unity", ("datalake_silver",)) for a hit under datalake_silver
+                    _hit_parent_keys.add((parts[0], tuple(parts[1:-1])))
+
+            def _segment_priority(name: str) -> float:
+                """Priority boost if *name* overlaps with a hit-producing path segment."""
+                # Exact match: this node name appeared in a hit path
+                if name in _hit_segments:
+                    return 20.0
+                # Substring containment: e.g. "preprod_datalake_silver"
+                # contains "datalake_silver" which is a hit segment.
+                for seg in _hit_segments:
+                    if seg in name or name in seg:
+                        return 10.0
+                return 0.0
+
+            for cat_name in self._catalogs:
+                cat_cache_key = (cat_name, ())
+                conn_h = self._connection_hash(cat_name)
+                if cat_cache_key not in self._children_cache:
+                    priority: float = _segment_priority(cat_name)
+                    if self._smart_cache is not None:
+                        la = self._smart_cache.get_last_accessed(
+                            "children",
+                            cat_name,
+                            conn_h,
+                            (),
+                        )
+                        if la is not None:
+                            priority = max(priority, la)
+                    heapq.heappush(frontier, (-priority, 1, [cat_name]))
+
+            # Also seed frontier from already-cached levels so Phase 2
+            # can drill into branches that Phase 1 (SmartCache) seeded
+            # but whose children haven't been explored yet.
+            # Skip children with no segment relevance when their parent
+            # already produced Phase 1 hits — avoids wasting budget on
+            # dozens of irrelevant sibling schemas (e.g. datalake_silver
+            # .greenforge, .genesys) when we already have hits from
+            # datalake_silver.data_factory_ingest.
+            for (cached_cat, _cached_sub), cached_nodes in list(self._children_cache.items()):
+                if cached_cat not in self._catalogs:
+                    continue
+                parent_key = (cached_cat, _cached_sub)
+                parent_had_hits = parent_key in _hit_parent_keys
+                conn_h = self._connection_hash(cached_cat)
+                for cnode in cached_nodes:
+                    if not cnode.is_container:
+                        continue
+                    child_key = (cached_cat, tuple(cnode.path))
+                    if child_key in self._children_cache:
+                        continue  # already cached — will be scanned deeper
+                    seg_prio = _segment_priority(cnode.name)
+                    # If this parent already produced hits, only queue
+                    # children that have segment relevance — skip the
+                    # rest to preserve budget for unexplored catalogs.
+                    if parent_had_hits and seg_prio == 0.0:
+                        continue
+                    la_val_seed: float = 0.0
+                    if self._smart_cache is not None:
+                        la_seed = self._smart_cache.get_last_accessed(
+                            "children",
+                            cached_cat,
+                            conn_h,
+                            tuple(cnode.path),
+                        )
+                        if la_seed is not None:
+                            la_val_seed = la_seed
+                    seed_priority = max(seg_prio, la_val_seed)
+                    child_path = [cached_cat] + list(cnode.path)
+                    heapq.heappush(
+                        frontier,
+                        (-seed_priority, len(child_path), child_path),
+                    )
+
+            while frontier and _time.monotonic() < deadline:
+                _, _depth, exp_path = heapq.heappop(frontier)
+                if len(exp_path) >= self._max_depth:
+                    continue
+                new_nodes = self.list_children(exp_path)
+                catalog_name = exp_path[0]
+                conn_hash = self._connection_hash(catalog_name)
+                for enode in new_nodes:
+                    qualified = ".".join(enode.path)
+                    if qualified in seen:
+                        # Only queue containers (schemas/databases) for
+                        # deeper expansion — skip tables to avoid pulling
+                        # in columns that pollute search results.
+                        if (
+                            enode.is_expandable
+                            and enode.node_type not in self._TABLE_NODE_TYPES
+                            and _time.monotonic() < deadline
+                        ):
+                            child_path = enode.path
+                            child_cache_key = (catalog_name, tuple(child_path[1:]))
+                            if child_cache_key not in self._children_cache:
+                                seg_p: float = _segment_priority(enode.name)
+                                la_val: float = 0.0
+                                if self._smart_cache is not None:
+                                    la_check = self._smart_cache.get_last_accessed(
+                                        "children",
+                                        catalog_name,
+                                        conn_hash,
+                                        tuple(child_path[1:]),
+                                    )
+                                    if la_check is not None:
+                                        la_val = la_check
+                                heapq.heappush(
+                                    frontier, (-max(seg_p, la_val), len(child_path), child_path)
+                                )
+                        continue
+                    seen.add(qualified)
+                    result = fuzzy_match(query, qualified)
+                    if result is not None:
+                        score, positions = result
+                        score += _NODE_TYPE_BONUS.get(enode.node_type, 0.0)
+                        kind = enode.node_type
+                        if kind in ("file", "directory"):
+                            kind = "table" if not enode.is_expandable else "schema"
+                        parent = ".".join(enode.path[:-1]) if len(enode.path) > 1 else None
+                        hits.append(
+                            SearchResult(
+                                kind=kind,
+                                qualified_name=qualified,
+                                short_name=enode.name,
+                                parent=parent,
+                                match_positions=positions,
+                                score=score,
+                                node_type=enode.node_type,
+                            )
+                        )
+                    # Queue container children for further exploration
+                    # (skip tables — don't drill into columns during search)
+                    if (
+                        enode.is_expandable
+                        and enode.node_type not in self._TABLE_NODE_TYPES
+                        and _time.monotonic() < deadline
+                    ):
+                        child_path = enode.path
+                        child_cache_key = (catalog_name, tuple(child_path[1:]))
+                        if child_cache_key not in self._children_cache:
+                            seg_p = _segment_priority(enode.name)
+                            la_val = 0.0
+                            if self._smart_cache is not None:
+                                la_check = self._smart_cache.get_last_accessed(
+                                    "children",
+                                    catalog_name,
+                                    conn_hash,
+                                    tuple(child_path[1:]),
+                                )
+                                if la_check is not None:
+                                    la_val = la_check
+                            heapq.heappush(
+                                frontier, (-max(seg_p, la_val), len(child_path), child_path)
+                            )
 
         hits.sort(key=lambda r: r.score)
-        return hits[:limit]
 
+        # Drop low-quality scattered-subsequence matches.  With the
+        # contiguous-substring bonus in fuzzy_match, genuine hits score
+        # ~40+ points better than scattered noise.  A 20-point window
+        # from the best hit keeps all real matches and discards garbage.
+        if hits:
+            best = hits[0].score
+            hits = [h for h in hits if h.score <= best + 20.0]
+
+        return hits[:limit]
 
     # ── Source generation ──────────────────────────────────────────────
 
@@ -631,7 +1065,10 @@ class CatalogExplorer:
 
     @staticmethod
     def _generate_yaml(
-        name: str, catalog: str, table: str, columns: list[Any],
+        name: str,
+        catalog: str,
+        table: str,
+        columns: list[Any],
     ) -> str:
         """Produce a YAML source joint declaration."""
         lines = [
@@ -649,7 +1086,10 @@ class CatalogExplorer:
 
     @staticmethod
     def _generate_sql(
-        name: str, catalog: str, table: str, columns: list[Any],
+        name: str,
+        catalog: str,
+        table: str,
+        columns: list[Any],
     ) -> str:
         """Produce a SQL source with Rivet annotation comments."""
         lines = [

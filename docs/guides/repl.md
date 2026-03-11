@@ -76,7 +76,7 @@ Press ++ctrl+shift+f++ or run `:format` to auto-format SQL.
 
 ## Catalog Browsing
 
-The Catalog panel shows all catalogs from your active profile. Each expands to show tables and columns with types.
+The Catalog panel shows all catalogs from your active profile. Each expands to show tables and columns with types. On startup, the REPL loads cached catalog trees from the [Smart Cache](../concepts/smart-cache.md) for instant display — you can start browsing before live connections complete.
 
 | Key | Action |
 |-----|--------|

@@ -84,3 +84,34 @@ def render_search_json(results: list[SearchResult]) -> str:
         for r in results
     ]
     return json.dumps(output, indent=2)
+
+
+def render_children_json(
+    nodes: list[ExplorerNode],
+    children_fn: object | None = None,
+    depth: int = 0,
+) -> str:
+    """Render a list of ExplorerNode objects as a JSON array.
+
+    Each node is serialized with ``name``, ``node_type``, ``path``, and
+    ``is_expandable`` fields.  When *depth* > 0 and *children_fn* is provided,
+    expandable nodes include a nested ``children`` array (recursively, up to
+    *depth* levels).
+
+    Requirements: 3.3, 3.4
+    """
+
+    def _node_with_children(node: ExplorerNode, remaining: int) -> dict[str, Any]:
+        entry: dict[str, Any] = {
+            "name": node.name,
+            "node_type": node.node_type,
+            "path": node.path,
+            "is_expandable": node.is_expandable,
+        }
+        if remaining > 0 and node.is_expandable and children_fn is not None:
+            kids = children_fn(node.path)  # type: ignore[operator]
+            entry["children"] = [_node_with_children(k, remaining - 1) for k in kids]
+        return entry
+
+    result = [_node_with_children(n, depth) for n in nodes]
+    return json.dumps(result, indent=2)

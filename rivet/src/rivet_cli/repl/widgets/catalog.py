@@ -22,11 +22,6 @@ from textual.widgets import Input, Tree
 from textual.widgets.tree import TreeNode
 
 from rivet_cli.repl.accessibility import ARIA_CATALOG_SEARCH, ARIA_CATALOG_TREE
-from rivet_cli.repl.catalog_cache import (
-    invalidate_profile_cache,
-    load_catalog_cache,
-    save_catalog_cache,
-)
 from rivet_cli.repl.widgets.status_bar import ActivityChanged
 from rivet_core.interactive.types import Activity_State
 
@@ -195,7 +190,11 @@ class CatalogPanel(Widget):
             self._preview_timer = None
 
         data = event.node.data
-        if not isinstance(data, CatalogNodeData) or data.node_kind != "joint" or not data.joint_name:
+        if (
+            not isinstance(data, CatalogNodeData)
+            or data.node_kind != "joint"
+            or not data.joint_name
+        ):
             return
 
         joint_name = data.joint_name
@@ -238,7 +237,6 @@ class CatalogPanel(Widget):
 
     def switch_profile(self, new_profile: str) -> None:
         """Switch to a new profile, invalidating the old profile's cache entries."""
-        invalidate_profile_cache(self._profile)
         self._profile = new_profile
         self.refresh_tree()
 
@@ -256,14 +254,15 @@ class CatalogPanel(Widget):
         self._add_joints_section(tree)
 
     def _populate_catalogs_from_cache(self) -> None:
-        """Populate catalog nodes from the disk cache (fast, no network)."""
+        """Populate catalog nodes from SmartCache via the explorer (fast, no network).
+
+        Shows top-level catalog entries so the tree is immediately useful
+        before live introspection completes. The CatalogExplorer reads
+        from SmartCache in READ_WRITE mode, providing warm-start data.
+        """
         tree = self.query_one("#catalog-tree", Tree)
         catalogs = self._session.get_catalogs()
         for cat in catalogs:
-            opts = dict(cat.options_summary) if hasattr(cat, "options_summary") else {}
-            cached = load_catalog_cache(self._profile, cat.name, opts)
-            if cached is None:
-                continue
             data = CatalogNodeData(
                 node_kind="catalog",
                 catalog_name=cat.name,
@@ -312,16 +311,6 @@ class CatalogPanel(Widget):
                 )
                 node.add_leaf("🔄 Retry connection", data=retry_data)
 
-            # Save connected catalog info to cache
-            if cat.connected:
-                opts = dict(cat.options_summary) if hasattr(cat, "options_summary") else {}
-                save_catalog_cache(
-                    self._profile,
-                    cat.name,
-                    opts,
-                    [{"name": cat.name, "node_type": "catalog", "path": [cat.name]}],
-                )
-
         # Add divider
         divider_data = CatalogNodeData(node_kind="divider")
         tree.root.add_leaf("─" * 20, data=divider_data)
@@ -344,7 +333,11 @@ class CatalogPanel(Widget):
     def _add_joint_node(self, parent: TreeNode, joint: CompiledJoint) -> None:  # type: ignore[type-arg]
         """Add a single joint node with its quality checks."""
         status = self._joint_statuses.get(joint.name)
-        icon = EXECUTION_STATUS_ICONS.get(status, "") if status else JOINT_TYPE_ICONS.get(joint.type, "")
+        icon = (
+            EXECUTION_STATUS_ICONS.get(status, "")
+            if status
+            else JOINT_TYPE_ICONS.get(joint.type, "")
+        )
         bp = "🔴 " if joint.name in self._breakpoints else ""
         label = f"{bp}{icon} {joint.name}"
 
@@ -362,7 +355,10 @@ class CatalogPanel(Widget):
             self._add_check_node(node, check, joint.name)
 
     def _add_check_node(
-        self, parent: TreeNode, check: CompiledCheck, joint_name: str  # type: ignore[type-arg]
+        self,
+        parent: TreeNode,
+        check: CompiledCheck,
+        joint_name: str,  # type: ignore[type-arg]
     ) -> None:
         """Add a quality check node under a joint."""
         symbol = CHECK_SYMBOLS.get(check.phase, "◆")
@@ -556,7 +552,11 @@ class CatalogPanel(Widget):
         if node is None:
             return
         data = node.data
-        if not isinstance(data, CatalogNodeData) or data.node_kind != "joint" or not data.joint_name:
+        if (
+            not isinstance(data, CatalogNodeData)
+            or data.node_kind != "joint"
+            or not data.joint_name
+        ):
             return
         self.post_message(self.JointSqlExtractRequested(data.joint_name))
 

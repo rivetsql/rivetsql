@@ -37,8 +37,8 @@ def render_catalog_list(catalogs: list[CatalogInfo], color: bool) -> str:
 
     name_w = max(len(c.name) for c in catalogs)
     type_w = max(len(c.catalog_type) for c in catalogs)
-    name_w = max(name_w, 4)   # "Name"
-    type_w = max(type_w, 4)   # "Type"
+    name_w = max(name_w, 4)  # "Name"
+    type_w = max(type_w, 4)  # "Type"
 
     header = (
         colorize(f"{'Name':<{name_w}}", BOLD, color)
@@ -77,6 +77,26 @@ def render_catalog_tree(
         _render_catalog_node(lines, cat, children_fn, depth, color)
 
     return "\n".join(lines) if lines else colorize("No catalogs configured.", DIM, color)
+
+
+def render_catalog_tree_from_nodes(
+    nodes: list[ExplorerNode],
+    children_fn: object,
+    depth: int,
+    color: bool,
+) -> str:
+    """Render a list of ExplorerNode objects as a tree.
+
+    Thin entry point for path-based listing — reuses ``_render_explorer_node``
+    to render children of an arbitrary target node rather than starting from
+    ``CatalogInfo`` objects.
+
+    Requirements: 3.1, 3.2
+    """
+    lines: list[str] = []
+    for node in nodes:
+        _render_explorer_node(lines, node, children_fn, depth, color, indent=0)
+    return "\n".join(lines) if lines else colorize("No children.", DIM, color)
 
 
 def _render_catalog_node(
@@ -162,9 +182,7 @@ def render_node_detail(detail: NodeDetail, color: bool, show_stats: bool = False
         for col in cols:
             nullable = "yes" if col.nullable else "no"
             default = col.default or ""
-            lines.append(
-                f"{col.name:<{name_w}}  {col.type:<{type_w}}  {nullable:<8}  {default}"
-            )
+            lines.append(f"{col.name:<{name_w}}  {col.type:<{type_w}}  {nullable:<8}  {default}")
     else:
         lines.append(colorize("(no schema available)", DIM, color))
 

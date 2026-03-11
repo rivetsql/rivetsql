@@ -150,6 +150,100 @@ class DuckDBCatalogPlugin(CatalogPlugin):
             )
         return nodes
 
+    def list_children(self, catalog: Catalog, path: list[str]) -> list[CatalogNode]:
+        """Lazy single-level listing for DuckDB catalogs.
+
+        - path=[] → list schemas
+        - path=[schema] → list tables in that schema
+        - path=[schema, table] → columns via get_schema()
+        """
+        from rivet_core.introspection import CatalogNode, NodeSummary
+
+        depth = len(path)
+
+        if depth == 0:
+            # Level 0: list schemas
+            conn = _open_connection(catalog)
+            try:
+                rows = conn.execute(
+                    "SELECT DISTINCT schema_name FROM duckdb_tables() ORDER BY schema_name"
+                ).fetchall()
+            finally:
+                conn.close()
+            return [
+                CatalogNode(
+                    name=schema_name,
+                    node_type="schema",
+                    path=[schema_name],
+                    is_container=True,
+                    children_count=None,
+                    summary=None,
+                )
+                for (schema_name,) in rows
+            ]
+
+        if depth == 1:
+            # Level 1: list tables in a schema
+            schema_name = path[0]
+            conn = _open_connection(catalog)
+            try:
+                rows = conn.execute(
+                    "SELECT table_name, estimated_size "
+                    "FROM duckdb_tables() "
+                    "WHERE schema_name = ? "
+                    "ORDER BY table_name",
+                    [schema_name],
+                ).fetchall()
+            finally:
+                conn.close()
+            return [
+                CatalogNode(
+                    name=table_name,
+                    node_type="table",
+                    path=[schema_name, table_name],
+                    is_container=False,
+                    children_count=None,
+                    summary=NodeSummary(
+                        row_count=None,
+                        size_bytes=estimated_size,
+                        format="duckdb",
+                        last_modified=None,
+                        owner=None,
+                        comment=None,
+                    ),
+                )
+                for table_name, estimated_size in rows
+            ]
+
+        if depth == 2:
+            # Level 2: list columns of a table
+            schema_name, table_name = path[0], path[1]
+            qualified = f"{schema_name}.{table_name}"
+            try:
+                schema = self.get_schema(catalog, qualified)
+            except Exception:
+                return []
+            return [
+                CatalogNode(
+                    name=col.name,
+                    node_type="column",
+                    path=[schema_name, table_name, col.name],
+                    is_container=False,
+                    children_count=None,
+                    summary=NodeSummary(
+                        row_count=None,
+                        size_bytes=None,
+                        format=col.type,
+                        last_modified=None,
+                        owner=None,
+                        comment=None,
+                    ),
+                )
+                for col in schema.columns
+            ]
+
+        return []
+
     def get_schema(self, catalog: Catalog, table: str) -> ObjectSchema:
         from rivet_core.introspection import ColumnDetail, ObjectSchema
 

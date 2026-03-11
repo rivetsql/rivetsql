@@ -82,17 +82,30 @@ def build_parser() -> argparse.ArgumentParser:
     compile_p = subs.add_parser("compile", help="Compile the project")
     _add_global_options(compile_p)
     compile_p.add_argument("sink_name", nargs="?", default=None, help="Sink to compile")
-    compile_p.add_argument("--format", "-f", default="visual", help="Output format (visual/json/mermaid)")
-    compile_p.add_argument("--tag", "-t", action="append", default=[], help="Filter by tag (repeatable)")
-    compile_p.add_argument("--tag-all", action="store_true", help="Require all tags (AND semantics)")
+    compile_p.add_argument(
+        "--format", "-f", default="visual", help="Output format (visual/json/mermaid)"
+    )
+    compile_p.add_argument(
+        "--tag", "-t", action="append", default=[], help="Filter by tag (repeatable)"
+    )
+    compile_p.add_argument(
+        "--tag-all", action="store_true", help="Require all tags (AND semantics)"
+    )
     compile_p.add_argument("--output", "-o", default=None, help="Write compiled JSON to file")
 
     # --- run ---
     run_p = subs.add_parser("run", help="Compile and execute the pipeline")
     _add_global_options(run_p)
     run_p.add_argument("sink_name", nargs="?", default=None, help="Sink to run")
-    run_p.add_argument("--fail-fast", action=argparse.BooleanOptionalAction, default=True, help="Stop on first failure")
-    run_p.add_argument("--tag", "-t", action="append", default=[], help="Filter by tag (repeatable)")
+    run_p.add_argument(
+        "--fail-fast",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Stop on first failure",
+    )
+    run_p.add_argument(
+        "--tag", "-t", action="append", default=[], help="Filter by tag (repeatable)"
+    )
     run_p.add_argument("--tag-all", action="store_true", help="Require all tags (AND semantics)")
     run_p.add_argument("--format", default="text", help="Output format (text/json/quiet)")
 
@@ -100,25 +113,48 @@ def build_parser() -> argparse.ArgumentParser:
     test_p = subs.add_parser("test", help="Run tests against fixtures")
     _add_global_options(test_p)
     test_p.add_argument("file_paths", nargs="*", default=[], help="Test file paths to run")
-    test_p.add_argument("--tag", "-t", action="append", default=[], help="Filter by tag (repeatable)")
+    test_p.add_argument(
+        "--tag", "-t", action="append", default=[], help="Filter by tag (repeatable)"
+    )
     test_p.add_argument("--tag-all", action="store_true", help="Require all tags (AND semantics)")
     test_p.add_argument("--target", default=None, help="Filter tests by target joint")
     test_p.add_argument("--update-snapshots", action="store_true", help="Update snapshot files")
-    test_p.add_argument("--fail-fast", action=argparse.BooleanOptionalAction, default=False, help="Stop on first failure")
-    test_p.add_argument("--format", "-f", default="text", choices=["text", "json"], help="Output format")
+    test_p.add_argument(
+        "--fail-fast",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Stop on first failure",
+    )
+    test_p.add_argument(
+        "--format", "-f", default="text", choices=["text", "json"], help="Output format"
+    )
 
     # --- doctor ---
     doctor_p = subs.add_parser("doctor", help="Run project health checks")
     _add_global_options(doctor_p)
-    doctor_p.add_argument("--check-connections", action="store_true", help="Test catalog connectivity")
+    doctor_p.add_argument(
+        "--check-connections", action="store_true", help="Test catalog connectivity"
+    )
     doctor_p.add_argument("--check-schemas", action="store_true", help="Check schema drift")
 
     # --- init ---
     init_p = subs.add_parser("init", help="Scaffold a new Rivet project")
     _add_global_options(init_p)
-    init_p.add_argument("directory", nargs="?", default=None, help="Project directory (created if missing, defaults to current dir)")
-    init_p.add_argument("--bare", action="store_true", help="Create directory structure only, no example files")
-    init_p.add_argument("--style", choices=["mixed", "sql", "yaml"], default="mixed", help="Declaration style for examples (default: mixed — YAML sources/sinks, SQL joints)")
+    init_p.add_argument(
+        "directory",
+        nargs="?",
+        default=None,
+        help="Project directory (created if missing, defaults to current dir)",
+    )
+    init_p.add_argument(
+        "--bare", action="store_true", help="Create directory structure only, no example files"
+    )
+    init_p.add_argument(
+        "--style",
+        choices=["mixed", "sql", "yaml"],
+        default="mixed",
+        help="Declaration style for examples (default: mixed — YAML sources/sinks, SQL joints)",
+    )
 
     # --- catalog ---
     cat_p = subs.add_parser("catalog", help="Browse and inspect catalog metadata")
@@ -127,28 +163,51 @@ def build_parser() -> argparse.ArgumentParser:
 
     cat_list = cat_subs.add_parser("list", help="List catalogs and their contents")
     _add_global_options(cat_list)
-    cat_list.add_argument("catalog_name", nargs="?", default=None, help="Catalog to list")
-    cat_list.add_argument("--depth", "-d", type=int, default=0, help="Expansion depth (0=catalogs, 1=schemas, 2=tables, 3=columns)")
-    cat_list.add_argument("--format", "-f", default="text", choices=["text", "tree", "json"], help="Output format")
+    cat_list.add_argument(
+        "path",
+        nargs="?",
+        default=None,
+        help="Dot-separated path (e.g., mycatalog.myschema.mytable)",
+    )
+    cat_list.add_argument(
+        "--depth",
+        "-d",
+        type=int,
+        default=0,
+        help="Expansion depth (0=catalogs, 1=schemas, 2=tables, 3=columns)",
+    )
+    cat_list.add_argument(
+        "--format", "-f", default="text", choices=["text", "tree", "json"], help="Output format"
+    )
 
     cat_describe = cat_subs.add_parser("describe", help="Describe a table's schema and metadata")
     _add_global_options(cat_describe)
     cat_describe.add_argument("path", help="Table path (catalog.schema.table)")
-    cat_describe.add_argument("--stats", action="store_true", help="Include column-level statistics")
-    cat_describe.add_argument("--format", "-f", default="text", choices=["text", "json"], help="Output format")
+    cat_describe.add_argument(
+        "--stats", action="store_true", help="Include column-level statistics"
+    )
+    cat_describe.add_argument(
+        "--format", "-f", default="text", choices=["text", "json"], help="Output format"
+    )
 
     cat_search = cat_subs.add_parser("search", help="Fuzzy search across all catalogs")
     _add_global_options(cat_search)
     cat_search.add_argument("query", help="Search query")
     cat_search.add_argument("--limit", "-l", type=int, default=20, help="Maximum results")
-    cat_search.add_argument("--format", "-f", default="text", choices=["text", "json"], help="Output format")
+    cat_search.add_argument(
+        "--format", "-f", default="text", choices=["text", "json"], help="Output format"
+    )
 
     cat_generate = cat_subs.add_parser("generate", help="Generate a source joint declaration")
     _add_global_options(cat_generate)
     cat_generate.add_argument("path", help="Table path (catalog.schema.table)")
-    cat_generate.add_argument("--format", "-f", default="yaml", choices=["yaml", "sql"], help="Output format")
+    cat_generate.add_argument(
+        "--format", "-f", default="yaml", choices=["yaml", "sql"], help="Output format"
+    )
     cat_generate.add_argument("--output", "-o", default=None, help="Output file path")
-    cat_generate.add_argument("--stdout", action="store_true", help="Print to stdout instead of writing file")
+    cat_generate.add_argument(
+        "--stdout", action="store_true", help="Print to stdout instead of writing file"
+    )
     cat_generate.add_argument("--name", default=None, help="Override auto-generated name")
     cat_generate.add_argument("--columns", default=None, help="Comma-separated column list")
 
@@ -156,8 +215,15 @@ def build_parser() -> argparse.ArgumentParser:
     _add_global_options(cat_create)
     cat_create.add_argument("--type", dest="catalog_type", default=None, help="Catalog plugin type")
     cat_create.add_argument("--name", dest="catalog_name", default=None, help="Catalog name")
-    cat_create.add_argument("--option", action="append", default=[], help="Catalog option (key=value, repeatable)")
-    cat_create.add_argument("--credential", action="append", default=[], help="Credential option (key=value, repeatable)")
+    cat_create.add_argument(
+        "--option", action="append", default=[], help="Catalog option (key=value, repeatable)"
+    )
+    cat_create.add_argument(
+        "--credential",
+        action="append",
+        default=[],
+        help="Credential option (key=value, repeatable)",
+    )
     cat_create.add_argument("--no-test", action="store_true", help="Skip connection test")
     cat_create.add_argument("--dry-run", action="store_true", help="Preview YAML without writing")
 
@@ -169,20 +235,32 @@ def build_parser() -> argparse.ArgumentParser:
     eng_list = eng_subs.add_parser("list", help="List engines in the current profile")
     _add_global_options(eng_list)
     eng_list.add_argument("engine_name", nargs="?", default=None, help="Engine to show details for")
-    eng_list.add_argument("--format", "-f", default="text", choices=["text", "json"], help="Output format")
+    eng_list.add_argument(
+        "--format", "-f", default="text", choices=["text", "json"], help="Output format"
+    )
 
     eng_create = eng_subs.add_parser("create", help="Create a new engine configuration")
     _add_global_options(eng_create)
     eng_create.add_argument("--type", dest="engine_type", default=None, help="Engine plugin type")
     eng_create.add_argument("--name", dest="engine_name", default=None, help="Engine name")
-    eng_create.add_argument("--catalog", action="append", default=[], help="Catalog to associate (repeatable)")
-    eng_create.add_argument("--option", action="append", default=[], help="Engine option (key=value, repeatable)")
-    eng_create.add_argument("--credential", action="append", default=[], help="Credential option (key=value, repeatable)")
+    eng_create.add_argument(
+        "--catalog", action="append", default=[], help="Catalog to associate (repeatable)"
+    )
+    eng_create.add_argument(
+        "--option", action="append", default=[], help="Engine option (key=value, repeatable)"
+    )
+    eng_create.add_argument(
+        "--credential",
+        action="append",
+        default=[],
+        help="Credential option (key=value, repeatable)",
+    )
     eng_create.add_argument("--set-default", action="store_true", help="Set as the default engine")
     eng_create.add_argument("--dry-run", action="store_true", help="Preview YAML without writing")
 
     # --- repl ---
     from rivet_cli.repl import add_repl_parser
+
     add_repl_parser(subs)
 
     # --- explore ---
@@ -356,6 +434,7 @@ def _dispatch(command: str, args: argparse.Namespace, globals_: GlobalOptions) -
 
     if command == "repl":
         from rivet_cli.repl import run_repl
+
         return run_repl(args)
 
     # Unknown command — should not happen with argparse subparsers,
@@ -435,27 +514,65 @@ def _dispatch_catalog(args: argparse.Namespace, globals_: GlobalOptions) -> int:
         )
 
     from rivet_cli.commands.catalog import _startup
+    from rivet_core.smart_cache import CacheMode
 
-    explorer = _startup(globals_)
+    # catalog search needs READ_WRITE so progressive expansion can discover
+    # nodes; other catalog commands stay WRITE_ONLY (live fetch, rehydrate).
+    cache_mode = CacheMode.READ_WRITE if action == "search" else CacheMode.WRITE_ONLY
+    explorer = _startup(globals_, cache_mode=cache_mode)
     if isinstance(explorer, int):
         return explorer
 
-    if action == "list":
-        from rivet_cli.commands.catalog import catalog_list
-        return catalog_list(explorer=explorer, catalog_name=args.catalog_name, depth=args.depth, format=args.format, globals=globals_)
+    try:
+        if action == "list":
+            from rivet_cli.commands.catalog import catalog_list
 
-    if action == "describe":
-        from rivet_cli.commands.catalog import catalog_describe
-        return catalog_describe(explorer=explorer, path=args.path, stats=args.stats, format=args.format, globals=globals_)
+            return catalog_list(
+                explorer=explorer,
+                path=args.path,
+                depth=args.depth,
+                format=args.format,
+                globals=globals_,
+            )
 
-    if action == "search":
-        from rivet_cli.commands.catalog import catalog_search
-        return catalog_search(explorer=explorer, query=args.query, limit=args.limit, format=args.format, globals=globals_)
+        if action == "describe":
+            from rivet_cli.commands.catalog import catalog_describe
 
-    if action == "generate":
-        from rivet_cli.commands.catalog import catalog_generate
-        columns = [c.strip() for c in args.columns.split(",")] if args.columns else None
-        return catalog_generate(explorer=explorer, path=args.path, format=args.format, output=args.output, stdout=args.stdout, name=args.name, columns=columns, globals=globals_)
+            return catalog_describe(
+                explorer=explorer,
+                path=args.path,
+                stats=args.stats,
+                format=args.format,
+                globals=globals_,
+            )
+
+        if action == "search":
+            from rivet_cli.commands.catalog import catalog_search
+
+            return catalog_search(
+                explorer=explorer,
+                query=args.query,
+                limit=args.limit,
+                format=args.format,
+                globals=globals_,
+            )
+
+        if action == "generate":
+            from rivet_cli.commands.catalog import catalog_generate
+
+            columns = [c.strip() for c in args.columns.split(",")] if args.columns else None
+            return catalog_generate(
+                explorer=explorer,
+                path=args.path,
+                format=args.format,
+                output=args.output,
+                stdout=args.stdout,
+                name=args.name,
+                columns=columns,
+                globals=globals_,
+            )
+    finally:
+        explorer.close()
 
     err = CLIError(
         code="RVT-851",
@@ -519,8 +636,9 @@ def _dispatch_explore(args: argparse.Namespace, globals_: GlobalOptions) -> int:
     from rivet_cli.commands.explore import ExploreController
     from rivet_cli.exit_codes import INTERRUPTED
     from rivet_cli.rendering.explore_terminal import TerminalRenderer
+    from rivet_core.smart_cache import CacheMode
 
-    explorer = _startup(globals_)
+    explorer = _startup(globals_, cache_mode=CacheMode.READ_WRITE)
     if isinstance(explorer, int):
         return explorer
 
@@ -530,6 +648,8 @@ def _dispatch_explore(args: argparse.Namespace, globals_: GlobalOptions) -> int:
         controller.run()
     except KeyboardInterrupt:
         return INTERRUPTED
+    finally:
+        explorer.close()
 
     # If the user pressed 'p' for preview, hand off to the REPL
     if controller.repl_query is not None:

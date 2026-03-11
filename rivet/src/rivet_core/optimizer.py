@@ -374,7 +374,9 @@ def fusion_pass(
     ds_counts = _downstream_counts(joints)
 
     group_id_for, group_joints, group_engine, group_engine_type = _assign_fusion_groups(
-        joints, joints_by_name, ds_counts,
+        joints,
+        joints_by_name,
+        ds_counts,
     )
 
     joint_sql: dict[str, str | None] = {j.name: j.sql for j in joints}
@@ -392,16 +394,19 @@ def fusion_pass(
         composer = _compose_cte if fusion_strategy == "cte" else _compose_temp_view
         fusion_result = composer(names, joint_sql)
         entries, exits = _compute_entry_exit(group_set, joints_by_name, names)
-        adapters: dict[str, str | None] = {
-            n: joints_by_name[n].adapter for n in names
-        }
+        adapters: dict[str, str | None] = {n: joints_by_name[n].adapter for n in names}
         result.append(
             FusedGroup(
-                id=gid, joints=names, engine=group_engine[gid],
-                engine_type=group_engine_type[gid], adapters=adapters,
+                id=gid,
+                joints=names,
+                engine=group_engine[gid],
+                engine_type=group_engine_type[gid],
+                adapters=adapters,
                 fused_sql=fusion_result.fused_sql if fusion_result else None,
-                fusion_strategy=fusion_strategy, fusion_result=fusion_result,
-                entry_joints=entries, exit_joints=exits,
+                fusion_strategy=fusion_strategy,
+                fusion_result=fusion_result,
+                entry_joints=entries,
+                exit_joints=exits,
             )
         )
     return result
@@ -441,7 +446,7 @@ def _is_or_predicate(pred: Predicate) -> bool:
             depth += 1
         elif ch == ")":
             depth -= 1
-        elif depth == 0 and upper[i:i + 4] == " OR ":
+        elif depth == 0 and upper[i : i + 4] == " OR ":
             return True
     return False
 
@@ -469,7 +474,7 @@ def _split_and_conjuncts(pred: Predicate) -> list[Predicate]:
         elif ch == ")":
             depth -= 1
             current.append(ch)
-        elif depth == 0 and upper[i:i + 5] == " AND ":
+        elif depth == 0 and upper[i : i + 5] == " AND ":
             parts.append("".join(current).strip())
             current = []
             i += 5
@@ -628,9 +633,7 @@ def _pushdown_casts(
     return CastPushdownResult(pushed=pushed, residual=residual)
 
 
-_CAST_RE = re.compile(
-    r"CAST\s*\(\s*(\w+)\s+AS\s+(\w+)\s*\)", re.IGNORECASE
-)
+_CAST_RE = re.compile(r"CAST\s*\(\s*(\w+)\s+AS\s+(\w+)\s*\)", re.IGNORECASE)
 
 
 def _extract_casts_from_plan(logical_plan: LogicalPlan) -> list[Cast]:
@@ -705,13 +708,20 @@ def pushdown_pass(
 
     return result
 
+
 # ---------------------------------------------------------------------------
 # Cross-group predicate pushdown helpers
 # ---------------------------------------------------------------------------
 
-_NON_PUSHABLE_TRANSFORMS = frozenset({
-    "aggregation", "window", "expression", "multi_column", "opaque",
-})
+_NON_PUSHABLE_TRANSFORMS = frozenset(
+    {
+        "aggregation",
+        "window",
+        "expression",
+        "multi_column",
+        "opaque",
+    }
+)
 
 
 def _bare_column(col: str) -> str:
@@ -773,11 +783,7 @@ def _build_alias_map(cj: CompiledJoint) -> dict[str, str]:
     """Build a table-alias → joint-name map from the logical plan's source_tables."""
     if cj.logical_plan is None or not cj.logical_plan.source_tables:
         return {}
-    return {
-        ref.alias: ref.name
-        for ref in cj.logical_plan.source_tables
-        if ref.alias
-    }
+    return {ref.alias: ref.name for ref in cj.logical_plan.source_tables if ref.alias}
 
 
 def _resolve_conjunct_origins(
@@ -887,9 +893,7 @@ def _rewrite_predicate_for_source(
 
 
 # Regex for simple column-equality in JOIN conditions: ``a.col = b.col`` or ``col1 = col2``
-_SIMPLE_EQ_RE = re.compile(
-    r"(\w+(?:\.\w+)?)\s*=\s*(\w+(?:\.\w+)?)"
-)
+_SIMPLE_EQ_RE = re.compile(r"(\w+(?:\.\w+)?)\s*=\s*(\w+(?:\.\w+)?)")
 
 
 def _has_predicate_capability(
@@ -906,6 +910,7 @@ def _has_predicate_capability(
         caps = capabilities.get(target_group.engine_type, [])
     return "predicate_pushdown" in caps
 
+
 def _has_projection_capability(
     target_group: FusedGroup,
     target_joint: str,
@@ -919,6 +924,7 @@ def _has_projection_capability(
     if not caps:
         caps = capabilities.get(target_group.engine_type, [])
     return "projection_pushdown" in caps
+
 
 def _has_limit_capability(
     target_group: FusedGroup,
@@ -997,7 +1003,7 @@ def _derive_join_equality_predicates(
         if join.type != "inner" or join.condition is None:
             continue
         # Split on AND to handle compound conditions
-        parts = re.split(r"\bAND\b", join.condition, flags=re.IGNORECASE)
+        parts = re.split(r"\s+AND\s+", join.condition, flags=re.IGNORECASE)
         for part in parts:
             m = _SIMPLE_EQ_RE.fullmatch(part.strip())
             if m:
@@ -1057,12 +1063,16 @@ def _derive_join_equality_predicates(
             # Keep the full qualified name so _resolve_conjunct_origins can
             # use the alias map to resolve to the correct source joint.
             derived_pred = Predicate(
-                expression=derived_expr, columns=[other_side], location="where",
+                expression=derived_expr,
+                columns=[other_side],
+                location="where",
             )
 
             # Trace the other-side column through lineage to find its source
             derived_origins = _resolve_conjunct_origins(
-                derived_pred, exit_cj, compiled_joints,
+                derived_pred,
+                exit_cj,
+                compiled_joints,
             )
             if derived_origins is None:
                 continue
@@ -1079,17 +1089,23 @@ def _derive_join_equality_predicates(
 
             # Check capability
             if not _has_predicate_capability(
-                target_group, target_joint_name, capabilities, catalog_types,
+                target_group,
+                target_joint_name,
+                capabilities,
+                catalog_types,
             ):
                 continue
 
             # Rewrite for source schema
             rewritten = _rewrite_predicate_for_source(
-                derived_pred, exit_cj, derived_origins,
+                derived_pred,
+                exit_cj,
+                derived_origins,
             )
             results.append((rewritten, target_joint_name, target_group))
 
     return results
+
 
 # ---------------------------------------------------------------------------
 # Cross-group predicate pushdown pass
@@ -1164,69 +1180,82 @@ def cross_group_pushdown_pass(
                 for conj in _split_and_conjuncts(pred):
                     # --- Classify ---
                     if not _is_cross_group_pushable(conj, cj):
-                        results.append(OptimizationResult(
-                            rule=_RULE,
-                            status="skipped",
-                            detail=(
-                                f"Predicate '{conj.expression}' on exit joint "
-                                f"'{exit_joint}' is non-pushable (HAVING, subquery, "
-                                f"or non-direct lineage transform)"
-                            ),
-                        ))
+                        results.append(
+                            OptimizationResult(
+                                rule=_RULE,
+                                status="skipped",
+                                detail=(
+                                    f"Predicate '{conj.expression}' on exit joint "
+                                    f"'{exit_joint}' is non-pushable (HAVING, subquery, "
+                                    f"or non-direct lineage transform)"
+                                ),
+                            )
+                        )
                         continue
 
                     # --- Resolve origins ---
                     origins = _resolve_conjunct_origins(conj, cj, compiled_joints)
                     if origins is None:
-                        results.append(OptimizationResult(
-                            rule=_RULE,
-                            status="skipped",
-                            detail=(
-                                f"Predicate '{conj.expression}' on exit joint "
-                                f"'{exit_joint}' has no column lineage"
-                            ),
-                        ))
+                        results.append(
+                            OptimizationResult(
+                                rule=_RULE,
+                                status="skipped",
+                                detail=(
+                                    f"Predicate '{conj.expression}' on exit joint "
+                                    f"'{exit_joint}' has no column lineage"
+                                ),
+                            )
+                        )
                         continue
 
                     target_joints = {o.joint for o in origins}
                     if len(target_joints) != 1:
-                        results.append(OptimizationResult(
-                            rule=_RULE,
-                            status="skipped",
-                            detail=(
-                                f"Predicate '{conj.expression}' on exit joint "
-                                f"'{exit_joint}' traces to multiple source joints: "
-                                f"{sorted(target_joints)}"
-                            ),
-                        ))
+                        results.append(
+                            OptimizationResult(
+                                rule=_RULE,
+                                status="skipped",
+                                detail=(
+                                    f"Predicate '{conj.expression}' on exit joint "
+                                    f"'{exit_joint}' traces to multiple source joints: "
+                                    f"{sorted(target_joints)}"
+                                ),
+                            )
+                        )
                         continue
 
                     target_joint = origins[0].joint
                     target_group = group_for_joint.get(target_joint)
                     if target_group is None:
-                        results.append(OptimizationResult(
-                            rule=_RULE,
-                            status="skipped",
-                            detail=(
-                                f"Predicate '{conj.expression}' target joint "
-                                f"'{target_joint}' not found in any group"
-                            ),
-                        ))
+                        results.append(
+                            OptimizationResult(
+                                rule=_RULE,
+                                status="skipped",
+                                detail=(
+                                    f"Predicate '{conj.expression}' target joint "
+                                    f"'{target_joint}' not found in any group"
+                                ),
+                            )
+                        )
                         continue
 
                     # --- Capability check ---
                     if not _has_predicate_capability(
-                        target_group, target_joint, capabilities, catalog_types,
+                        target_group,
+                        target_joint,
+                        capabilities,
+                        catalog_types,
                     ):
-                        results.append(OptimizationResult(
-                            rule=_RULE,
-                            status="not_applicable",
-                            detail=(
-                                f"Predicate '{conj.expression}' targets source joint "
-                                f"'{target_joint}' in group '{target_group.id}' whose "
-                                f"adapter lacks predicate_pushdown capability"
-                            ),
-                        ))
+                        results.append(
+                            OptimizationResult(
+                                rule=_RULE,
+                                status="not_applicable",
+                                detail=(
+                                    f"Predicate '{conj.expression}' targets source joint "
+                                    f"'{target_joint}' in group '{target_group.id}' whose "
+                                    f"adapter lacks predicate_pushdown capability"
+                                ),
+                            )
+                        )
                         continue
 
                     # --- Rewrite and push ---
@@ -1240,20 +1269,26 @@ def cross_group_pushdown_pass(
                     # Track columns from successfully pushed predicates (Req 10.2)
                     pushed_predicate_cols.update(conj.columns)
 
-                    results.append(OptimizationResult(
-                        rule=_RULE,
-                        status="applied",
-                        detail=(
-                            f"Pushed predicate '{rewritten.expression}' to source "
-                            f"joint '{target_joint}' in group '{target_group.id}'"
-                        ),
-                        pushed=rewritten.expression,
-                    ))
+                    results.append(
+                        OptimizationResult(
+                            rule=_RULE,
+                            status="applied",
+                            detail=(
+                                f"Pushed predicate '{rewritten.expression}' to source "
+                                f"joint '{target_joint}' in group '{target_group.id}'"
+                            ),
+                            pushed=rewritten.expression,
+                        )
+                    )
 
                     # --- Join-equality propagation ---
                     derived = _derive_join_equality_predicates(
-                        conj, cj, compiled_joints, group_for_joint,
-                        capabilities, catalog_types,
+                        conj,
+                        cj,
+                        compiled_joints,
+                        group_for_joint,
+                        capabilities,
+                        catalog_types,
                     )
                     for derived_pred, derived_joint, derived_group in derived:
                         dgid = derived_group.id
@@ -1261,17 +1296,19 @@ def cross_group_pushdown_pass(
                         pjp_updates[dgid].setdefault(derived_joint, [])
                         pjp_updates[dgid][derived_joint].append(derived_pred)
 
-                        results.append(OptimizationResult(
-                            rule=_RULE,
-                            status="applied",
-                            detail=(
-                                f"Pushed join-equality inferred predicate "
-                                f"'{derived_pred.expression}' to source joint "
-                                f"'{derived_joint}' in group '{derived_group.id}' "
-                                f"(derived from '{conj.expression}' via join equality)"
-                            ),
-                            pushed=derived_pred.expression,
-                        ))
+                        results.append(
+                            OptimizationResult(
+                                rule=_RULE,
+                                status="applied",
+                                detail=(
+                                    f"Pushed join-equality inferred predicate "
+                                    f"'{derived_pred.expression}' to source joint "
+                                    f"'{derived_joint}' in group '{derived_group.id}' "
+                                    f"(derived from '{conj.expression}' via join equality)"
+                                ),
+                                pushed=derived_pred.expression,
+                            )
+                        )
 
         # ── Projection pushdown ──────────────────────────────────────
         if cj.logical_plan is None:
@@ -1282,14 +1319,16 @@ def cross_group_pushdown_pass(
 
         # Skip if SELECT *  (Req 1.2)
         if any(p.expression.strip() == "*" for p in lp.projections):
-            results.append(OptimizationResult(
-                rule=_PROJ_RULE,
-                status="skipped",
-                detail=(
-                    f"Consumer group '{group.id}' exit joint '{exit_joint}' "
-                    f"uses SELECT * — skipping projection pushdown"
-                ),
-            ))
+            results.append(
+                OptimizationResult(
+                    rule=_PROJ_RULE,
+                    status="skipped",
+                    detail=(
+                        f"Consumer group '{group.id}' exit joint '{exit_joint}' "
+                        f"uses SELECT * — skipping projection pushdown"
+                    ),
+                )
+            )
         else:
             # Collect all referenced columns from the consumer's LogicalPlan (Req 1.1)
             consumer_cols: set[str] = set()
@@ -1326,29 +1365,36 @@ def cross_group_pushdown_pass(
                     if target_group is None:
                         continue
                     if not _has_projection_capability(
-                        target_group, source_joint, capabilities, catalog_types,
+                        target_group,
+                        source_joint,
+                        capabilities,
+                        catalog_types,
                     ):
-                        results.append(OptimizationResult(
-                            rule=_PROJ_RULE,
-                            status="not_applicable",
-                            detail=(
-                                f"Source joint '{source_joint}' in group "
-                                f"'{target_group.id}' lacks projection_pushdown capability"
-                            ),
-                        ))
+                        results.append(
+                            OptimizationResult(
+                                rule=_PROJ_RULE,
+                                status="not_applicable",
+                                detail=(
+                                    f"Source joint '{source_joint}' in group "
+                                    f"'{target_group.id}' lacks projection_pushdown capability"
+                                ),
+                            )
+                        )
                         continue
                     gid = target_group.id
                     pjproj_updates.setdefault(gid, {})
                     pjproj_updates[gid].setdefault(source_joint, set())
                     pjproj_updates[gid][source_joint] |= cols
-                    results.append(OptimizationResult(
-                        rule=_PROJ_RULE,
-                        status="applied",
-                        detail=(
-                            f"Pushed projection {sorted(cols)} to source joint "
-                            f"'{source_joint}' in group '{target_group.id}'"
-                        ),
-                    ))
+                    results.append(
+                        OptimizationResult(
+                            rule=_PROJ_RULE,
+                            status="applied",
+                            detail=(
+                                f"Pushed projection {sorted(cols)} to source joint "
+                                f"'{source_joint}' in group '{target_group.id}'"
+                            ),
+                        )
+                    )
 
                 # Ensure columns from pushed predicates (including join-equality
                 # derived predicates) are included in each source joint's projection.
@@ -1361,7 +1407,10 @@ def cross_group_pushdown_pass(
                         if src_group is None:
                             continue
                         if not _has_projection_capability(
-                            src_group, src_joint, capabilities, catalog_types,
+                            src_group,
+                            src_joint,
+                            capabilities,
+                            catalog_types,
                         ):
                             continue
                         pred_cols: set[str] = set()
@@ -1378,69 +1427,79 @@ def cross_group_pushdown_pass(
             limit_blocked = False
 
             if lp.aggregations:
-                results.append(OptimizationResult(
-                    rule=_LIM_RULE,
-                    status="skipped",
-                    detail=(
-                        f"Consumer group '{group.id}' exit joint '{exit_joint}' "
-                        f"has aggregations — skipping limit pushdown"
-                    ),
-                ))
-                limit_blocked = True
-
-            if not limit_blocked and lp.joins:
-                results.append(OptimizationResult(
-                    rule=_LIM_RULE,
-                    status="skipped",
-                    detail=(
-                        f"Consumer group '{group.id}' exit joint '{exit_joint}' "
-                        f"has joins — skipping limit pushdown"
-                    ),
-                ))
-                limit_blocked = True
-
-            if not limit_blocked and lp.distinct:
-                results.append(OptimizationResult(
-                    rule=_LIM_RULE,
-                    status="skipped",
-                    detail=(
-                        f"Consumer group '{group.id}' exit joint '{exit_joint}' "
-                        f"has DISTINCT — skipping limit pushdown"
-                    ),
-                ))
-                limit_blocked = True
-
-            if not limit_blocked:
-                upstream_source_joints = _get_upstream_source_joints(
-                    cj, compiled_joints, group_for_joint,
-                )
-                upstream_source_groups = {
-                    group_for_joint[j].id
-                    for j in upstream_source_joints
-                    if j in group_for_joint
-                }
-
-                if len(upstream_source_groups) != 1:
-                    results.append(OptimizationResult(
+                results.append(
+                    OptimizationResult(
                         rule=_LIM_RULE,
                         status="skipped",
                         detail=(
                             f"Consumer group '{group.id}' exit joint '{exit_joint}' "
-                            f"references multiple upstream source groups — "
-                            f"skipping limit pushdown"
+                            f"has aggregations — skipping limit pushdown"
                         ),
-                    ))
+                    )
+                )
+                limit_blocked = True
+
+            if not limit_blocked and lp.joins:
+                results.append(
+                    OptimizationResult(
+                        rule=_LIM_RULE,
+                        status="skipped",
+                        detail=(
+                            f"Consumer group '{group.id}' exit joint '{exit_joint}' "
+                            f"has joins — skipping limit pushdown"
+                        ),
+                    )
+                )
+                limit_blocked = True
+
+            if not limit_blocked and lp.distinct:
+                results.append(
+                    OptimizationResult(
+                        rule=_LIM_RULE,
+                        status="skipped",
+                        detail=(
+                            f"Consumer group '{group.id}' exit joint '{exit_joint}' "
+                            f"has DISTINCT — skipping limit pushdown"
+                        ),
+                    )
+                )
+                limit_blocked = True
+
+            if not limit_blocked:
+                upstream_source_joints = _get_upstream_source_joints(
+                    cj,
+                    compiled_joints,
+                    group_for_joint,
+                )
+                upstream_source_groups = {
+                    group_for_joint[j].id for j in upstream_source_joints if j in group_for_joint
+                }
+
+                if len(upstream_source_groups) != 1:
+                    results.append(
+                        OptimizationResult(
+                            rule=_LIM_RULE,
+                            status="skipped",
+                            detail=(
+                                f"Consumer group '{group.id}' exit joint '{exit_joint}' "
+                                f"references multiple upstream source groups — "
+                                f"skipping limit pushdown"
+                            ),
+                        )
+                    )
                     limit_blocked = True
 
             if not limit_blocked and group.residual and group.residual.predicates:
-                results.append(OptimizationResult(
-                    rule=_LIM_RULE,
-                    status="skipped",
-                    detail=(
-                        f"Consumer group '{group.id}' has residual predicates — "
-                        f"skipping limit pushdown"
-                    ),
-                ))
+                results.append(
+                    OptimizationResult(
+                        rule=_LIM_RULE,
+                        status="skipped",
+                        detail=(
+                            f"Consumer group '{group.id}' has residual predicates — "
+                            f"skipping limit pushdown"
+                        ),
+                    )
+                )
                 limit_blocked = True
 
             if not limit_blocked:
@@ -1450,16 +1509,21 @@ def cross_group_pushdown_pass(
                     if target_group is None:
                         continue
                     if not _has_limit_capability(
-                        target_group, source_joint, capabilities, catalog_types,
+                        target_group,
+                        source_joint,
+                        capabilities,
+                        catalog_types,
                     ):
-                        results.append(OptimizationResult(
-                            rule=_LIM_RULE,
-                            status="not_applicable",
-                            detail=(
-                                f"Source joint '{source_joint}' in group "
-                                f"'{target_group.id}' lacks limit_pushdown capability"
-                            ),
-                        ))
+                        results.append(
+                            OptimizationResult(
+                                rule=_LIM_RULE,
+                                status="not_applicable",
+                                detail=(
+                                    f"Source joint '{source_joint}' in group "
+                                    f"'{target_group.id}' lacks limit_pushdown capability"
+                                ),
+                            )
+                        )
                         continue
                     gid = target_group.id
                     pjlim_updates.setdefault(gid, {})
@@ -1467,14 +1531,16 @@ def cross_group_pushdown_pass(
                         pjlim_updates[gid].get(source_joint, 0),
                         limit_val,
                     )
-                    results.append(OptimizationResult(
-                        rule=_LIM_RULE,
-                        status="applied",
-                        detail=(
-                            f"Pushed limit {limit_val} to source joint "
-                            f"'{source_joint}' in group '{target_group.id}'"
-                        ),
-                    ))
+                    results.append(
+                        OptimizationResult(
+                            rule=_LIM_RULE,
+                            status="applied",
+                            detail=(
+                                f"Pushed limit {limit_val} to source joint "
+                                f"'{source_joint}' in group '{target_group.id}'"
+                            ),
+                        )
+                    )
 
     # --- Build updated groups via replace() (immutable pattern) ---
     new_groups: list[FusedGroup] = []

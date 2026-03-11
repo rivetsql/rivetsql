@@ -24,6 +24,7 @@ except ImportError:  # pragma: no cover
     _TEXTUAL_AVAILABLE = False
 
 
+from rivet_core.fuzzy import fuzzy_match
 
 # ---------------------------------------------------------------------------
 # Command registry
@@ -85,6 +86,8 @@ def _fuzzy_score(query: str, text: str) -> int | None:
       2 — substring match
       1 — fuzzy (all query chars appear in order in text)
       None — no match
+
+    Uses the shared fuzzy_match for the subsequence check.
     """
     q = query.lower()
     t = text.lower()
@@ -94,14 +97,10 @@ def _fuzzy_score(query: str, text: str) -> int | None:
         return 3
     if q in t:
         return 2
-    # fuzzy: all chars of q appear in t in order
-    idx = 0
-    for ch in q:
-        pos = t.find(ch, idx)
-        if pos == -1:
-            return None
-        idx = pos + 1
-    return 1
+    # Delegate subsequence check to shared implementation
+    if fuzzy_match(query, text) is not None:
+        return 1
+    return None
 
 
 @dataclass

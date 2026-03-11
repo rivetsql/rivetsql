@@ -10,38 +10,8 @@ from __future__ import annotations
 
 from typing import Literal
 
+from rivet_core.fuzzy import fuzzy_match
 from rivet_core.interactive.types import CatalogSearchResult
-
-
-def _fuzzy_match(query: str, text: str) -> list[int] | None:
-    """Subsequence fuzzy match. Returns match positions or None if no match."""
-    q = query.lower()
-    t = text.lower()
-    positions: list[int] = []
-    qi = 0
-    for ti, ch in enumerate(t):
-        if qi < len(q) and ch == q[qi]:
-            positions.append(ti)
-            qi += 1
-    if qi == len(q):
-        return positions
-    return None
-
-
-def _score(query: str, text: str, positions: list[int]) -> float:
-    """Lower score = better match. Rewards contiguous runs and prefix matches."""
-    if not positions:
-        return float("inf")
-    # Exact match bonus
-    if query.lower() == text.lower():
-        return -1.0
-    # Contiguous bonus: count consecutive pairs
-    consecutive = sum(1 for a, b in zip(positions, positions[1:]) if b == a + 1)
-    prefix_bonus = 1.0 if positions[0] == 0 else 0.0
-    # Base score: ratio of matched span to text length
-    span = positions[-1] - positions[0] + 1
-    base = span / max(len(text), 1)
-    return base - consecutive * 0.1 - prefix_bonus * 0.2
 
 
 class _IndexEntry:
@@ -103,9 +73,7 @@ class CatalogSearch:
                 schema_key = (catalog, schema)
                 if schema_key not in seen_schemas:
                     qualified_schema = f"{catalog}.{schema}"
-                    entries.append(
-                        _IndexEntry("schema", qualified_schema, schema, catalog)
-                    )
+                    entries.append(_IndexEntry("schema", qualified_schema, schema, catalog))
                     seen_schemas.add(schema_key)
 
                 if table is not None:
@@ -140,20 +108,17 @@ class CatalogSearch:
 
         for entry in self._index:
             # Try short name first (preferred for display)
-            short_positions = _fuzzy_match(query, entry.short_name)
-            qual_positions = _fuzzy_match(query, entry.qualified_name)
+            short_result = fuzzy_match(query, entry.short_name)
+            qual_result = fuzzy_match(query, entry.qualified_name)
 
-            if short_positions is None and qual_positions is None:
+            if short_result is None and qual_result is None:
                 continue
 
-            if short_positions is not None:
-                score = _score(query, entry.short_name, short_positions)
-                positions = short_positions
+            if short_result is not None:
+                score, positions = short_result
             else:
-                # qual_positions is not None
-                assert qual_positions is not None
-                score = _score(query, entry.qualified_name, qual_positions)
-                positions = qual_positions
+                assert qual_result is not None
+                score, positions = qual_result
 
             results.append(
                 (

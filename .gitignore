@@ -24,3 +24,4 @@ docs/reference/
 docs/_build/
 *.zip
 .kiro/
+scripts/run-sample.sh
