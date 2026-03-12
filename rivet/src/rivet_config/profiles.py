@@ -34,11 +34,13 @@ class ProfileResolver:
         all_names = sorted(set(global_profiles) | set(project_profiles))
 
         if not all_names:
-            errors.append(ConfigError(
-                source_file=profiles_path,
-                message="No profiles found.",
-                remediation="Define at least one profile in your profiles file or directory.",
-            ))
+            errors.append(
+                ConfigError(
+                    source_file=profiles_path,
+                    message="No profiles found.",
+                    remediation="Define at least one profile in your profiles file or directory.",
+                )
+            )
             return None, errors, warnings
 
         # Select profile
@@ -73,16 +75,16 @@ class ProfileResolver:
             return self._load_from_directory(profiles_path, errors)
         if profiles_path.is_file():
             return self._load_from_file(profiles_path, errors)
-        errors.append(ConfigError(
-            source_file=profiles_path,
-            message=f"Profiles path not found: {profiles_path}",
-            remediation="Create a profiles file or directory at the declared path.",
-        ))
+        errors.append(
+            ConfigError(
+                source_file=profiles_path,
+                message=f"Profiles path not found: {profiles_path}",
+                remediation="Create a profiles file or directory at the declared path.",
+            )
+        )
         return {}
 
-    def _load_global_profiles(
-        self, errors: list[ConfigError]
-    ) -> dict[str, dict[str, Any]]:
+    def _load_global_profiles(self, errors: list[ConfigError]) -> dict[str, dict[str, Any]]:
         home = Path.home()
         file_path = home / ".rivet" / "profiles.yaml"
         dir_path = home / ".rivet" / "profiles"
@@ -92,24 +94,26 @@ class ProfileResolver:
             return self._load_from_directory(dir_path, errors)
         return {}
 
-    def _load_from_file(
-        self, path: Path, errors: list[ConfigError]
-    ) -> dict[str, dict[str, Any]]:
+    def _load_from_file(self, path: Path, errors: list[ConfigError]) -> dict[str, dict[str, Any]]:
         try:
             raw = yaml.safe_load(path.read_text())
         except Exception as e:
-            errors.append(ConfigError(
-                source_file=path,
-                message=f"Cannot read profiles file: {e}",
-                remediation="Ensure the file is valid YAML and readable.",
-            ))
+            errors.append(
+                ConfigError(
+                    source_file=path,
+                    message=f"Cannot read profiles file: {e}",
+                    remediation="Ensure the file is valid YAML and readable.",
+                )
+            )
             return {}
         if not isinstance(raw, dict):
-            errors.append(ConfigError(
-                source_file=path,
-                message="Profiles file must be a YAML mapping of profile names to configs.",
-                remediation="Structure the file as: profile_name: {default_engine: ..., catalogs: ..., engines: ...}",
-            ))
+            errors.append(
+                ConfigError(
+                    source_file=path,
+                    message="Profiles file must be a YAML mapping of profile names to configs.",
+                    remediation="Structure the file as: profile_name: {default_engine: ..., catalogs: ..., engines: ...}",
+                )
+            )
             return {}
         return {k: (v if isinstance(v, dict) else {}) for k, v in raw.items()}
 
@@ -117,26 +121,27 @@ class ProfileResolver:
         self, path: Path, errors: list[ConfigError]
     ) -> dict[str, dict[str, Any]]:
         profiles: dict[str, dict[str, Any]] = {}
-        files = sorted(
-            f for f in path.iterdir()
-            if f.is_file() and f.suffix in (".yaml", ".yml")
-        )
+        files = sorted(f for f in path.iterdir() if f.is_file() and f.suffix in (".yaml", ".yml"))
         if not files:
-            errors.append(ConfigError(
-                source_file=path,
-                message=f"No profile files found in directory: {path}",
-                remediation="Add .yaml or .yml profile files to the directory.",
-            ))
+            errors.append(
+                ConfigError(
+                    source_file=path,
+                    message=f"No profile files found in directory: {path}",
+                    remediation="Add .yaml or .yml profile files to the directory.",
+                )
+            )
             return profiles
         for f in files:
             try:
                 raw = yaml.safe_load(f.read_text())
             except Exception as e:
-                errors.append(ConfigError(
-                    source_file=f,
-                    message=f"Cannot read profile file: {e}",
-                    remediation="Ensure the file is valid YAML.",
-                ))
+                errors.append(
+                    ConfigError(
+                        source_file=f,
+                        message=f"Cannot read profile file: {e}",
+                        remediation="Ensure the file is valid YAML.",
+                    )
+                )
                 continue
             name = f.stem
             profiles[name] = raw if isinstance(raw, dict) else {}
@@ -156,12 +161,20 @@ class ProfileResolver:
 
         # Top-level keys from project replace global
         for key, value in project_data.items():
-            if key == "catalogs" and isinstance(value, dict) and isinstance(merged.get("catalogs"), dict):
+            if (
+                key == "catalogs"
+                and isinstance(value, dict)
+                and isinstance(merged.get("catalogs"), dict)
+            ):
                 # Merge catalogs: project replaces by name, global-only preserved
                 cat = dict(merged["catalogs"])
                 cat.update(value)
                 merged["catalogs"] = cat
-            elif key == "engines" and isinstance(value, list) and isinstance(merged.get("engines"), list):
+            elif (
+                key == "engines"
+                and isinstance(value, list)
+                and isinstance(merged.get("engines"), list)
+            ):
                 # Merge engines: project replaces by name, global-only preserved, new added
                 engine_map: dict[str, Any] = {}
                 for eng in merged["engines"]:
@@ -186,11 +199,13 @@ class ProfileResolver:
         if profile_name is not None:
             if profile_name in available:
                 return profile_name
-            errors.append(ConfigError(
-                source_file=profiles_path,
-                message=f"Profile '{profile_name}' not found. Available: {available}",
-                remediation=f"Use one of: {', '.join(available)}",
-            ))
+            errors.append(
+                ConfigError(
+                    source_file=profiles_path,
+                    message=f"Profile '{profile_name}' not found. Available: {available}",
+                    remediation=f"Use one of: {', '.join(available)}",
+                )
+            )
             return None
         if "default" in available:
             return "default"
@@ -204,33 +219,41 @@ class ProfileResolver:
         errors: list[ConfigError],
     ) -> None:
         if "default_engine" not in data:
-            errors.append(ConfigError(
-                source_file=source,
-                message=f"Profile '{name}' missing required field: 'default_engine'",
-                remediation=f"Add 'default_engine' to profile '{name}'.",
-            ))
+            errors.append(
+                ConfigError(
+                    source_file=source,
+                    message=f"Profile '{name}' missing required field: 'default_engine'",
+                    remediation=f"Add 'default_engine' to profile '{name}'.",
+                )
+            )
         if "catalogs" not in data:
-            errors.append(ConfigError(
-                source_file=source,
-                message=f"Profile '{name}' missing required field: 'catalogs'",
-                remediation=f"Add 'catalogs' mapping to profile '{name}'.",
-            ))
+            errors.append(
+                ConfigError(
+                    source_file=source,
+                    message=f"Profile '{name}' missing required field: 'catalogs'",
+                    remediation=f"Add 'catalogs' mapping to profile '{name}'.",
+                )
+            )
         if "engines" not in data:
-            errors.append(ConfigError(
-                source_file=source,
-                message=f"Profile '{name}' missing required field: 'engines'",
-                remediation=f"Add 'engines' list to profile '{name}'.",
-            ))
+            errors.append(
+                ConfigError(
+                    source_file=source,
+                    message=f"Profile '{name}' missing required field: 'engines'",
+                    remediation=f"Add 'engines' list to profile '{name}'.",
+                )
+            )
         for i, eng in enumerate(data.get("engines", [])):
             if not isinstance(eng, dict):
                 continue
             for field in ("name", "type", "catalogs"):
                 if field not in eng:
-                    errors.append(ConfigError(
-                        source_file=source,
-                        message=f"Profile '{name}', engine #{i + 1} missing required field: '{field}'",
-                        remediation=f"Add '{field}' to engine entry in profile '{name}'.",
-                    ))
+                    errors.append(
+                        ConfigError(
+                            source_file=source,
+                            message=f"Profile '{name}', engine #{i + 1} missing required field: '{field}'",
+                            remediation=f"Add '{field}' to engine entry in profile '{name}'.",
+                        )
+                    )
 
     def _build_profile(
         self, name: str, data: dict[str, Any], project_root: Path | None = None
@@ -239,6 +262,7 @@ class ProfileResolver:
         for cat_name, cat_data in data.get("catalogs", {}).items():
             if not isinstance(cat_data, dict):
                 cat_data = {}
+            # Everything except 'type' becomes options
             options = {k: v for k, v in cat_data.items() if k != "type"}
             # Resolve relative 'path' options against project_root
             if project_root and "path" in options and isinstance(options["path"], str):
@@ -256,12 +280,16 @@ class ProfileResolver:
             if not isinstance(eng_data, dict):
                 continue
             eng_name = eng_data.get("name", "")
-            engines.append(EngineConfig(
-                name=eng_name,
-                type=eng_data.get("type", ""),
-                catalogs=eng_data.get("catalogs", []),
-                options={k: v for k, v in eng_data.items() if k not in ("name", "type", "catalogs")},
-            ))
+            engines.append(
+                EngineConfig(
+                    name=eng_name,
+                    type=eng_data.get("type", ""),
+                    catalogs=eng_data.get("catalogs", []),
+                    options={
+                        k: v for k, v in eng_data.items() if k not in ("name", "type", "catalogs")
+                    },
+                )
+            )
 
         return ResolvedProfile(
             name=name,

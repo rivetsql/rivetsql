@@ -13,8 +13,9 @@ import inspect
 import time
 import traceback
 from collections import deque
+from collections.abc import Coroutine
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypeVar
 
 import pyarrow
 import pyarrow.compute as pc
@@ -60,18 +61,25 @@ from rivet_core.strategies import (
     _ArrowMaterializedRef,
 )
 
+# TypeVar for generic return type in _run_in_loop
+T = TypeVar("T")
+
 # ---------------------------------------------------------------------------
 # Residual merging
 # ---------------------------------------------------------------------------
 
 
-def _merge_residuals(group_residual: ResidualPlan | None, adapter_residual: ResidualPlan) -> ResidualPlan:
+def _merge_residuals(
+    group_residual: ResidualPlan | None, adapter_residual: ResidualPlan
+) -> ResidualPlan:
     """Merge compiler-computed residuals with adapter-returned residuals."""
     if group_residual is None:
         return adapter_residual
     return ResidualPlan(
         predicates=group_residual.predicates + adapter_residual.predicates,
-        limit=adapter_residual.limit if adapter_residual.limit is not None else group_residual.limit,
+        limit=adapter_residual.limit
+        if adapter_residual.limit is not None
+        else group_residual.limit,
         casts=group_residual.casts + adapter_residual.casts,
     )
 
@@ -148,11 +156,14 @@ def _merge_cross_group_predicates(
 
     merged_pushed = list(pushdown.predicates.pushed) + list(xg_preds)
     return PushdownPlan(
-        predicates=PredicatePushdownResult(pushed=merged_pushed, residual=pushdown.predicates.residual),
+        predicates=PredicatePushdownResult(
+            pushed=merged_pushed, residual=pushdown.predicates.residual
+        ),
         projections=pushdown.projections,
         limit=pushdown.limit,
         casts=pushdown.casts,
     )
+
 
 def _merge_cross_group_projections(
     pushdown: PushdownPlan | None,
@@ -189,7 +200,9 @@ def _merge_cross_group_projections(
 
     return PushdownPlan(
         predicates=pushdown.predicates,
-        projections=ProjectionPushdownResult(pushed_columns=merged, reason=pushdown.projections.reason),
+        projections=ProjectionPushdownResult(
+            pushed_columns=merged, reason=pushdown.projections.reason
+        ),
         limit=pushdown.limit,
         casts=pushdown.casts,
     )
@@ -237,7 +250,6 @@ def _merge_cross_group_limits(
         ),
         casts=pushdown.casts,
     )
-
 
 
 # ---------------------------------------------------------------------------
@@ -325,9 +337,7 @@ def _apply_residuals(table: pyarrow.Table, residual: ResidualPlan) -> pyarrow.Ta
         fields: list[pyarrow.Field] = []
         needs_cast = False
         for _i, col_field in enumerate(table.schema):
-            cast_match = next(
-                (c for c in residual.casts if c.column == col_field.name), None
-            )
+            cast_match = next((c for c in residual.casts if c.column == col_field.name), None)
             if cast_match:
                 target_type = _arrow_type_from_str(cast_match.to_type)
                 if target_type is not None and target_type != col_field.type:
@@ -392,9 +402,7 @@ def _build_filter_expr(expression: str, table: pyarrow.Table) -> Any:
 def _parse_literal(val: str) -> Any:
     """Parse a SQL literal value into a Python value."""
     # String literal
-    if (val.startswith("'") and val.endswith("'")) or (
-        val.startswith('"') and val.endswith('"')
-    ):
+    if (val.startswith("'") and val.endswith("'")) or (val.startswith('"') and val.endswith('"')):
         return val[1:-1]
     # Boolean
     if val.upper() == "TRUE":
@@ -481,13 +489,15 @@ def _compute_materialization_stats(table: pyarrow.Table) -> MaterializationStats
             max_str = str(max_val) if max_val is not None else None
         except Exception:
             max_str = None
-        col_stats.append(ColumnExecutionStats(
-            column=col_name,
-            null_count=null_count,
-            distinct_count_estimate=distinct_est,
-            min_value=min_str,
-            max_value=max_str,
-        ))
+        col_stats.append(
+            ColumnExecutionStats(
+                column=col_name,
+                null_count=null_count,
+                distinct_count_estimate=distinct_est,
+                min_value=min_str,
+                max_value=max_str,
+            )
+        )
     return MaterializationStats(
         row_count=table.num_rows,
         byte_size=table.nbytes,
@@ -544,6 +554,7 @@ def _normalize_python_result(joint_name: str, func_path: str, result: Any) -> Ma
         # pandas DataFrame
         try:
             import pandas
+
             if isinstance(result, pandas.DataFrame):
                 table = pyarrow.Table.from_pandas(result)
         except ImportError:
@@ -553,6 +564,7 @@ def _normalize_python_result(joint_name: str, func_path: str, result: Any) -> Ma
         if table is None:
             try:
                 import polars
+
                 if isinstance(result, polars.DataFrame):
                     table = result.to_arrow()
             except ImportError:
@@ -562,6 +574,7 @@ def _normalize_python_result(joint_name: str, func_path: str, result: Any) -> Ma
         if table is None:
             try:
                 import pyspark.sql
+
                 if isinstance(result, pyspark.sql.DataFrame):
                     table = pyarrow.Table.from_pandas(result.toPandas())
             except ImportError:
@@ -575,7 +588,11 @@ def _normalize_python_result(joint_name: str, func_path: str, result: Any) -> Ma
         RivetError(
             code="RVT-752",
             message=f"PythonJoint '{joint_name}' returned unsupported type '{type(result).__name__}'.",
-            context={"joint": joint_name, "function": func_path, "return_type": type(result).__name__},
+            context={
+                "joint": joint_name,
+                "function": func_path,
+                "return_type": type(result).__name__,
+            },
             remediation=_remediation,
         )
     )
@@ -655,7 +672,10 @@ def _check_row_count(cfg: dict[str, Any], table: pyarrow.Table) -> tuple[bool, s
     max_count = cfg.get("max")
     actual = table.num_rows
     passed = actual >= min_count and (max_count is None or actual <= max_count)
-    return passed, f"row_count: {actual} rows (min={min_count}, max={max_count}): {'passed' if passed else 'failed'}"
+    return (
+        passed,
+        f"row_count: {actual} rows (min={min_count}, max={max_count}): {'passed' if passed else 'failed'}",
+    )
 
 
 def _check_accepted_values(cfg: dict[str, Any], table: pyarrow.Table) -> tuple[bool, str]:
@@ -666,7 +686,10 @@ def _check_accepted_values(cfg: dict[str, Any], table: pyarrow.Table) -> tuple[b
         unique_vals = pc.unique(arr).to_pylist()
         invalid = [v for v in unique_vals if v is not None and v not in values]
         passed = len(invalid) == 0
-        return passed, f"accepted_values on '{col}': {'passed' if passed else f'invalid values {invalid}'}"
+        return (
+            passed,
+            f"accepted_values on '{col}': {'passed' if passed else f'invalid values {invalid}'}",
+        )
     return False, f"accepted_values: column '{col}' not found"
 
 
@@ -677,7 +700,10 @@ def _check_expression(cfg: dict[str, Any], table: pyarrow.Table) -> tuple[bool, 
         filtered = table.filter(expr)
         failing = table.num_rows - filtered.num_rows
         passed = failing == 0
-        return passed, f"expression '{expr_str}': {'passed' if passed else f'{failing} failing row(s)'}"
+        return (
+            passed,
+            f"expression '{expr_str}': {'passed' if passed else f'{failing} failing row(s)'}",
+        )
     return False, f"expression: could not parse '{expr_str}'"
 
 
@@ -700,7 +726,10 @@ def _check_schema(cfg: dict[str, Any], table: pyarrow.Table) -> tuple[bool, str]
             return False, f"schema: column '{col_name}' not found"
         actual_type = str(table.schema.field(col_name).type)
         if actual_type != expected_type:
-            return False, f"schema: column '{col_name}' expected type '{expected_type}', got '{actual_type}'"
+            return (
+                False,
+                f"schema: column '{col_name}' expected type '{expected_type}', got '{actual_type}'",
+            )
     return True, "schema: passed"
 
 
@@ -714,13 +743,17 @@ def _check_freshness(cfg: dict[str, Any], table: pyarrow.Table) -> tuple[bool, s
     if max_val is None:
         return False, f"freshness on '{col}': no non-null values"
     import datetime
+
     now = datetime.datetime.now(tz=datetime.UTC)
     if hasattr(max_val, "timestamp"):
         age = (now - max_val.replace(tzinfo=datetime.UTC)).total_seconds()
     else:
         age = float("inf")
     passed = age <= max_age_seconds
-    return passed, f"freshness on '{col}': age={age:.0f}s, max={max_age_seconds}s: {'passed' if passed else 'stale'}"
+    return (
+        passed,
+        f"freshness on '{col}': age={age:.0f}s, max={max_age_seconds}s: {'passed' if passed else 'stale'}",
+    )
 
 
 _CHECK_HANDLERS: dict[str, Any] = {
@@ -810,9 +843,7 @@ class DependencyGraph:
                     upstream[group.id].add(up_group_id)
                     downstream[up_group_id].add(group.id)
 
-        in_degree: dict[str, int] = {
-            gid: len(ups) for gid, ups in upstream.items()
-        }
+        in_degree: dict[str, int] = {gid: len(ups) for gid, ups in upstream.items()}
 
         return DependencyGraph(
             upstream=upstream,
@@ -823,9 +854,7 @@ class DependencyGraph:
     def ready_groups(self) -> list[str]:
         """Return group IDs with in-degree 0 that haven't been submitted."""
         return [
-            gid
-            for gid, deg in self._in_degree.items()
-            if deg == 0 and gid not in self._submitted
+            gid for gid, deg in self._in_degree.items() if deg == 0 and gid not in self._submitted
         ]
 
     def mark_complete(self, group_id: str) -> list[str]:
@@ -919,8 +948,8 @@ def _resolve_concurrency_limits(
 class _nullcontext:
     """Minimal async context manager that does nothing (fallback when no pool)."""
 
-    async def __aenter__(self) -> None:
-        return None
+    async def __aenter__(self) -> _nullcontext:
+        return self
 
     async def __aexit__(self, *exc: Any) -> None:
         pass
@@ -939,12 +968,15 @@ class Executor:
         if registry is None:
             # Create a minimal default registry with the built-in arrow engine plugin
             from rivet_core.builtins.arrow_catalog import ArrowComputeEnginePlugin
+
             registry = PluginRegistry()
             registry.register_engine_plugin(ArrowComputeEnginePlugin())
         self._registry = registry
 
     def _get_materialization_strategy(self, name: str) -> MaterializationStrategy:
-        return self._materialization_strategies.get(name) or self._materialization_strategies["arrow"]
+        return (
+            self._materialization_strategies.get(name) or self._materialization_strategies["arrow"]
+        )
 
     @staticmethod
     def _has_upstream_failure(
@@ -973,36 +1005,59 @@ class Executor:
     ) -> None:
         """Record failure results for all joints in a group."""
         timing = PhasedTiming(
-            total_ms=step_ms, engine_ms=0.0, materialize_ms=0.0,
-            residual_ms=0.0, check_ms=0.0,
+            total_ms=step_ms,
+            engine_ms=0.0,
+            materialize_ms=0.0,
+            residual_ms=0.0,
+            check_ms=0.0,
         )
         for jn in group.joints:
             failed_joints.add(jn)
             joint_results.append(
                 JointExecutionResult(
-                    name=jn, success=False, rows_in=None, rows_out=None,
-                    timing=timing, fused_group_id=group.id,
-                    materialized=False, materialization_trigger=None,
-                    materialization_stats=None, check_results=[],
-                    plugin_metrics=None, error=error,
+                    name=jn,
+                    success=False,
+                    rows_in=None,
+                    rows_out=None,
+                    timing=timing,
+                    fused_group_id=group.id,
+                    materialized=False,
+                    materialization_trigger=None,
+                    materialization_stats=None,
+                    check_results=[],
+                    plugin_metrics=None,
+                    error=error,
                 )
             )
         group_results.append(
             FusedGroupExecutionResult(
-                group_id=group.id, joints=list(group.joints),
-                success=False, rows_in=0, rows_out=0, timing=timing,
-                materialization_stats=None, plugin_metrics=None,
+                group_id=group.id,
+                joints=list(group.joints),
+                success=False,
+                rows_in=0,
+                rows_out=0,
+                timing=timing,
+                materialization_stats=None,
+                plugin_metrics=None,
                 error=error,
             )
         )
         if stats_collector is not None:
             stats_collector.record_group_timing(
-                group.id, list(group.joints), timing, success=False, error=error,
+                group.id,
+                list(group.joints),
+                timing,
+                success=False,
+                error=error,
             )
             for jn in group.joints:
                 stats_collector.record_joint_stats(
-                    jn, rows_in=None, rows_out=None, timing=timing,
-                    materialization_stats=None, skipped=True,
+                    jn,
+                    rows_in=None,
+                    rows_out=None,
+                    timing=timing,
+                    materialization_stats=None,
+                    skipped=True,
                     skip_reason=error.message if error else "upstream failure",
                 )
 
@@ -1016,9 +1071,7 @@ class Executor:
 
         Returns (check_results_by_joint, has_error, error_count, warning_count).
         """
-        all_check_results: dict[str, list[CheckExecutionResult]] = {
-            jn: [] for jn in group.joints
-        }
+        all_check_results: dict[str, list[CheckExecutionResult]] = {jn: [] for jn in group.joints}
         assertion_error = False
         check_failures = 0
         check_warnings = 0
@@ -1072,14 +1125,18 @@ class Executor:
                 if jr.name == jn and jr.fused_group_id == group.id:
                     merged = list(jr.check_results) + audit_results
                     joint_results[i] = JointExecutionResult(
-                        name=jr.name, success=jr.success,
-                        rows_in=jr.rows_in, rows_out=jr.rows_out,
-                        timing=jr.timing, fused_group_id=jr.fused_group_id,
+                        name=jr.name,
+                        success=jr.success,
+                        rows_in=jr.rows_in,
+                        rows_out=jr.rows_out,
+                        timing=jr.timing,
+                        fused_group_id=jr.fused_group_id,
                         materialized=jr.materialized,
                         materialization_trigger=jr.materialization_trigger,
                         materialization_stats=jr.materialization_stats,
                         check_results=merged,
-                        plugin_metrics=jr.plugin_metrics, error=jr.error,
+                        plugin_metrics=jr.plugin_metrics,
+                        error=jr.error,
                     )
                     break
             for ar in audit_results:
@@ -1119,7 +1176,11 @@ class Executor:
             k: v.to_arrow() for k, v in materials.items() if k in needed_keys
         }
         result_ref, adapter_residual = await self._execute_fused_group(
-            group, arrow_materials, joint_map, catalog_map, ref_materials=materials,
+            group,
+            arrow_materials,
+            joint_map,
+            catalog_map,
+            ref_materials=materials,
             stats_collector=stats_collector,
         )
         engine_ms = (time.monotonic() - engine_start) * 1000
@@ -1131,7 +1192,11 @@ class Executor:
                 # Build execution context
                 sql = group.resolved_sql or group.fused_sql or ""
                 if group.fusion_result:
-                    sql = group.fusion_result.resolved_fused_sql or group.fusion_result.fused_sql or sql
+                    sql = (
+                        group.fusion_result.resolved_fused_sql
+                        or group.fusion_result.fused_sql
+                        or sql
+                    )
                 execution_context: dict[str, Any] = {
                     "sql": sql[:1000],
                     "group_id": group.id,
@@ -1151,6 +1216,7 @@ class Executor:
                     stats_collector.record_engine_metrics(group.id, metrics)
                 except Exception:
                     import logging
+
                     logging.getLogger("rivet_core.executor").warning(
                         "collect_metrics failed for group '%s'; continuing without engine metrics",
                         group.id,
@@ -1158,7 +1224,11 @@ class Executor:
                     stats_collector.record_engine_metrics(group.id, PluginMetrics())
 
         residual_start = time.monotonic()
-        merged_residual = _merge_residuals(group.residual, adapter_residual) if adapter_residual else group.residual
+        merged_residual = (
+            _merge_residuals(group.residual, adapter_residual)
+            if adapter_residual
+            else group.residual
+        )
         if merged_residual is not None:
             result_table = result_ref.to_arrow()
             result_table = _apply_residuals(result_table, merged_residual)
@@ -1188,8 +1258,15 @@ class Executor:
         materialize_ms = (time.monotonic() - mat_start) * 1000
 
         check_start = time.monotonic()
-        all_check_results, assertion_error, check_failures, check_warnings = await self._run_assertion_checks(
-            group, joint_map, result_ref,
+        (
+            all_check_results,
+            assertion_error,
+            check_failures,
+            check_warnings,
+        ) = await self._run_assertion_checks(
+            group,
+            joint_map,
+            result_ref,
         )
         check_ms = (time.monotonic() - check_start) * 1000
 
@@ -1205,8 +1282,10 @@ class Executor:
         step_ms = (time.monotonic() - step_start) * 1000
 
         timing = PhasedTiming(
-            total_ms=step_ms, engine_ms=engine_ms,
-            materialize_ms=materialize_ms, residual_ms=residual_ms,
+            total_ms=step_ms,
+            engine_ms=engine_ms,
+            materialize_ms=materialize_ms,
+            residual_ms=residual_ms,
             check_ms=check_ms,
         )
 
@@ -1224,32 +1303,42 @@ class Executor:
             jn_mat = materialized and jn == exit_joint
             joint_results.append(
                 JointExecutionResult(
-                    name=jn, success=group_success,
+                    name=jn,
+                    success=group_success,
                     rows_in=rows_in if jn == (group.entry_joints or group.joints)[0] else None,
-                    rows_out=rows_out, timing=timing,
+                    rows_out=rows_out,
+                    timing=timing,
                     fused_group_id=group.id,
                     materialized=jn_mat,
                     materialization_trigger=mat_trigger if jn_mat else None,
                     materialization_stats=mat_stats if jn_mat else None,
                     check_results=all_check_results.get(jn, []),
-                    plugin_metrics=None, error=None,
+                    plugin_metrics=None,
+                    error=None,
                 )
             )
 
         group_results.append(
             FusedGroupExecutionResult(
-                group_id=group.id, joints=list(group.joints),
-                success=group_success, rows_in=rows_in,
-                rows_out=rows_out, timing=timing,
+                group_id=group.id,
+                joints=list(group.joints),
+                success=group_success,
+                rows_in=rows_in,
+                rows_out=rows_out,
+                timing=timing,
                 materialization_stats=mat_stats,
-                plugin_metrics=None, error=None,
+                plugin_metrics=None,
+                error=None,
             )
         )
 
         # Record stats via StatsCollector
         if stats_collector is not None:
             stats_collector.record_group_timing(
-                group.id, list(group.joints), timing, success=group_success,
+                group.id,
+                list(group.joints),
+                timing,
+                success=group_success,
             )
             for jn in group.joints:
                 jn_mat = materialized and jn == exit_joint
@@ -1273,8 +1362,12 @@ class Executor:
                 return total_materializations, total_failures, check_failures, check_warnings, stop
 
         af, aw = await self._run_sink_audits(
-            group, joint_map, result_ref, catalog_map,
-            assertion_error, joint_results,
+            group,
+            joint_map,
+            result_ref,
+            catalog_map,
+            assertion_error,
+            joint_results,
         )
         check_failures += af
         check_warnings += aw
@@ -1286,10 +1379,23 @@ class Executor:
                     audit_checks = [c for c in jr.check_results if c.phase == "audit"]
                     if audit_checks:
                         passed = sum(1 for c in audit_checks if c.passed)
-                        failed = sum(1 for c in audit_checks if not c.passed and c.severity == "error")
-                        warned = sum(1 for c in audit_checks if not c.passed and c.severity != "error")
-                        read_back_rows = next((c.read_back_rows for c in audit_checks if c.read_back_rows is not None), None)
-                        stats_collector.record_check_results(jr.name, "audit", passed, failed, warned, read_back_rows=read_back_rows)
+                        failed = sum(
+                            1 for c in audit_checks if not c.passed and c.severity == "error"
+                        )
+                        warned = sum(
+                            1 for c in audit_checks if not c.passed and c.severity != "error"
+                        )
+                        read_back_rows = next(
+                            (
+                                c.read_back_rows
+                                for c in audit_checks
+                                if c.read_back_rows is not None
+                            ),
+                            None,
+                        )
+                        stats_collector.record_check_results(
+                            jr.name, "audit", passed, failed, warned, read_back_rows=read_back_rows
+                        )
 
         return total_materializations, total_failures, check_failures, check_warnings, stop
 
@@ -1327,9 +1433,7 @@ class Executor:
             run_stats=run_stats,
         )
 
-    async def run(
-        self, compiled: CompiledAssembly, fail_fast: bool = True
-    ) -> ExecutionResult:
+    async def run(self, compiled: CompiledAssembly, fail_fast: bool = True) -> ExecutionResult:
         """Execute the compiled assembly using a wavefront parallel scheduler.
 
         Builds a dependency graph from fused groups, creates per-engine
@@ -1356,9 +1460,7 @@ class Executor:
         mat_map: dict[str, list[Materialization]] = {}
         for m in compiled.materializations:
             mat_map.setdefault(m.from_joint, []).append(m)
-        catalog_map: dict[str, CompiledCatalog] = {
-            cc.name: cc for cc in compiled.catalogs
-        }
+        catalog_map: dict[str, CompiledCatalog] = {cc.name: cc for cc in compiled.catalogs}
 
         materials: dict[str, MaterializedRef] = {}
         failed_joints: set[str] = set()
@@ -1417,8 +1519,9 @@ class Executor:
             """
             group = group_map[group_id]
             pool = engine_pools.get(group.engine)
+            context_manager: Any = pool if pool is not None else _nullcontext()
 
-            async with pool if pool is not None else _nullcontext():
+            async with context_manager:
                 # Check for upstream failures (between awaits, safe)
                 if self._has_upstream_failure(group, joint_map, failed_joints):
                     error = RivetError(
@@ -1428,7 +1531,11 @@ class Executor:
                         remediation="Fix the upstream failure first.",
                     )
                     self._record_group_failure(
-                        group, error, failed_joints, joint_results, group_results,
+                        group,
+                        error,
+                        failed_joints,
+                        joint_results,
+                        group_results,
                         stats_collector=stats_collector,
                     )
                     return group_id, False, 0, 1, 0, 0
@@ -1438,9 +1545,17 @@ class Executor:
 
                 try:
                     mats, fails, cf, cw, stop = await self._execute_group_success(
-                        group, joint_map, catalog_map, mat_map, materials,
-                        failed_joints, joint_results, group_results, fail_fast,
-                        step_start, engine_start,
+                        group,
+                        joint_map,
+                        catalog_map,
+                        mat_map,
+                        materials,
+                        failed_joints,
+                        joint_results,
+                        group_results,
+                        fail_fast,
+                        step_start,
+                        engine_start,
                         stats_collector=stats_collector,
                     )
                     return group_id, (fails == 0), mats, fails, cf, cw
@@ -1454,7 +1569,11 @@ class Executor:
                         remediation="Check the SQL and upstream data.",
                     )
                     self._record_group_failure(
-                        group, error, failed_joints, joint_results, group_results,
+                        group,
+                        error,
+                        failed_joints,
+                        joint_results,
+                        group_results,
                         step_ms=step_ms,
                         stats_collector=stats_collector,
                     )
@@ -1471,9 +1590,7 @@ class Executor:
 
         while pending_tasks:
             # Wait for at least one task to complete
-            done, _ = await asyncio.wait(
-                pending_tasks.keys(), return_when=asyncio.FIRST_COMPLETED
-            )
+            done, _ = await asyncio.wait(pending_tasks.keys(), return_when=asyncio.FIRST_COMPLETED)
 
             # Process ALL completed tasks before checking pipeline_stopped.
             # This ensures running tasks that finished in the same batch
@@ -1509,9 +1626,7 @@ class Executor:
                         if ds_group is not None:
                             error = RivetError(
                                 code="RVT-501",
-                                message=(
-                                    f"Skipped: upstream dependency '{completed_gid}' failed."
-                                ),
+                                message=(f"Skipped: upstream dependency '{completed_gid}' failed."),
                                 context={
                                     "group_id": ds_gid,
                                     "joints": list(ds_group.joints),
@@ -1520,8 +1635,11 @@ class Executor:
                                 remediation="Fix the upstream failure first.",
                             )
                             self._record_group_failure(
-                                ds_group, error, failed_joints,
-                                joint_results, group_results,
+                                ds_group,
+                                error,
+                                failed_joints,
+                                joint_results,
+                                group_results,
                                 stats_collector=stats_collector,
                             )
                             total_failures += 1
@@ -1567,11 +1685,17 @@ class Executor:
         run_stats = stats_collector.build_run_stats(total_ms)
 
         return self._build_execution_result(
-            joint_results, group_results, total_ms,
-            total_materializations, total_failures,
-            total_check_failures, total_check_warnings, fail_fast,
+            joint_results,
+            group_results,
+            total_ms,
+            total_materializations,
+            total_failures,
+            total_check_failures,
+            total_check_warnings,
+            fail_fast,
             run_stats=run_stats,
         )
+
     async def run_query(
         self, compiled: CompiledAssembly, target_joint: str = "__query"
     ) -> pyarrow.Table:
@@ -1602,7 +1726,11 @@ class Executor:
             result_ref, adapter_residual = await self._execute_fused_group(
                 group, arrow_materials, joint_map, catalog_map, ref_materials=materials
             )
-            merged_residual = _merge_residuals(group.residual, adapter_residual) if adapter_residual else group.residual
+            merged_residual = (
+                _merge_residuals(group.residual, adapter_residual)
+                if adapter_residual
+                else group.residual
+            )
             if merged_residual is not None:
                 result_table = _apply_residuals(result_ref.to_arrow(), merged_residual)
                 result_ref = self._materialize_result(result_table, group)
@@ -1653,30 +1781,47 @@ class Executor:
 
             engine_start = time.monotonic()
             result_ref, adapter_residual = await self._execute_fused_group(
-                group, arrow_materials, joint_map, catalog_map,
-                ref_materials=materials, stats_collector=stats_collector,
+                group,
+                arrow_materials,
+                joint_map,
+                catalog_map,
+                ref_materials=materials,
+                stats_collector=stats_collector,
             )
             engine_ms = (time.monotonic() - engine_start) * 1000
 
-            merged_residual = _merge_residuals(group.residual, adapter_residual) if adapter_residual else group.residual
+            merged_residual = (
+                _merge_residuals(group.residual, adapter_residual)
+                if adapter_residual
+                else group.residual
+            )
             if merged_residual is not None:
                 result_table = _apply_residuals(result_ref.to_arrow(), merged_residual)
                 result_ref = self._materialize_result(result_table, group)
 
             step_ms = (time.monotonic() - step_start) * 1000
             timing = PhasedTiming(
-                total_ms=step_ms, engine_ms=engine_ms,
-                materialize_ms=0.0, residual_ms=0.0, check_ms=0.0,
+                total_ms=step_ms,
+                engine_ms=engine_ms,
+                materialize_ms=0.0,
+                residual_ms=0.0,
+                check_ms=0.0,
             )
             stats_collector.record_group_timing(
-                group.id, list(group.joints), timing, success=True,
+                group.id,
+                list(group.joints),
+                timing,
+                success=True,
             )
 
             for jn in group.joints:
                 materials[jn] = result_ref
                 rows_out = result_ref.to_arrow().num_rows if result_ref else None
                 stats_collector.record_joint_stats(
-                    jn, rows_in=None, rows_out=rows_out, timing=timing,
+                    jn,
+                    rows_in=None,
+                    rows_out=rows_out,
+                    timing=timing,
                     materialization_stats=None,
                 )
 
@@ -1695,24 +1840,55 @@ class Executor:
             )
         )
 
-    def run_sync(
-        self, compiled: CompiledAssembly, fail_fast: bool = True
-    ) -> ExecutionResult:
+    def run_sync(self, compiled: CompiledAssembly, fail_fast: bool = True) -> ExecutionResult:
         """Synchronous entry point — creates an event loop and runs the async scheduler."""
-        return asyncio.run(self.run(compiled, fail_fast=fail_fast))
+        return self._run_in_loop(self.run(compiled, fail_fast=fail_fast))
 
     def run_query_sync(
         self, compiled: CompiledAssembly, target_joint: str = "__query"
     ) -> pyarrow.Table:
         """Synchronous wrapper for run_query."""
-        return asyncio.run(self.run_query(compiled, target_joint))
+        return self._run_in_loop(self.run_query(compiled, target_joint))
 
     def run_query_with_stats_sync(
         self, compiled: CompiledAssembly, target_joint: str = "__query"
     ) -> tuple[pyarrow.Table, RunStats]:
         """Synchronous wrapper for run_query_with_stats."""
-        return asyncio.run(self.run_query_with_stats(compiled, target_joint))
+        return self._run_in_loop(self.run_query_with_stats(compiled, target_joint))
 
+    def _run_in_loop(self, coro: Coroutine[Any, Any, T]) -> T:
+        """Run a coroutine, handling both sync and async contexts.
+
+        When called from within an existing event loop (e.g., Textual REPL),
+        runs the coroutine in a new thread with its own event loop.
+        Otherwise, creates a new event loop with asyncio.run().
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            # No event loop running — create one
+            return asyncio.run(coro)
+        else:
+            # Event loop already running — run in a thread pool with its own loop
+            import threading  # noqa: PLC0415
+
+            result_container: list[T] = []
+            exception_container: list[Exception] = []
+
+            def run_in_thread() -> None:
+                try:
+                    result = asyncio.run(coro)
+                    result_container.append(result)
+                except Exception as e:  # noqa: BLE001
+                    exception_container.append(e)
+
+            thread = threading.Thread(target=run_in_thread)
+            thread.start()
+            thread.join()
+
+            if exception_container:
+                raise exception_container[0]
+            return result_container[0]
 
     async def _run_audits(
         self,
@@ -1826,7 +2002,9 @@ class Executor:
             )
 
         # Single dispatch path: resolve upstream, build input_tables, call execute_sql
-        result_table, adapter_residual = await self._execute_via_plugin(group, materials, joint_map, catalog_map, plugin, stats_collector=stats_collector)
+        result_table, adapter_residual = await self._execute_via_plugin(
+            group, materials, joint_map, catalog_map, plugin, stats_collector=stats_collector
+        )
         return self._materialize_result(result_table, group), adapter_residual
 
     def _materialize_result(self, table: pyarrow.Table, group: FusedGroup) -> MaterializedRef:
@@ -1908,8 +2086,9 @@ class Executor:
         group: FusedGroup,
     ) -> pyarrow.Table:
         """Call plugin.execute_sql, wrapping non-ExecutionError failures as RVT-503."""
+        assert engine_instance is not None, "engine_instance required for SQL execution"
         try:
-            return await asyncio.to_thread(plugin.execute_sql, engine_instance, sql, input_tables)  # type: ignore[arg-type]
+            return await asyncio.to_thread(plugin.execute_sql, engine_instance, sql, input_tables)
         except ExecutionError:
             raise
         except Exception as exc:
@@ -1944,9 +2123,7 @@ class Executor:
         Raises RVT-503 if plugin.execute_sql fails.
         """
         engine_instance = (
-            self._registry.get_compute_engine(group.engine)
-            if self._registry
-            else None
+            self._registry.get_compute_engine(group.engine) if self._registry else None
         )
 
         # Build input_tables from upstream materials and source reads
@@ -1967,31 +2144,43 @@ class Executor:
         # is set), table references are fully-qualified catalog names and the
         # engine does not need adapter-read data in input_tables.  Skip adapter
         # reads for fused sources to avoid redundant queries.
-        group_has_resolved_sql = (
-            group.resolved_sql is not None
-            or (group.fusion_result is not None and group.fusion_result.resolved_fused_sql is not None)
+        group_has_resolved_sql = group.resolved_sql is not None or (
+            group.fusion_result is not None and group.fusion_result.resolved_fused_sql is not None
         )
         skip_source_reads = group_has_resolved_sql and len(group.joints) > 1
         adapter_residual = await self._read_sources_into(
-            input_tables, group, joint_map, catalog_map,
+            input_tables,
+            group,
+            joint_map,
+            catalog_map,
             stats_collector=stats_collector,
             skip_fused_sources=skip_source_reads,
         )
 
         adapter_read_sources = {
-            jn for jn in group.joints
-            if jn in input_tables and joint_map.get(jn) and joint_map[jn].type == "source" and joint_map[jn].adapter
+            jn
+            for jn in group.joints
+            if jn in input_tables
+            and joint_map.get(jn)
+            and joint_map[jn].type == "source"
+            and joint_map[jn].adapter
         }
 
         # Handle temp_view strategy: execute intermediate statements, then final select
         if group.fusion_strategy == "temp_view" and group.fusion_result:
             return await self._execute_temp_view_via_plugin(
-                group, input_tables, plugin, engine_instance, adapter_read_sources,
+                group,
+                input_tables,
+                plugin,
+                engine_instance,
+                adapter_read_sources,
             ), adapter_residual
 
         # CTE strategy
         sql = self._resolve_sql_for_execution(
-            group, joint_map, adapter_read_sources,
+            group,
+            joint_map,
+            adapter_read_sources,
             has_materialized_inputs=has_materialized_inputs,
         )
 
@@ -2008,7 +2197,9 @@ class Executor:
         ):
             return pyarrow.table({}), adapter_residual
 
-        return await self._dispatch_to_engine(plugin, engine_instance, sql, input_tables, group), adapter_residual
+        return await self._dispatch_to_engine(
+            plugin, engine_instance, sql, input_tables, group
+        ), adapter_residual
 
     # CLEANUP-RISK: _execute_temp_view_via_plugin (complexity 13) — plugin dispatch with error handling; refactoring risks changing error messages/types
     async def _execute_temp_view_via_plugin(
@@ -2021,6 +2212,8 @@ class Executor:
     ) -> pyarrow.Table:
         """Execute temp_view strategy by running intermediate statements through plugin."""
         import re
+
+        assert engine_instance is not None, "engine_instance required for temp_view execution"
 
         fr = group.fusion_result
         assert fr is not None, f"fusion_result must not be None for group '{group.id}'"
@@ -2052,7 +2245,9 @@ class Executor:
                     return next(iter(input_tables.values()))
                 return pyarrow.table({})
             try:
-                return await asyncio.to_thread(plugin.execute_sql, engine_instance, final_select, input_tables)  # type: ignore[arg-type]
+                return await asyncio.to_thread(
+                    plugin.execute_sql, engine_instance, final_select, input_tables
+                )
             except ExecutionError:
                 raise
             except Exception as exc:
@@ -2082,7 +2277,9 @@ class Executor:
                     view_name = m.group(1)
                     view_sql = m.group(2)
                     try:
-                        result = await asyncio.to_thread(plugin.execute_sql, engine_instance, view_sql, input_tables)  # type: ignore[arg-type]
+                        result = await asyncio.to_thread(
+                            plugin.execute_sql, engine_instance, view_sql, input_tables
+                        )
                     except ExecutionError:
                         raise
                     except Exception as exc:
@@ -2102,7 +2299,9 @@ class Executor:
                     created_views.append(view_name)
 
             try:
-                return await asyncio.to_thread(plugin.execute_sql, engine_instance, final_select, input_tables)  # type: ignore[arg-type]
+                return await asyncio.to_thread(
+                    plugin.execute_sql, engine_instance, final_select, input_tables
+                )  # type: ignore[arg-type]
             except ExecutionError:
                 raise
             except Exception as exc:
@@ -2160,9 +2359,7 @@ class Executor:
 
         # Adapter found → delegate resolution
         engine_instance = (
-            self._registry.get_compute_engine(consumer_group.engine)
-            if self._registry
-            else None
+            self._registry.get_compute_engine(consumer_group.engine) if self._registry else None
         )
         ctx = CrossJointContext(
             producer_joint_name=producer_joint_name,
@@ -2195,7 +2392,9 @@ class Executor:
             effective_pushdown = _merge_cross_group_predicates(effective_pushdown, group, jn)
             effective_pushdown = _merge_cross_group_projections(effective_pushdown, group, jn)
             effective_pushdown = _merge_cross_group_limits(effective_pushdown, group, jn)
-            result = await asyncio.to_thread(adapter.read_dispatch, engine_instance, cat, joint, effective_pushdown)
+            result = await asyncio.to_thread(
+                adapter.read_dispatch, engine_instance, cat, joint, effective_pushdown
+            )
             if isinstance(result, AdapterPushdownResult):
                 mat = result.material
                 tbl = mat.to_arrow() if mat and mat.materialized_ref is not None else None
@@ -2313,16 +2512,27 @@ class Executor:
 
             if cj.adapter:
                 try:
-                    found, tbl, residual = await self._read_source_via_adapter(jn, cj, cat, joint, group)
+                    found, tbl, residual = await self._read_source_via_adapter(
+                        jn, cj, cat, joint, group
+                    )
                 except Exception as exc:
                     read_ms = (time.monotonic() - read_start) * 1000
                     if stats_collector is not None:
-                        err = exc.error if isinstance(exc, ExecutionError) else RivetError(
-                            code="RVT-501", message=str(exc),
+                        err = (
+                            exc.error
+                            if isinstance(exc, ExecutionError)
+                            else RivetError(
+                                code="RVT-501",
+                                message=str(exc),
+                            )
                         )
                         stats_collector.record_source_read(
-                            jn, adapter_name, catalog_type,
-                            row_count=None, read_ms=read_ms, error=err,
+                            jn,
+                            adapter_name,
+                            catalog_type,
+                            row_count=None,
+                            read_ms=read_ms,
+                            error=err,
                         )
                     raise
                 read_ms = (time.monotonic() - read_start) * 1000
@@ -2331,14 +2541,19 @@ class Executor:
                     has_residual = residual is not None
                     if stats_collector is not None:
                         stats_collector.record_source_read(
-                            jn, adapter_name, catalog_type,
-                            row_count=row_count, read_ms=read_ms,
+                            jn,
+                            adapter_name,
+                            catalog_type,
+                            row_count=row_count,
+                            read_ms=read_ms,
                             has_residual=has_residual,
                         )
                     if tbl is not None:
                         input_tables[jn] = tbl
                     if residual is not None:
-                        merged_adapter_residual = _merge_residuals(merged_adapter_residual, residual)
+                        merged_adapter_residual = _merge_residuals(
+                            merged_adapter_residual, residual
+                        )
                     continue
 
             try:
@@ -2346,20 +2561,32 @@ class Executor:
             except Exception as exc:
                 read_ms = (time.monotonic() - read_start) * 1000
                 if stats_collector is not None:
-                    err = exc.error if isinstance(exc, ExecutionError) else RivetError(
-                        code="RVT-501", message=str(exc),
+                    err = (
+                        exc.error
+                        if isinstance(exc, ExecutionError)
+                        else RivetError(
+                            code="RVT-501",
+                            message=str(exc),
+                        )
                     )
                     stats_collector.record_source_read(
-                        jn, adapter_name, catalog_type,
-                        row_count=None, read_ms=read_ms, error=err,
+                        jn,
+                        adapter_name,
+                        catalog_type,
+                        row_count=None,
+                        read_ms=read_ms,
+                        error=err,
                     )
                 raise
             read_ms = (time.monotonic() - read_start) * 1000
             if tbl is not None:
                 if stats_collector is not None:
                     stats_collector.record_source_read(
-                        jn, adapter_name, catalog_type,
-                        row_count=tbl.num_rows, read_ms=read_ms,
+                        jn,
+                        adapter_name,
+                        catalog_type,
+                        row_count=tbl.num_rows,
+                        read_ms=read_ms,
                     )
                 input_tables[jn] = tbl
         return merged_adapter_residual
@@ -2387,8 +2614,11 @@ class Executor:
                 RivetError(
                     code="RVT-751",
                     message=f"PythonJoint '{cj.name}' failed to import '{func_path}': {exc}",
-                    context={"joint": cj.name, "function": func_path,
-                             "traceback": traceback.format_exc()},
+                    context={
+                        "joint": cj.name,
+                        "function": func_path,
+                        "traceback": traceback.format_exc(),
+                    },
                     remediation="Ensure the function path is importable.",
                 )
             )
@@ -2398,7 +2628,9 @@ class Executor:
         for up in cj.upstream:
             ref = materials.get(up)
             if ref is not None:
-                inputs[up] = Material(name=up, catalog=cj.catalog or "", materialized_ref=ref, state="materialized")
+                inputs[up] = Material(
+                    name=up, catalog=cj.catalog or "", materialized_ref=ref, state="materialized"
+                )
 
         # Determine if function accepts RivetContext
         sig = inspect.signature(func)
@@ -2434,9 +2666,12 @@ class Executor:
                 RivetError(
                     code="RVT-751",
                     message=f"PythonJoint '{cj.name}' raised an exception: {exc}",
-                    context={"joint": cj.name, "function": func_path,
-                             "upstream": cj.upstream,
-                             "traceback": traceback.format_exc()},
+                    context={
+                        "joint": cj.name,
+                        "function": func_path,
+                        "upstream": cj.upstream,
+                        "traceback": traceback.format_exc(),
+                    },
                     remediation="Fix the Python function or check upstream data.",
                 )
             )
@@ -2446,7 +2681,8 @@ class Executor:
         assert material.materialized_ref is not None  # guaranteed by _normalize_python_result
         arrow_table = material.materialized_ref.to_arrow()
         return self._get_materialization_strategy("arrow").materialize(
-            arrow_table, MaterializationContext(joint_name=cj.name, strategy_name="arrow", options={})
+            arrow_table,
+            MaterializationContext(joint_name=cj.name, strategy_name="arrow", options={}),
         )
 
     async def _dispatch_sink_write(
@@ -2474,8 +2710,11 @@ class Executor:
 
             cat = Catalog(name=cc.name, type=cc.type, options=cc.options)
             mat = Material(
-                name=cj.name, catalog=cj.catalog,
-                table=cj.table, materialized_ref=ref, state="materialized",
+                name=cj.name,
+                catalog=cj.catalog,
+                table=cj.table,
+                materialized_ref=ref,
+                state="materialized",
             )
             joint = Joint(name=cj.name, joint_type="sink", catalog=cj.catalog, table=cj.table)
             await asyncio.to_thread(sink.write, cat, joint, mat, cj.write_strategy or "replace")

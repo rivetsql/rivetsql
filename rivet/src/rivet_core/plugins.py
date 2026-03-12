@@ -382,7 +382,24 @@ class PluginRegistry:
         return self._compute_engines.get(instance_name)
 
     def get_adapter(self, engine_type: str, catalog_type: str) -> ComputeEngineAdapter | None:
-        return self._adapters.get((engine_type, catalog_type))
+        # Exact match takes precedence
+        exact = self._adapters.get((engine_type, catalog_type))
+        if exact is not None:
+            return exact
+
+        # Wildcard fallback: ("*", catalog_type)
+        wildcard = self._adapters.get(("*", catalog_type))
+        if wildcard is None:
+            return None
+
+        # Arrow compatibility gate: engine must declare "arrow" in supported_catalog_types
+        engine_plugin = self._engine_plugins.get(engine_type)
+        if engine_plugin is None:
+            return None
+        if "arrow" not in engine_plugin.supported_catalog_types:
+            return None
+
+        return wildcard
 
     def get_cross_joint_adapter(
         self, consumer_engine_type: str, producer_engine_type: str
@@ -398,6 +415,11 @@ class PluginRegistry:
             caps = plugin.supported_catalog_types.get(catalog_type)
             if caps is not None:
                 return caps
+        # Wildcard adapter fallback with Arrow compatibility gate
+        wildcard = self._adapters.get(("*", catalog_type))
+        if wildcard is not None and plugin is not None:
+            if "arrow" in plugin.supported_catalog_types:
+                return wildcard.capabilities
         return None
 
     # ── Discovery ─────────────────────────────────────────────────────

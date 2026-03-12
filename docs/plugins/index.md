@@ -43,6 +43,7 @@ Two plugins ship with `rivet_core` and require no extra installation:
 | `rivet-postgres` | `postgres` | `postgres` | PostgreSQL databases |
 | `rivet-aws` | — | `s3`, `glue` | AWS S3 and Glue Data Catalog |
 | `rivet-databricks` | `databricks` | `unity`, `databricks` | Databricks SQL warehouses and Unity Catalog |
+| `rivet-rest` | — | `rest_api` | REST API endpoints with auth, pagination, and pushdown |
 
 ---
 
@@ -56,6 +57,7 @@ Two plugins ship with `rivet_core` and require no extra installation:
 | `rivet-postgres` | :material-check: | :material-check: | :material-check: | :material-check: | :material-check: | :material-check: | :material-check: |
 | `rivet-aws` | — | :material-check: | :material-check: | :material-check: | :material-check: | :material-check: | :material-check: |
 | `rivet-databricks` | :material-check: | :material-check: | :material-check: | :material-check: | :material-check: | :material-check: | :material-check: |
+| `rivet-rest` | — | :material-check: | :material-check: | :material-check: | :material-check: | :material-check: | :material-check: |
 
 ---
 
@@ -133,6 +135,11 @@ default:
 <a class="link-card" href="unity/">
 <strong>Unity / Databricks</strong>
 <span>Databricks SQL warehouses and Unity Catalog</span>
+</a>
+
+<a class="link-card" href="rest/">
+<strong>REST API</strong>
+<span>REST API endpoints with authentication, pagination, and predicate pushdown</span>
 </a>
 
 <a class="link-card" href="development/">

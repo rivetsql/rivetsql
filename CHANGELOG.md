@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.1.13] - 2026-03-12
+
+### Added
+- REST API catalog plugin (`rivet_rest`/`rivetsql-rest`) with authentication, pagination, JSON flattening, and Arrow conversion
+- Wildcard adapter architecture: adapters can register with `target_engine_type = "*"` to work across all Arrow-compatible engines
+- REST API authentication: bearer token, basic auth, API key, OAuth2 client credentials with auto-refresh
+- REST API pagination: offset/limit, cursor-based, page number, Link header (RFC 8288)
+- REST API predicate pushdown: translates filter conditions to query parameters where supported
+- REST API sink: writes Arrow data to endpoints via POST/PUT/PATCH with batching and rate limiting
+- REST API rate limiting and retry: enforces request limits, handles HTTP 429, retries transient errors with backoff
+- `rivet catalog create` wizard supports interactive endpoint configuration for REST API catalogs
+- Documentation: REST API plugin reference (`docs/plugins/rest.md`), REST API integration guide (`docs/guides/rest-api-integration.md`), wildcard adapter architecture (`docs/concepts/wildcard-adapters.md`)
+
+### Fixed
+- `rivet catalog create` wizard now correctly parses optional parameter types (dict, int, float, bool) instead of storing as strings
+- REPL ad-hoc queries with LIMIT now push the limit to REST API sources, stopping page fetches once limit is reached
+- Optimizer `pushdown_pass` searches backwards through fused groups to find LogicalPlan when exit joint has none
+- REPL query execution now works when called from within an existing event loop (e.g., Textual TUI) by running async operations in a separate thread
+- REST API limit pushdown test now provides explicit schema to avoid schema inference HTTP requests interfering with request count assertions
+- REST API pagination now correctly passes `response_path` to paginator, fixing bug where pagination stopped after first page when records were nested (e.g., `response_path: "results"`)
+
 ## [0.1.12] - 2026-03-11
 
 ### Added

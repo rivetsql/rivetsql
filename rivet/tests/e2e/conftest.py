@@ -34,7 +34,7 @@ _original_register = None
 
 
 def _register_with_fallback(registry, only=None):
-    """Call the real register_optional_plugins, then ensure DuckDB is present."""
+    """Call the real register_optional_plugins, then ensure DuckDB and REST API plugins are present."""
     _original_register(registry, only=only)
     if "duckdb" not in registry._engine_plugins:
         try:
@@ -44,10 +44,19 @@ def _register_with_fallback(registry, only=None):
         except Exception:
             pass
 
+    # Also ensure REST API plugin is registered
+    if "rest_api" not in registry._catalog_plugins:
+        try:
+            from rivet_rest import RestPlugin
+
+            RestPlugin(registry)
+        except Exception:
+            pass
+
 
 @pytest.fixture(autouse=True, scope="session")
 def _ensure_duckdb_plugin():
-    """Patch register_optional_plugins so DuckDB is always available in e2e tests.
+    """Patch register_optional_plugins so DuckDB and REST API are always available in e2e tests.
 
     The function is imported by name into many CLI command modules at
     import time, so patching only ``rivet_bridge.plugins`` is not enough.
@@ -171,15 +180,31 @@ def run_cli(project_path: Path, argv: list[str], capsys: pytest.CaptureFixture[s
     Captures stdout/stderr via *capsys* and returns a :class:`CLIResult`.
     The helper never raises on CLI failures — it always returns the exit code.
 
-    The ``--project`` flag is inserted *after* the subcommand name so that
-    argparse's subparser picks it up correctly (placing it before the
-    subcommand causes the subparser default to overwrite the value).
+    The ``--project`` flag is inserted *after* the last subcommand name so that
+    argparse's subparser picks it up correctly. For nested subcommands like
+    "catalog create", it's inserted after "create".
     """
-    if argv:
-        # Insert --project after the first positional arg (the subcommand)
-        full_argv = [argv[0], "--project", str(project_path)] + argv[1:]
-    else:
+    if not argv:
         full_argv = ["--project", str(project_path)]
+    else:
+        # Find the position after all subcommands (before first flag or option)
+        insert_pos = 0
+        for i, arg in enumerate(argv):
+            if arg.startswith("-"):
+                insert_pos = i
+                break
+        else:
+            # No flags found, insert after all subcommands
+            insert_pos = len(argv)
+
+        # Handle common nested subcommands
+        if len(argv) >= 2 and argv[0] in ("catalog", "engine") and not argv[1].startswith("-"):
+            insert_pos = 2
+        elif len(argv) >= 1 and not argv[0].startswith("-"):
+            insert_pos = 1
+
+        full_argv = argv[:insert_pos] + ["--project", str(project_path)] + argv[insert_pos:]
+
     exit_code = _main(full_argv)
     captured = capsys.readouterr()
     return CLIResult(exit_code=exit_code, stdout=captured.out, stderr=captured.err)

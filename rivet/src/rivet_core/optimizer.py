@@ -670,8 +670,20 @@ def pushdown_pass(
 
     for group in groups:
         # Collect the logical plan from the exit joint (last joint in group)
+        # If the exit joint has no LogicalPlan, search backwards for a joint with one
         exit_joint = group.exit_joints[0] if group.exit_joints else group.joints[-1]
         plan = logical_plans.get(exit_joint)
+
+        # If exit joint has no LogicalPlan, search backwards through the group
+        # to find the last joint with a LogicalPlan (could be a SQL joint or source with SQL)
+        if plan is None and exit_joint in group.joints:
+            exit_idx = group.joints.index(exit_joint)
+            for i in range(exit_idx - 1, -1, -1):
+                candidate = group.joints[i]
+                candidate_plan = logical_plans.get(candidate)
+                if candidate_plan is not None:
+                    plan = candidate_plan
+                    break
 
         # Resolve capabilities for entry joints
         caps: list[str] = []

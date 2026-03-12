@@ -85,6 +85,7 @@ def resolve_env_vars(options: dict[str, Any]) -> tuple[dict[str, Any], list[str]
     missing: list[str] = []
     for key, value in options.items():
         if isinstance(value, str) and _ENV_PATTERN.search(value):
+
             def _replace(m: re.Match[str]) -> str:
                 var = m.group(1)
                 val = os.environ.get(var)
@@ -92,6 +93,7 @@ def resolve_env_vars(options: dict[str, Any]) -> tuple[dict[str, Any], list[str]
                     missing.append(var)
                     return m.group(0)
                 return val
+
             resolved[key] = _ENV_PATTERN.sub(_replace, value)
         else:
             resolved[key] = value
@@ -158,17 +160,23 @@ def write_catalog_to_profile(
     """
     try:
         if profiles_path.is_dir():
-            _write_directory_layout(profiles_path, profile_name, catalog_name, catalog_block, engine_updates)
+            _write_directory_layout(
+                profiles_path, profile_name, catalog_name, catalog_block, engine_updates
+            )
         else:
-            _write_single_file(profiles_path, profile_name, catalog_name, catalog_block, engine_updates)
+            _write_single_file(
+                profiles_path, profile_name, catalog_name, catalog_block, engine_updates
+            )
     except CatalogWriteError:
         raise
     except Exception as exc:
-        raise CatalogWriteError(CLIError(
-            code=RVT_883,
-            message=f"Failed to write catalog to {profiles_path}: {exc}",
-            remediation="Check file permissions and available disk space.",
-        )) from exc
+        raise CatalogWriteError(
+            CLIError(
+                code=RVT_883,
+                message=f"Failed to write catalog to {profiles_path}: {exc}",
+                remediation="Check file permissions and available disk space.",
+            )
+        ) from exc
 
 
 def _write_single_file(
@@ -495,7 +503,13 @@ def _run_non_interactive(
             print(format_cli_error(err, globals.color), file=sys.stderr)
             return GENERAL_ERROR
         print("Testing connection...")
-        success, elapsed, error_msg = test_connection(plugin, state.catalog_name, test_options)
+        import traceback
+
+        try:
+            success, elapsed, error_msg = test_connection(plugin, state.catalog_name, test_options)
+        except Exception:
+            print(f"TRACEBACK: {traceback.format_exc()}")
+            raise
         if success:
             print(f"Connection successful ({elapsed:.2f}s).")
         else:
@@ -509,8 +523,12 @@ def _run_non_interactive(
 
     # ── Preview (Req 10.1, 10.2, 10.6) — non-interactive: no confirmation prompt ──
     block = build_catalog_block(state)
-    masked = mask_credentials_for_preview(block, list(state.credential_opts.keys()), state.catalog_name)
-    preview_yaml = yaml.dump({state.catalog_name: masked}, default_flow_style=False, sort_keys=False)
+    masked = mask_credentials_for_preview(
+        block, list(state.credential_opts.keys()), state.catalog_name
+    )
+    preview_yaml = yaml.dump(
+        {state.catalog_name: masked}, default_flow_style=False, sort_keys=False
+    )
     print("\nConfiguration preview:")
     print(preview_yaml)
 
@@ -518,7 +536,11 @@ def _run_non_interactive(
         return SUCCESS
 
     # ── Write (Req 11.1, 11.6, 11.7) ─────────────────────────────────
-    profiles_path = config_result.manifest.profiles_path if config_result.manifest else (globals.project_path / "profiles.yaml")
+    profiles_path = (
+        config_result.manifest.profiles_path
+        if config_result.manifest
+        else (globals.project_path / "profiles.yaml")
+    )
     try:
         write_catalog_to_profile(profiles_path, globals.profile, state.catalog_name, block, None)
     except CatalogWriteError as exc:
@@ -556,7 +578,9 @@ def _prompt_engine_association(
         return
     # Collect engine selections (comma-separated numbers or "all")
     while True:
-        raw = input(f"Enter engine numbers to associate [1-{len(compatible)}, comma-separated, or 'all']: ").strip()
+        raw = input(
+            f"Enter engine numbers to associate [1-{len(compatible)}, comma-separated, or 'all']: "
+        ).strip()
         if raw.lower() == "all":
             selected = compatible
             break
@@ -679,7 +703,7 @@ def _prompt_credentials(plugin: Any, state: WizardState) -> None:
         auth_types = sorted(cred_groups.keys())
         print("Authentication method:")
         auth_type = prompt_choice("Select auth type", auth_types)
-        state.optional_opts["auth_type"] = auth_type
+        state.optional_opts["auth"] = auth_type
         cred_keys = cred_groups[auth_type]
     else:
         cred_keys = plugin.credential_options
@@ -721,13 +745,68 @@ def _prompt_catalog_config(
 
     # ── Optional options ──────────────────────────────────────────────
     optional_keys = [k for k in plugin.optional_options if k not in state.required_opts]
+    # Skip 'endpoints' for rest_api - handle separately below
+    if selected_type == "rest_api":
+        optional_keys = [k for k in optional_keys if k != "endpoints"]
+
     if optional_keys and prompt_confirm("Configure optional settings?", default=False):
+        import json
+
         for opt in optional_keys:
             default = plugin.optional_options[opt]
             default_str = str(default) if default is not None else None
             value = prompt_value(opt, default=default_str)
             if value:
-                state.optional_opts[opt] = value
+                # If user pressed Enter, use the original default value
+                if value == default_str:
+                    state.optional_opts[opt] = default
+                else:
+                    # Parse the user input to match the default type
+                    if isinstance(default, dict):
+                        try:
+                            state.optional_opts[opt] = json.loads(value)
+                        except json.JSONDecodeError:
+                            state.optional_opts[opt] = value
+                    elif isinstance(default, int):
+                        try:
+                            state.optional_opts[opt] = int(value)
+                        except ValueError:
+                            state.optional_opts[opt] = value
+                    elif isinstance(default, float):
+                        try:
+                            state.optional_opts[opt] = float(value)
+                        except ValueError:
+                            state.optional_opts[opt] = value
+                    elif isinstance(default, bool):
+                        state.optional_opts[opt] = value.lower() in ("true", "yes", "1", "y")
+                    else:
+                        state.optional_opts[opt] = value
+
+    # ── REST API endpoint configuration ───────────────────────────────
+    if selected_type == "rest_api":
+        if prompt_confirm("Configure endpoints interactively?", default=False):
+            endpoints = {}
+            print("  Enter endpoint configurations (leave name empty to finish):")
+            while True:
+                endpoint_name = prompt_value("  Endpoint name", default=None, required=False)
+                if not endpoint_name:
+                    break
+                endpoint_path = prompt_value("  Path", default=None, required=True)
+                endpoint_method = prompt_value("  Method", default="GET", required=False) or "GET"
+                endpoints[endpoint_name] = {
+                    "path": endpoint_path,
+                    "method": endpoint_method.upper(),
+                }
+                print(
+                    f"  Added endpoint '{endpoint_name}': {endpoint_method.upper()} {endpoint_path}"
+                )
+
+            if endpoints:
+                state.optional_opts["endpoints"] = endpoints
+            else:
+                state.optional_opts["endpoints"] = {}
+        else:
+            state.optional_opts["endpoints"] = {}
 
     # ── Credential options ────────────────────────────────────────────
     _prompt_credentials(plugin, state)
@@ -793,7 +872,13 @@ def _test_connection_interactive(
                 return GENERAL_ERROR
             continue
         print("Testing connection...")
-        success, elapsed, error_msg = test_connection(plugin, state.catalog_name, test_options)
+        import traceback
+
+        try:
+            success, elapsed, error_msg = test_connection(plugin, state.catalog_name, test_options)
+        except Exception:
+            print(f"TRACEBACK: {traceback.format_exc()}")
+            raise
         if success:
             print(f"Connection successful ({elapsed:.2f}s).")
             return None
@@ -830,8 +915,12 @@ def _create_catalog(
     from rivet_cli.exit_codes import GENERAL_ERROR, SUCCESS
 
     block = build_catalog_block(state)
-    masked = mask_credentials_for_preview(block, list(state.credential_opts.keys()), state.catalog_name)
-    preview_yaml = yaml.dump({state.catalog_name: masked}, default_flow_style=False, sort_keys=False)
+    masked = mask_credentials_for_preview(
+        block, list(state.credential_opts.keys()), state.catalog_name
+    )
+    preview_yaml = yaml.dump(
+        {state.catalog_name: masked}, default_flow_style=False, sort_keys=False
+    )
     print("\nConfiguration preview:")
     print(preview_yaml)
 
@@ -852,12 +941,20 @@ def _create_catalog(
             state.required_opts[opt] = value
             all_options[opt] = value
         block = build_catalog_block(state)
-        masked = mask_credentials_for_preview(block, list(state.credential_opts.keys()), state.catalog_name)
-        preview_yaml = yaml.dump({state.catalog_name: masked}, default_flow_style=False, sort_keys=False)
+        masked = mask_credentials_for_preview(
+            block, list(state.credential_opts.keys()), state.catalog_name
+        )
+        preview_yaml = yaml.dump(
+            {state.catalog_name: masked}, default_flow_style=False, sort_keys=False
+        )
         print("\nConfiguration preview:")
         print(preview_yaml)
 
-    profiles_path = config_result.manifest.profiles_path if config_result.manifest else (globals.project_path / "profiles.yaml")
+    profiles_path = (
+        config_result.manifest.profiles_path
+        if config_result.manifest
+        else (globals.project_path / "profiles.yaml")
+    )
     try:
         write_catalog_to_profile(profiles_path, globals.profile, state.catalog_name, block, None)
     except CatalogWriteError as exc:

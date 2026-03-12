@@ -3,14 +3,14 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "rivetsql-postgres"
+name = "rivetsql-rest"
 version = "0.1.13"
-description = "PostgreSQL plugin for Rivet SQL"
+description = "REST API catalog plugin for Rivet SQL"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 authors = [{ name = "Rivet Contributors" }]
-keywords = ["rivet", "postgres", "sql", "data-pipeline"]
+keywords = ["rivet", "rest", "api", "data-pipeline"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Programming Language :: Python :: 3.11",
@@ -21,7 +21,8 @@ classifiers = [
 ]
 dependencies = [
     "rivetsql>=0.1.0,<0.2.0",
-    "psycopg[binary,pool]>=3.1",
+    "requests>=2.28",
+    "pyarrow>=14.0",
 ]
 
 [project.urls]
@@ -29,8 +30,7 @@ Homepage = "https://github.com/rivetsql/rivetsql"
 Repository = "https://github.com/rivetsql/rivetsql"
 
 [project.entry-points."rivet.plugins"]
-postgres = "rivet_postgres:PostgresPlugin"
+rest_api = "rivet_rest:RestPlugin"
 
 [tool.hatch.build.targets.wheel]
-packages = ["."]
-sources = {"." = "rivet_postgres"}
+packages = ["rivet_rest"]

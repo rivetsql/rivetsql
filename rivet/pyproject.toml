@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rivetsql"
-version = "0.1.12"
+version = "0.1.13"
 description = "Core SQL pipeline framework — joints, engines, catalogs"
 requires-python = ">=3.11"
 license = "MIT"
@@ -70,10 +70,10 @@ test = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/rivet_core", "src/rivet_config", "src/rivet_bridge", "src/rivet_cli"]
+packages = ["src/rivet_core", "src/rivet_config", "src/rivet_bridge", "src/rivet_cli", "src/rivet_rest"]
 
 [tool.hatch.build.targets.editable]
-packages = ["src/rivet_core", "src/rivet_config", "src/rivet_bridge", "src/rivet_cli"]
+packages = ["src/rivet_core", "src/rivet_config", "src/rivet_bridge", "src/rivet_cli", "src/rivet_rest"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests/e2e", "tests/integration", "tests/unit"]
