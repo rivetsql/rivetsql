@@ -15,6 +15,7 @@ from rivet_core.catalog_explorer import (
 from rivet_core.compiler import compile
 from rivet_core.credentials import CredentialResolver, Credentials
 from rivet_core.executor import Executor
+from rivet_core.formats import FileFormat, FormatRegistry
 from rivet_core.models import Catalog, Column, ComputeEngine, Joint, Material, Schema
 from rivet_core.optimizer import AdapterPushdownResult
 from rivet_core.plugins import (
@@ -45,6 +46,8 @@ __all__ = [
     "Credentials",
     "Executor",
     "ExplorerNode",
+    "FileFormat",
+    "FormatRegistry",
     "GeneratedSource",
     "Joint",
     "Material",

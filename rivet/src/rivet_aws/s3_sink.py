@@ -5,12 +5,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from rivet_core.errors import ExecutionError, PluginValidationError, plugin_error
+from rivet_core.formats import FormatRegistry
 from rivet_core.plugins import SinkPlugin
 
 if TYPE_CHECKING:
     from rivet_core.models import Catalog, Joint, Material
-
-_VALID_FORMATS = frozenset({"parquet", "csv", "json", "orc", "delta"})
 
 _BASE_STRATEGIES = frozenset(
     {"append", "replace", "delete_insert", "incremental_append", "truncate_insert", "partition"}
@@ -42,23 +41,14 @@ def _parse_sink_options(catalog_options: dict[str, Any], joint: Any) -> dict[str
     if not sink_options.get("path") and getattr(joint, "table", None):
         sink_options = {**sink_options, "path": joint.table}
 
-    fmt = sink_options.get("format") or catalog_options.get("format", "parquet")
-    if fmt not in _VALID_FORMATS:
-        raise PluginValidationError(
-            plugin_error(
-                "RVT-202",
-                f"Invalid format '{fmt}' for S3 sink.",
-                plugin_name="rivet_aws",
-                plugin_type="sink",
-                remediation=f"Supported formats: {', '.join(sorted(_VALID_FORMATS))}",
-                format=fmt,
-            )
-        )
+    fmt = FormatRegistry.resolve_format(
+        sink_options.get("format"),
+        catalog_options.get("format"),
+    )
+    FormatRegistry.validate_plugin_support(fmt, "s3", "sink")
 
     write_strategy = (
-        sink_options.get("write_strategy")
-        or getattr(joint, "write_strategy", None)
-        or "replace"
+        sink_options.get("write_strategy") or getattr(joint, "write_strategy", None) or "replace"
     )
 
     if write_strategy in _DELTA_ONLY_STRATEGIES and fmt != "delta":
@@ -187,7 +177,7 @@ def _build_s3fs(catalog_options: dict[str, Any]) -> Any:
         endpoint = endpoint_url
         for scheme in ("https://", "http://"):
             if endpoint.startswith(scheme):
-                endpoint = endpoint[len(scheme):]
+                endpoint = endpoint[len(scheme) :]
                 break
         kwargs["endpoint_override"] = endpoint
         if endpoint_url.startswith("http://"):
@@ -222,7 +212,7 @@ def _write_to_s3(
 
     write_path = path
     if write_path.startswith("s3://"):
-        write_path = write_path[len("s3://"):]
+        write_path = write_path[len("s3://") :]
 
     if fmt == "parquet":
         file_format: pad.FileFormat = pad.ParquetFileFormat()
@@ -251,7 +241,7 @@ def _write_to_s3(
                 f"Unsupported format '{fmt}' for S3 sink.",
                 plugin_name="rivet_aws",
                 plugin_type="sink",
-                remediation=f"Supported formats: {', '.join(sorted(_VALID_FORMATS))}",
+                remediation="Supported formats: csv, delta, json, orc, parquet",
                 format=fmt,
             )
         )

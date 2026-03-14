@@ -9,7 +9,7 @@ from typing import Any
 import pyarrow as pa
 
 from rivet_core.models import ComputeEngine
-from rivet_core.plugins import ComputeEnginePlugin
+from rivet_core.plugins import ComputeEnginePlugin, ReferenceResolver
 
 
 class PostgresComputeEngine(ComputeEngine):
@@ -28,7 +28,7 @@ class PostgresComputeEngine(ComputeEngine):
         if self._pool is None:
             from psycopg_pool import AsyncConnectionPool
 
-            conninfo = self.config.get("conninfo", "")
+            conninfo = self._build_conninfo()
             self._pool = AsyncConnectionPool(
                 conninfo=conninfo,
                 min_size=self.config.get("pool_min_size", 1),
@@ -37,6 +37,29 @@ class PostgresComputeEngine(ComputeEngine):
             )
             await self._pool.open()
         return self._pool
+
+    def _build_conninfo(self) -> str:
+        """Build connection string from individual parameters or use explicit conninfo.
+
+        Accepts either:
+        - Individual parameters: host, port, database, user, password
+        - Explicit conninfo string
+
+        Returns:
+            PostgreSQL connection string.
+        """
+        # If explicit conninfo is provided, use it directly
+        if "conninfo" in self.config:
+            conninfo: str = self.config["conninfo"]
+            return conninfo
+
+        # Otherwise, build from individual parameters
+        host: str = self.config.get("host", "localhost")
+        port: int = self.config.get("port", 5432)
+        database: str = self.config.get("database", "")
+        user: str = self.config.get("user", "")
+        password: str = self.config.get("password", "")
+        return f"host={host} port={port} dbname={database} user={user} password={password}"
 
     async def teardown(self) -> None:
         """Close the connection pool if it was created."""
@@ -77,6 +100,79 @@ class PostgresComputeEngine(ComputeEngine):
                 yield pa.record_batch(arrays, names=col_names)
 
 
+class PostgresReferenceResolver(ReferenceResolver):
+    """Rewrite source joint name references to fully-qualified PostgreSQL table names.
+
+    In a fused group, the SQL joint references upstream source joints by name.
+    PostgreSQL needs those replaced with schema.table so the SQL can execute
+    server-side against PostgreSQL tables.
+    """
+
+    def resolve_references(
+        self,
+        sql: str,
+        joint: Any,
+        catalog: Any,
+        compiled_joints: dict[str, Any] | None = None,
+        catalog_map: dict[str, Any] | None = None,
+        fused_group_joints: list[str] | None = None,
+    ) -> str | None:
+        if not compiled_joints or not catalog_map:
+            return None
+
+        import re
+
+        upstream = getattr(joint, "upstream", [])
+        if not upstream:
+            return None
+
+        # Only joints that actually contribute SQL to the CTE are true CTE aliases.
+        # Source joints without SQL don't produce CTE entries, so they must still
+        # be resolved to fully-qualified table names for server-side execution.
+        cte_siblings: set[str] = set()
+        if fused_group_joints and compiled_joints:
+            for jn in fused_group_joints:
+                cj = compiled_joints.get(jn)
+                if cj and (getattr(cj, "sql", None) or getattr(cj, "sql_translated", None)):
+                    cte_siblings.add(jn)
+
+        result = sql
+        changed = False
+        for up_name in upstream:
+            # Skip sources that are CTE siblings — they're referenced by alias, not table name.
+            if up_name in cte_siblings:
+                continue
+
+            up_cj = compiled_joints.get(up_name)
+            if not up_cj or getattr(up_cj, "type", None) != "source":
+                continue
+            up_catalog_name = getattr(up_cj, "catalog", None)
+            if not up_catalog_name:
+                continue
+            cat = catalog_map.get(up_catalog_name)
+            if not cat:
+                continue
+
+            opts = getattr(cat, "options", {})
+            pg_schema = opts.get("schema", "public")
+
+            table = getattr(up_cj, "table", None)
+            if table:
+                # If table already contains schema (e.g., "myschema.mytable"), use as-is
+                if "." in table:
+                    qualified_table = table
+                else:
+                    qualified_table = f"{pg_schema}.{table}"
+
+                # Replace joint name references with qualified table name
+                # Use word boundaries to avoid partial matches
+                pattern = r"\b" + re.escape(up_name) + r"\b"
+                result = re.sub(pattern, qualified_table, result)
+                changed = True
+
+        return result if changed else None
+
+
 class PostgresComputeEnginePlugin(ComputeEnginePlugin):
     engine_type = "postgres"
     dialect = "postgres"
@@ -104,6 +200,12 @@ class PostgresComputeEnginePlugin(ComputeEnginePlugin):
     }
     required_options: list[str] = []
     optional_options: dict[str, Any] = {
+        "conninfo": None,
+        "host": "localhost",
+        "port": 5432,
+        "database": "",
+        "user": "",
+        "password": "",
         "statement_timeout": None,
         "pool_min_size": 1,
         "pool_max_size": 10,
@@ -111,10 +213,13 @@ class PostgresComputeEnginePlugin(ComputeEnginePlugin):
         "connect_timeout": 30,
         "fetch_batch_size": 10000,
     }
-    credential_options: list[str] = []
+    credential_options: list[str] = ["password"]
 
     def create_engine(self, name: str, config: dict[str, Any]) -> ComputeEngine:
         return PostgresComputeEngine(name=name, config=config)
+
+    def get_reference_resolver(self) -> ReferenceResolver | None:
+        return PostgresReferenceResolver()
 
     def collect_metrics(self, execution_context: Any) -> Any:
         """Collect PostgreSQL metrics: query_planning, io, memory, cache + pool/copy extensions.
@@ -169,6 +274,38 @@ class PostgresComputeEnginePlugin(ComputeEnginePlugin):
                 )
             )
 
+        # Validate connection configuration
+        has_conninfo = "conninfo" in options
+        has_individual = any(k in options for k in ["host", "database", "user"])
+
+        if has_conninfo and has_individual:
+            _fail(
+                "conninfo",
+                "cannot specify both 'conninfo' and individual connection parameters (host, database, user, password)",
+            )
+
+        if "conninfo" in options and not isinstance(options["conninfo"], str):
+            _fail("conninfo", "must be a string")
+
+        if "host" in options and not isinstance(options["host"], str):
+            _fail("host", "must be a string")
+
+        if "port" in options:
+            v = options["port"]
+            if not isinstance(v, int) or isinstance(v, bool):
+                _fail("port", "must be an integer")
+            if v < 1 or v > 65535:
+                _fail("port", "must be between 1 and 65535")
+
+        if "database" in options and not isinstance(options["database"], str):
+            _fail("database", "must be a string")
+
+        if "user" in options and not isinstance(options["user"], str):
+            _fail("user", "must be a string")
+
+        if "password" in options and not isinstance(options["password"], str):
+            _fail("password", "must be a string")
+
         if "statement_timeout" in options and options["statement_timeout"] is not None:
             if not isinstance(options["statement_timeout"], int):
                 _fail("statement_timeout", "must be an integer (milliseconds) or None")
@@ -216,6 +353,7 @@ class PostgresComputeEnginePlugin(ComputeEnginePlugin):
         Rejects non-empty input_tables (Postgres cannot consume local Arrow).
         Wraps connection/query errors in RVT-503.
         """
+        from rivet_core.async_utils import safe_run_async
         from rivet_core.errors import ExecutionError, plugin_error
 
         if input_tables:
@@ -231,8 +369,6 @@ class PostgresComputeEnginePlugin(ComputeEnginePlugin):
                 )
             )
 
-        import asyncio
-
         async def _run() -> pa.Table:
             pg_engine: PostgresComputeEngine = engine  # type: ignore[assignment]
             batches: list[pa.RecordBatch] = []
@@ -243,7 +379,7 @@ class PostgresComputeEnginePlugin(ComputeEnginePlugin):
             return pa.table({})
 
         try:
-            return asyncio.run(_run())
+            return safe_run_async(_run())
         except ExecutionError:
             raise
         except Exception as exc:

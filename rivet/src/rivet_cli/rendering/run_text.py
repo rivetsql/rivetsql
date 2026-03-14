@@ -67,7 +67,7 @@ def _render_execution_plan(
         entries: list[str] = []
         for gid in wave.groups:
             fg = group_map.get(gid)
-            engine = fg.engine if fg else "unknown"  # type: ignore[union-attr]
+            engine = fg.engine if fg else "unknown"
             entries.append(f"{gid} (engine: {engine})")
         lines.append(f"  Wave {wave.wave_number}: [{', '.join(entries)}]")
     lines.append("")
@@ -80,7 +80,11 @@ def _render_joint_result(
     verbosity: int,
     color: bool,
 ) -> None:
-    status = colorize(f"{SYM_CHECK} OK", GREEN, color) if jr.success else colorize(f"{SYM_ERROR} FAIL", RED, color)
+    status = (
+        colorize(f"{SYM_CHECK} OK", GREEN, color)
+        if jr.success
+        else colorize(f"{SYM_ERROR} FAIL", RED, color)
+    )
     name = colorize(jr.name, BOLD, color)
     parts = [f"  {name} {status}"]
     if jr.rows_out is not None:
@@ -118,7 +122,11 @@ def _render_joint_result(
             cols = ", ".join(f"{c.name}: {c.type}" for c in cj.output_schema.columns)
             lines.append(f"    schema: [{cols}]")
         for opt in cj.optimizations:
-            sym = colorize(SYM_CHECK, GREEN, color) if opt.status == "applied" else colorize(SYM_NOT_APPLICABLE, DIM, color)
+            sym = (
+                colorize(SYM_CHECK, GREEN, color)
+                if opt.status == "applied"
+                else colorize(SYM_NOT_APPLICABLE, DIM, color)
+            )
             lines.append(f"    {sym} {opt.rule}: {opt.status} - {opt.detail}")
         for lin in cj.column_lineage:
             origins = ", ".join(f"{o.joint}.{o.column}" for o in lin.origins)
@@ -142,7 +150,9 @@ def _render_assertion_failure(
     verbosity: int,
     color: bool,
 ) -> None:
-    lines.append(f"      {colorize('[RVT-601]', RED, color)} joint={joint_name} type={cr.type} severity={cr.severity}")  # type: ignore[attr-defined]
+    lines.append(
+        f"      {colorize('[RVT-601]', RED, color)} joint={joint_name} type={cr.type} severity={cr.severity}"  # type: ignore[attr-defined]
+    )
     lines.append(f"      violation: {cr.message}")  # type: ignore[attr-defined]
     if verbosity >= 1 and cj:
         for lin in cj.column_lineage:
@@ -156,7 +166,9 @@ def _render_summary(lines: list[str], result: ExecutionResult, color: bool) -> N
     group_count = len(result.group_results)
     mat_count = result.total_materializations
     fail_count = result.total_failures
-    lines.append(f"  {time_str} | {joint_count} joints | {group_count} groups | {mat_count} materializations | {fail_count} failures")
+    lines.append(
+        f"  {time_str} | {joint_count} joints | {group_count} groups | {mat_count} materializations | {fail_count} failures"
+    )
 
 
 def _render_quality_summary(lines: list[str], result: ExecutionResult, color: bool) -> None:
@@ -188,6 +200,7 @@ def _render_quality_summary(lines: list[str], result: ExecutionResult, color: bo
             f" | {assertion_failures + audit_failures} failures | {warnings} warnings"
         )
 
+
 def _render_stats_summary(
     lines: list[str],
     result: ExecutionResult,
@@ -201,8 +214,16 @@ def _render_stats_summary(
 
     lines.append("")
     # Pipeline-level time breakdown
-    engine_pct = (run_stats.total_engine_ms / run_stats.total_time_ms * 100) if run_stats.total_time_ms > 0 else 0
-    rivet_pct = (run_stats.total_rivet_ms / run_stats.total_time_ms * 100) if run_stats.total_time_ms > 0 else 0
+    engine_pct = (
+        (run_stats.total_engine_ms / run_stats.total_time_ms * 100)
+        if run_stats.total_time_ms > 0
+        else 0
+    )
+    rivet_pct = (
+        (run_stats.total_rivet_ms / run_stats.total_time_ms * 100)
+        if run_stats.total_time_ms > 0
+        else 0
+    )
     lines.append(
         f"  Time: {run_stats.total_time_ms:.0f}ms total"
         f" | engine: {run_stats.total_engine_ms:.0f}ms ({engine_pct:.0f}%)"
@@ -252,8 +273,9 @@ def _render_stats_summary(
                     lines.append(colorize(f"    engine[{cat_name}]: {cat}", DIM, color))
 
 
-
-def _render_fused_sql(lines: list[str], compiled: CompiledAssembly, group_map: dict, color: bool) -> None:  # type: ignore[type-arg]
+def _render_fused_sql(
+    lines: list[str], compiled: CompiledAssembly, group_map: dict, color: bool
+) -> None:  # type: ignore[type-arg]
     for fg in compiled.fused_groups:
         if fg.fused_sql:
             lines.append(f"  Fused SQL [{colorize(fg.id, BOLD, color)}]: {fg.fused_sql}")

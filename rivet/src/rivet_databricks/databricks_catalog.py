@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import warnings
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -11,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 from rivet_core.errors import PluginValidationError, plugin_error
 from rivet_core.models import Catalog
 from rivet_core.plugins import CatalogPlugin
+from rivet_core.type_parser import parse_type
 from rivet_databricks.auth import (
     ResolvedCredential,
     _check_partial_azure,
@@ -58,23 +58,8 @@ _UNITY_TO_ARROW: dict[str, str] = {
     "date": "date32",
     "timestamp": "timestamp[us, UTC]",
     "timestamp_ntz": "timestamp[us]",
-    "array": "large_utf8",
-    "map": "large_utf8",
-    "struct": "large_utf8",
     "void": "null",
 }
-
-
-def _unity_type_to_arrow(type_text: str) -> str:
-    """Map Unity Catalog type_text to Arrow type name; unknown → large_utf8 with warning."""
-    lower = type_text.lower().strip().split("(")[0].strip()
-    if lower in _UNITY_TO_ARROW:
-        return _UNITY_TO_ARROW[lower]
-    warnings.warn(
-        f"Unknown Unity Catalog type '{type_text}'; mapping to large_utf8.",
-        stacklevel=4,
-    )
-    return "large_utf8"
 
 
 def _parse_ts(value: Any) -> datetime | None:
@@ -198,6 +183,39 @@ class DatabricksCatalogPlugin(CatalogPlugin):
         finally:
             client.close()
 
+    def test_connection(self, catalog: Catalog) -> None:
+        """Lightweight connectivity check via Unity Catalog ``/catalogs`` endpoint.
+
+        Faster than the base-class fallback (which calls ``list_tables``),
+        because it avoids iterating schemas and tables.
+
+        Raises ``ExecutionError`` with structured error info on failure.
+        """
+        from rivet_core.errors import ExecutionError
+        from rivet_databricks.client import UnityCatalogClient
+
+        host = catalog.options["workspace_url"]
+        credential = self.resolve_credentials(catalog.options)
+        client = UnityCatalogClient(host=host, credential=credential)
+        try:
+            client.list_catalogs()
+        except ExecutionError:
+            raise
+        except Exception as exc:
+            raise ExecutionError(
+                plugin_error(
+                    "RVT-501",
+                    f"Databricks connectivity check failed for {host}.",
+                    plugin_name="rivet_databricks",
+                    plugin_type="catalog",
+                    remediation="Check workspace_url, credentials, and network connectivity.",
+                    host=host,
+                    catalog=catalog.options.get("catalog"),
+                )
+            ) from exc
+        finally:
+            client.close()
+
     def get_schema(self, catalog: Catalog, table: str) -> ObjectSchema:
         """Get schema via GET /tables/{full_name}, mapping type_text to Arrow types."""
         from rivet_core.introspection import ColumnDetail, ObjectSchema
@@ -212,11 +230,15 @@ class DatabricksCatalogPlugin(CatalogPlugin):
             client.close()
 
         columns_raw = raw.get("columns", [])
-        partition_cols = {c.get("name") for c in raw.get("partition_columns", [])} if raw.get("partition_columns") else set()
+        partition_cols = (
+            {c.get("name") for c in raw.get("partition_columns", [])}
+            if raw.get("partition_columns")
+            else set()
+        )
         columns = [
             ColumnDetail(
                 name=col.get("name", ""),
-                type=_unity_type_to_arrow(col.get("type_text", "string")),
+                type=parse_type(col.get("type_text", "string"), _UNITY_TO_ARROW),
                 native_type=col.get("type_text"),
                 nullable=col.get("nullable", True),
                 default=col.get("default_value"),
@@ -234,6 +256,103 @@ class DatabricksCatalogPlugin(CatalogPlugin):
             primary_key=None,
             comment=raw.get("comment"),
         )
+
+    def list_children(self, catalog: Catalog, path: list[str]) -> list[CatalogNode]:
+        """Lazy single-level listing for Databricks Unity Catalog.
+
+        - path=[] → list schemas in the configured catalog
+        - path=[schema] → list tables in that schema
+        - path=[schema, table] → list columns via get_schema()
+        """
+        from rivet_core.introspection import CatalogNode, NodeSummary
+        from rivet_databricks.client import UnityCatalogClient
+
+        depth = len(path)
+        host = catalog.options["workspace_url"]
+        catalog_name = catalog.options["catalog"]
+        credential = self.resolve_credentials(catalog.options)
+
+        if depth == 0:
+            # Level 0: list schemas in the catalog
+            client = UnityCatalogClient(host=host, credential=credential)
+            try:
+                schemas = client.list_schemas(catalog_name)
+            finally:
+                client.close()
+            return [
+                CatalogNode(
+                    name=s.get("name", ""),
+                    node_type="schema",
+                    path=[s.get("name", "")],
+                    is_container=True,
+                    children_count=None,
+                    summary=NodeSummary(
+                        row_count=None,
+                        size_bytes=None,
+                        format=None,
+                        last_modified=None,
+                        owner=s.get("owner"),
+                        comment=s.get("comment"),
+                    ),
+                )
+                for s in schemas
+            ]
+
+        if depth == 1:
+            # Level 1: list tables in a schema
+            schema_name = path[0]
+            client = UnityCatalogClient(host=host, credential=credential)
+            try:
+                tables = client.list_tables(catalog_name, schema_name)
+            finally:
+                client.close()
+            return [
+                CatalogNode(
+                    name=tbl.get("name", ""),
+                    node_type=tbl.get("table_type", "table").lower(),
+                    path=[schema_name, tbl.get("name", "")],
+                    is_container=False,
+                    children_count=None,
+                    summary=NodeSummary(
+                        row_count=tbl.get("properties", {}).get("delta.numRecords"),
+                        size_bytes=None,
+                        format=tbl.get("data_source_format"),
+                        last_modified=_parse_ts(tbl.get("updated_at")),
+                        owner=tbl.get("owner"),
+                        comment=tbl.get("comment"),
+                    ),
+                )
+                for tbl in tables
+            ]
+
+        if depth == 2:
+            # Level 2: list columns of a table
+            schema_name, table_name = path[0], path[1]
+            qualified = f"{catalog_name}.{schema_name}.{table_name}"
+            try:
+                schema = self.get_schema(catalog, qualified)
+            except Exception:
+                return []
+            return [
+                CatalogNode(
+                    name=col.name,
+                    node_type="column",
+                    path=[schema_name, table_name, col.name],
+                    is_container=False,
+                    children_count=None,
+                    summary=NodeSummary(
+                        row_count=None,
+                        size_bytes=None,
+                        format=col.type,
+                        last_modified=None,
+                        owner=None,
+                        comment=None,
+                    ),
+                )
+                for col in schema.columns
+            ]
+
+        return []
 
     def get_metadata(self, catalog: Catalog, table: str) -> ObjectMetadata | None:
         """Get metadata via GET /tables/{full_name}."""

@@ -53,10 +53,6 @@ class SQLDecomposer:
         if parsed.args.get("order"):
             return False
 
-        # Reject LIMIT / OFFSET
-        if parsed.args.get("limit") or parsed.args.get("offset"):
-            return False
-
         # Reject DISTINCT
         if parsed.args.get("distinct"):
             return False
@@ -72,17 +68,19 @@ class SQLDecomposer:
 
         return True
 
-    def decompose(self, sql: str) -> tuple[list[ColumnDecl] | None, str | None, str]:
-        """Extract columns, filter, and table reference from simple SQL.
+    def decompose(self, sql: str) -> tuple[list[ColumnDecl] | None, str | None, str, int | None]:
+        """Extract columns, filter, table reference, and limit from simple SQL.
 
-        Returns (columns_or_none, filter_or_none, table_name).
+        Returns (columns_or_none, filter_or_none, table_name, limit_or_none).
         columns is None when SELECT *.
         """
         parsed = sqlglot.parse_one(sql)
 
         # Extract table name
         table = parsed.find(exp.Table)
-        table_name = table.name if table.args.get("db") is None else f"{table.args['db'].name}.{table.name}"  # type: ignore[union-attr]
+        table_name = (
+            table.name if table.args.get("db") is None else f"{table.args['db'].name}.{table.name}"
+        )  # type: ignore[union-attr]
 
         # Extract columns
         columns: list[ColumnDecl] | None = None
@@ -94,21 +92,33 @@ class SQLDecomposer:
             columns = []
             for col_expr in select_expressions:
                 if isinstance(col_expr, exp.Alias):
-                    columns.append(ColumnDecl(
-                        name=col_expr.alias,
-                        expression=col_expr.this.sql(),
-                    ))
+                    columns.append(
+                        ColumnDecl(
+                            name=col_expr.alias,
+                            expression=col_expr.this.sql(),
+                        )
+                    )
                 elif isinstance(col_expr, exp.Column):
                     columns.append(ColumnDecl(name=col_expr.name, expression=None))
                 else:
                     # Expression without alias — use the SQL as both name and expression
-                    columns.append(ColumnDecl(
-                        name=col_expr.sql(),
-                        expression=col_expr.sql(),
-                    ))
+                    columns.append(
+                        ColumnDecl(
+                            name=col_expr.sql(),
+                            expression=col_expr.sql(),
+                        )
+                    )
 
         # Extract WHERE filter
         where = parsed.find(exp.Where)
         filter_str = where.this.sql() if where else None
 
-        return columns, filter_str, table_name
+        # Extract LIMIT
+        limit_node = parsed.args.get("limit")
+        limit_value: int | None = None
+        if limit_node is not None:
+            limit_expr = limit_node.expression
+            if isinstance(limit_expr, exp.Literal) and limit_expr.is_int:
+                limit_value = int(limit_expr.this)
+
+        return columns, filter_str, table_name, limit_value

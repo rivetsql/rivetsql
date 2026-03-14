@@ -10,11 +10,13 @@ from __future__ import annotations
 import asyncio
 import importlib
 import inspect
+import sys
 import time
 import traceback
 from collections import deque
 from collections.abc import Coroutine
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, TypeVar
 
 import pyarrow
@@ -52,6 +54,7 @@ from rivet_core.plugins import (
     PluginRegistry,
     UpstreamResolution,
 )
+from rivet_core.sql_resolver import resolve_execution_sql
 from rivet_core.stats import RunStats, StatsCollector
 from rivet_core.strategies import (
     ArrowMaterialization,
@@ -63,6 +66,109 @@ from rivet_core.strategies import (
 
 # TypeVar for generic return type in _run_in_loop
 T = TypeVar("T")
+
+# ---------------------------------------------------------------------------
+# SQL table reference extraction
+# ---------------------------------------------------------------------------
+
+
+def _extract_table_references(sql_sources: list[str]) -> set[str]:
+    """Extract all table references from SQL statements.
+
+    Handles:
+    - Simple FROM/JOIN clauses
+    - CTEs (WITH clauses)
+    - Subqueries
+    - Multiple table references in the same clause
+
+    Returns a set of table names that could be materialized tables from previous waves.
+    """
+    import re
+
+    referenced_tables: set[str] = set()
+
+    for sql_text in sql_sources:
+        if not sql_text:
+            continue
+
+        # Remove string literals to avoid false matches
+        # Replace single-quoted strings with empty strings
+        cleaned_sql = re.sub(r"'[^']*'", "''", sql_text)
+        # Replace double-quoted identifiers (keep them as they might be table names)
+        # but remove their quotes for matching
+        cleaned_sql = re.sub(r'"([^"]+)"', r"\1", cleaned_sql)
+
+        # Pattern 1: FROM/JOIN table_name (with optional alias)
+        # Matches: FROM table_name, JOIN table_name, FROM table_name AS alias
+        # Excludes: FROM (subquery), FROM function_name(...)
+        pattern1 = (
+            r"\b(?:FROM|JOIN)\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*(?:AS\s+[a-zA-Z_][a-zA-Z0-9_]*|[,\s]|$)"
+        )
+        matches1 = re.findall(pattern1, cleaned_sql, re.IGNORECASE)
+        referenced_tables.update(matches1)
+
+        # Pattern 2: FROM/JOIN without AS but with whitespace before alias
+        # Matches: FROM table_name alias_name
+        pattern2 = r"\b(?:FROM|JOIN)\s+([a-zA-Z_][a-zA-Z0-9_]*)\s+(?!AS\b|ON\b|WHERE\b|GROUP\b|ORDER\b|LIMIT\b|HAVING\b|UNION\b|EXCEPT\b|INTERSECT\b)([a-zA-Z_][a-zA-Z0-9_]*)"
+        matches2 = re.findall(pattern2, cleaned_sql, re.IGNORECASE)
+        referenced_tables.update(m[0] for m in matches2)
+
+        # Pattern 3: Simple FROM/JOIN at end of statement or before WHERE/GROUP/ORDER
+        # Matches: FROM table_name WHERE, FROM table_name GROUP BY
+        pattern3 = r"\b(?:FROM|JOIN)\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*(?:WHERE|GROUP|ORDER|HAVING|LIMIT|UNION|EXCEPT|INTERSECT|$)"
+        matches3 = re.findall(pattern3, cleaned_sql, re.IGNORECASE)
+        referenced_tables.update(matches3)
+
+    # Filter out SQL keywords that might have been captured
+    sql_keywords = {
+        "SELECT",
+        "FROM",
+        "WHERE",
+        "JOIN",
+        "LEFT",
+        "RIGHT",
+        "INNER",
+        "OUTER",
+        "CROSS",
+        "ON",
+        "AS",
+        "AND",
+        "OR",
+        "NOT",
+        "IN",
+        "EXISTS",
+        "BETWEEN",
+        "LIKE",
+        "IS",
+        "NULL",
+        "GROUP",
+        "BY",
+        "ORDER",
+        "HAVING",
+        "LIMIT",
+        "OFFSET",
+        "UNION",
+        "EXCEPT",
+        "INTERSECT",
+        "DISTINCT",
+        "ALL",
+        "ANY",
+        "SOME",
+        "CASE",
+        "WHEN",
+        "THEN",
+        "ELSE",
+        "END",
+        "WITH",
+        "RECURSIVE",
+        "VALUES",
+        "TABLE",
+        "LATERAL",
+        "UNNEST",
+    }
+
+    return {t for t in referenced_tables if t.upper() not in sql_keywords}
+
 
 # ---------------------------------------------------------------------------
 # Residual merging
@@ -125,6 +231,113 @@ def _merge_source_limit_into_pushdown(
         predicates=pushdown.predicates,
         projections=pushdown.projections,
         limit=LimitPushdownResult(pushed_limit=source_limit, residual_limit=None, reason=None),
+        casts=pushdown.casts,
+    )
+
+
+def _merge_source_predicates_into_pushdown(
+    pushdown: PushdownPlan | None,
+    source_joint: CompiledJoint,
+) -> PushdownPlan | None:
+    """Merge WHERE predicates from the source joint's LogicalPlan into *pushdown*.
+
+    If the source joint has a ``LogicalPlan`` with WHERE predicates, they are
+    appended to the pushed predicate list.  If *pushdown* is ``None`` and there
+    are source predicates, a new ``PushdownPlan`` is created with those
+    predicates as the only pushed entries.  When no source predicates exist,
+    *pushdown* is returned unchanged.
+    """
+    lp = source_joint.logical_plan
+    if lp is None or not lp.predicates:
+        return pushdown
+
+    source_preds = list(lp.predicates)
+
+    if pushdown is None:
+        return PushdownPlan(
+            predicates=PredicatePushdownResult(pushed=source_preds, residual=[]),
+            projections=ProjectionPushdownResult(pushed_columns=None, reason=None),
+            limit=LimitPushdownResult(pushed_limit=None, residual_limit=None, reason=None),
+            casts=CastPushdownResult(pushed=[], residual=[]),
+        )
+
+    merged_pushed = list(pushdown.predicates.pushed) + source_preds
+    return PushdownPlan(
+        predicates=PredicatePushdownResult(
+            pushed=merged_pushed, residual=pushdown.predicates.residual
+        ),
+        projections=pushdown.projections,
+        limit=pushdown.limit,
+        casts=pushdown.casts,
+    )
+
+
+def _merge_source_projections_into_pushdown(
+    pushdown: PushdownPlan | None,
+    source_joint: CompiledJoint,
+) -> PushdownPlan | None:
+    """Merge projection column references from the source joint's LogicalPlan into *pushdown*.
+
+    For simple column references (no expression beyond the column itself), the
+    column name is added to ``pushed_columns``.  For aliased expressions, the
+    ``source_columns`` (base columns referenced by the expression) are added
+    instead — the expression itself is applied post-read by
+    ``_apply_source_expressions``.
+
+    When the source has ``SELECT *`` (no explicit projections), no projection
+    pushdown is applied and *pushdown* is returned unchanged.
+    """
+    lp = source_joint.logical_plan
+    if lp is None or not lp.projections:
+        return pushdown
+
+    # Detect SELECT * — a single projection with expression "*" and no alias
+    if (
+        len(lp.projections) == 1
+        and lp.projections[0].expression == "*"
+        and lp.projections[0].alias is None
+    ):
+        return pushdown
+
+    # Collect all base columns needed from storage
+    source_cols: list[str] = []
+    seen: set[str] = set()
+    for proj in lp.projections:
+        if proj.source_columns:
+            for col in proj.source_columns:
+                if col not in seen:
+                    source_cols.append(col)
+                    seen.add(col)
+        elif proj.alias is None:
+            # Simple column reference with no alias — expression is the column name
+            col = proj.expression
+            if col not in seen:
+                source_cols.append(col)
+                seen.add(col)
+
+    if not source_cols:
+        return pushdown
+
+    if pushdown is None:
+        return PushdownPlan(
+            predicates=PredicatePushdownResult(pushed=[], residual=[]),
+            projections=ProjectionPushdownResult(pushed_columns=source_cols, reason=None),
+            limit=LimitPushdownResult(pushed_limit=None, residual_limit=None, reason=None),
+            casts=CastPushdownResult(pushed=[], residual=[]),
+        )
+
+    existing = pushdown.projections.pushed_columns
+    if existing is not None:
+        merged = sorted(set(existing) & set(source_cols))
+    else:
+        merged = source_cols
+
+    return PushdownPlan(
+        predicates=pushdown.predicates,
+        projections=ProjectionPushdownResult(
+            pushed_columns=merged, reason=pushdown.projections.reason
+        ),
+        limit=pushdown.limit,
         casts=pushdown.casts,
     )
 
@@ -315,8 +528,16 @@ class ExecutionResult:
 # ---------------------------------------------------------------------------
 
 
-def _apply_residuals(table: pyarrow.Table, residual: ResidualPlan) -> pyarrow.Table:
-    """Apply residual predicates, limits, and casts post-materialization."""
+def _apply_residuals(
+    table: pyarrow.Table,
+    residual: ResidualPlan,
+    projected_columns: list[str] | None = None,
+) -> pyarrow.Table:
+    """Apply residual predicates, limits, casts, and projections post-materialization.
+
+    When *projected_columns* is provided and the adapter could not push
+    projections, only the listed columns are kept from the materialized table.
+    """
     # Residual predicates
     for pred in residual.predicates:
         try:
@@ -351,7 +572,250 @@ def _apply_residuals(table: pyarrow.Table, residual: ResidualPlan) -> pyarrow.Ta
             target_schema = pyarrow.schema(fields)
             table = table.cast(target_schema)
 
+    # Residual projections — select only the needed columns
+    if projected_columns is not None:
+        available = {f.name for f in table.schema}
+        keep = [c for c in projected_columns if c in available]
+        if keep:
+            table = table.select(keep)
+
     return table
+
+
+# ---------------------------------------------------------------------------
+# SQL type → pyarrow type mapping for CAST expression evaluation
+# ---------------------------------------------------------------------------
+
+_SQL_TYPE_TO_ARROW: dict[str, pyarrow.DataType] = {
+    "BOOLEAN": pyarrow.bool_(),
+    "BOOL": pyarrow.bool_(),
+    "TINYINT": pyarrow.int8(),
+    "SMALLINT": pyarrow.int16(),
+    "INT": pyarrow.int32(),
+    "INTEGER": pyarrow.int32(),
+    "BIGINT": pyarrow.int64(),
+    "FLOAT": pyarrow.float32(),
+    "REAL": pyarrow.float32(),
+    "DOUBLE": pyarrow.float64(),
+    "VARCHAR": pyarrow.utf8(),
+    "TEXT": pyarrow.utf8(),
+    "STRING": pyarrow.utf8(),
+    "DATE": pyarrow.date32(),
+    "TIMESTAMP": pyarrow.timestamp("us"),
+}
+
+
+def _parse_cast_expression(expression: str) -> tuple[str, pyarrow.DataType] | None:
+    """Parse a CAST(col AS TYPE) expression, returning (source_col, arrow_type) or None."""
+    import re
+
+    m = re.match(r"^CAST\((.+)\s+AS\s+(\w+)\)$", expression.strip(), re.IGNORECASE)
+    if not m:
+        return None
+    source_expr = m.group(1).strip()
+    type_str = m.group(2).strip().upper()
+    arrow_type = _SQL_TYPE_TO_ARROW.get(type_str)
+    if arrow_type is None:
+        return None
+    return source_expr, arrow_type
+
+
+def _apply_source_inline_residuals(
+    table: pyarrow.Table,
+    source_joint: CompiledJoint,
+) -> pyarrow.Table:
+    """Apply source inline transform predicates and limit from the LogicalPlan.
+
+    Called in the fallback source read path where the source plugin reads all
+    data without pushdown support.  Predicates are applied via
+    ``_build_filter_expr`` and limit via ``table.slice``.
+    """
+    lp = source_joint.logical_plan
+    if lp is None:
+        return table
+
+    for pred in lp.predicates:
+        try:
+            expr = _build_filter_expr(pred.expression, table)
+            if expr is not None:
+                table = table.filter(expr)
+        except Exception:
+            pass  # Best-effort: skip unparseable predicates
+
+    if lp.limit is not None and lp.limit.count is not None:
+        table = table.slice(0, lp.limit.count)
+
+    return table
+
+
+def _apply_source_expressions(
+    table: pyarrow.Table,
+    source_joint: CompiledJoint,
+) -> pyarrow.Table:
+    """Apply aliased column expressions from the source joint's LogicalPlan.
+
+    Processes projections in declaration order:
+    1. Simple column references with aliases → rename column
+    2. CAST expressions → type cast via pyarrow
+    3. Computed expressions → evaluate via DuckDB in-process
+
+    Raises ExecutionError (RVT-501) if a referenced column is missing.
+    Returns the table with only the declared output columns in declaration order.
+    """
+    lp = source_joint.logical_plan
+    if lp is None or not lp.projections:
+        return table
+
+    # Detect SELECT * — single projection with expression "*" and no alias
+    if (
+        len(lp.projections) == 1
+        and lp.projections[0].expression == "*"
+        and lp.projections[0].alias is None
+    ):
+        return table
+
+    output_columns: list[str] = []
+    col_names = {f.name for f in table.schema}
+
+    for proj in lp.projections:
+        alias = proj.alias
+        expr = proj.expression
+
+        # Case 1: Simple column reference (no alias) — pass through
+        if alias is None and not proj.source_columns:
+            # Expression is the column name itself
+            if expr not in col_names:
+                raise ExecutionError(
+                    RivetError(
+                        code="RVT-501",
+                        message=(
+                            f"Source joint '{source_joint.name}' expression for column "
+                            f"'{expr}' references '{expr}' which is not present in the "
+                            f"materialized data"
+                        ),
+                        context={"joint": source_joint.name, "column": expr},
+                        remediation="Check that the column exists in the source table.",
+                    )
+                )
+            output_columns.append(expr)
+            continue
+
+        if alias is None:
+            # Simple column reference with source_columns but no alias
+            col = proj.source_columns[0] if proj.source_columns else expr
+            if col not in col_names:
+                raise ExecutionError(
+                    RivetError(
+                        code="RVT-501",
+                        message=(
+                            f"Source joint '{source_joint.name}' expression for column "
+                            f"'{col}' references '{col}' which is not present in the "
+                            f"materialized data"
+                        ),
+                        context={"joint": source_joint.name, "column": col},
+                        remediation="Check that the column exists in the source table.",
+                    )
+                )
+            output_columns.append(col)
+            continue
+
+        # Has an alias — check what kind of expression
+
+        # Case 2: Simple rename (alias for a single column reference)
+        if (
+            len(proj.source_columns) == 1
+            and expr.lower() == proj.source_columns[0].rsplit(".", 1)[-1].lower()
+        ):
+            src_col = proj.source_columns[0]
+            if src_col not in col_names:
+                raise ExecutionError(
+                    RivetError(
+                        code="RVT-501",
+                        message=(
+                            f"Source joint '{source_joint.name}' expression for column "
+                            f"'{alias}' references '{src_col}' which is not present in "
+                            f"the materialized data"
+                        ),
+                        context={"joint": source_joint.name, "column": alias},
+                        remediation="Check that the column exists in the source table.",
+                    )
+                )
+            idx = table.schema.get_field_index(src_col)
+            table = table.rename_columns(
+                [alias if i == idx else f.name for i, f in enumerate(table.schema)]
+            )
+            col_names.discard(src_col)
+            col_names.add(alias)
+            output_columns.append(alias)
+            continue
+
+        # Case 3: CAST expression
+        cast_result = _parse_cast_expression(expr)
+        if cast_result is not None:
+            src_expr, arrow_type = cast_result
+            if src_expr not in col_names:
+                raise ExecutionError(
+                    RivetError(
+                        code="RVT-501",
+                        message=(
+                            f"Source joint '{source_joint.name}' expression for column "
+                            f"'{alias}' references '{src_expr}' which is not present in "
+                            f"the materialized data"
+                        ),
+                        context={"joint": source_joint.name, "column": alias},
+                        remediation="Check that the column exists in the source table.",
+                    )
+                )
+            col_array = table.column(src_expr).cast(arrow_type)
+            table = table.append_column(alias, col_array)
+            col_names.add(alias)
+            output_columns.append(alias)
+            continue
+
+        # Case 4: Computed expression — evaluate via DuckDB in-process
+        # Validate that all referenced source columns exist
+        for src_col in proj.source_columns:
+            if src_col not in col_names:
+                raise ExecutionError(
+                    RivetError(
+                        code="RVT-501",
+                        message=(
+                            f"Source joint '{source_joint.name}' expression for column "
+                            f"'{alias}' references '{src_col}' which is not present in "
+                            f"the materialized data"
+                        ),
+                        context={"joint": source_joint.name, "column": alias},
+                        remediation="Check that the column exists in the source table.",
+                    )
+                )
+
+        try:
+            import duckdb
+
+            con = duckdb.connect(":memory:")
+            con.register("__src", table)
+            result = con.execute(
+                f"SELECT {expr} AS {alias} FROM __src"  # noqa: S608
+            ).fetch_arrow_table()
+            col_array = result.column(alias)
+            table = table.append_column(alias, col_array)
+            col_names.add(alias)
+            output_columns.append(alias)
+        except Exception as exc:
+            raise ExecutionError(  # noqa: B904
+                RivetError(
+                    code="RVT-501",
+                    message=(
+                        f"Source joint '{source_joint.name}' failed to evaluate "
+                        f"expression '{expr}' for column '{alias}': {exc}"
+                    ),
+                    context={"joint": source_joint.name, "column": alias, "expression": expr},
+                    remediation="Check that the expression is valid SQL.",
+                )
+            )
+
+    # Return table with only the declared output columns in declaration order
+    return table.select(output_columns)
 
 
 def _build_filter_expr(expression: str, table: pyarrow.Table) -> Any:
@@ -504,6 +968,118 @@ def _compute_materialization_stats(table: pyarrow.Table) -> MaterializationStats
         column_stats=col_stats,
         sampled=use_sample,
     )
+
+
+def _schemas_are_compatible(expected: dict[str, str], actual: dict[str, str]) -> bool:
+    """Check if two schemas are compatible for sink writes.
+
+    Returns True if schemas match after normalization, or if they differ only
+    in ways that don't affect data correctness (e.g., string vs timestamp for
+    date columns, which can be cast automatically by most sinks).
+
+    Args:
+        expected: Expected schema from compiler inference
+        actual: Actual schema from execution engine
+
+    Returns:
+        True if schemas are compatible, False if there's a real mismatch
+    """
+    # Column names must match exactly
+    if set(expected.keys()) != set(actual.keys()):
+        return False
+
+    # Check each column type
+    for col_name in expected:
+        expected_type = _normalize_arrow_type(expected[col_name])
+        actual_type = _normalize_arrow_type(actual[col_name])
+
+        # After normalization, if types match, they're compatible
+        if expected_type == actual_type:
+            continue
+
+        # Allow string/timestamp interchangeability (common for date columns)
+        # Sinks can typically handle this conversion automatically
+        if {expected_type, actual_type} <= {
+            "utf8",
+            "timestamp[s]",
+            "timestamp[ms]",
+            "timestamp[us]",
+            "timestamp[ns]",
+        }:
+            continue
+
+        # If we get here, there's a real incompatibility
+        return False
+
+    return True
+
+
+def _normalize_arrow_type(type_str: str) -> str:
+    """Normalize Arrow type string to canonical form for comparison.
+
+    Handles semantic equivalents:
+    - utf8 ↔ string
+    - float64 ↔ double
+    - date32 ↔ date32[day]
+    - decimal128(38, 0) → int64 (for integer aggregations)
+    - timestamp[s] with timezone info stripped
+
+    Args:
+        type_str: Arrow type string (e.g., "utf8", "string", "float64")
+
+    Returns:
+        Normalized type string for comparison
+    """
+    # Strip whitespace
+    normalized = type_str.strip()
+
+    # Handle type aliases
+    type_aliases = {
+        "string": "utf8",
+        "large_string": "large_utf8",
+        "double": "float64",
+        "float": "float32",
+    }
+    if normalized in type_aliases:
+        return type_aliases[normalized]
+
+    # Handle date32 with unit specifier
+    if normalized.startswith("date32["):
+        return "date32"
+
+    # Handle decimal128(38, 0) as int64 (common from SQL SUM/COUNT)
+    if normalized.startswith("decimal128(38, 0)"):
+        return "int64"
+
+    # Handle timestamp with timezone - normalize to base timestamp
+    if normalized.startswith("timestamp["):
+        # Extract unit: timestamp[s], timestamp[ms], etc.
+        # Strip timezone info if present (e.g., "timestamp[s, tz=UTC]" -> "timestamp[s]")
+        if "]" in normalized:
+            bracket_content = normalized[len("timestamp[") : normalized.index("]")]
+            # If there's a comma, take only the unit part before it
+            if "," in bracket_content:
+                unit = bracket_content.split(",")[0].strip()
+                return f"timestamp[{unit}]"
+            # Otherwise return as-is
+            return normalized.split("]")[0] + "]"
+
+    return normalized
+
+
+def _schema_to_dict(schema: Any) -> dict[str, str]:
+    """Convert Schema object to dict[column_name, arrow_type_str].
+
+    Args:
+        schema: Schema object with columns attribute, or None
+
+    Returns:
+        Dictionary mapping column names to Arrow type strings.
+        Returns empty dict if schema is None.
+    """
+    if schema is None:
+        return {}
+    return {col.name: col.type for col in schema.columns}
 
 
 def _normalize_python_result(joint_name: str, func_path: str, result: Any) -> Material:
@@ -961,7 +1537,9 @@ class Executor:
     Follows execution_order exactly. No re-resolution or re-optimization.
     """
 
-    def __init__(self, registry: PluginRegistry | None = None) -> None:
+    def __init__(
+        self, registry: PluginRegistry | None = None, project_root: Path | None = None
+    ) -> None:
         self._materialization_strategies: dict[str, MaterializationStrategy] = {
             "arrow": ArrowMaterialization(),
         }
@@ -972,6 +1550,7 @@ class Executor:
             registry = PluginRegistry()
             registry.register_engine_plugin(ArrowComputeEnginePlugin())
         self._registry = registry
+        self._project_root = project_root
 
     def _get_materialization_strategy(self, name: str) -> MaterializationStrategy:
         return (
@@ -1172,9 +1751,10 @@ class Executor:
             if cj:
                 needed_keys.update(cj.upstream)
 
-        arrow_materials: dict[str, pyarrow.Table] = {
-            k: v.to_arrow() for k, v in materials.items() if k in needed_keys
-        }
+        # Pass all materials, not just needed_keys, because fused SQL may reference
+        # tables from previous waves that aren't in the upstream list (e.g., when
+        # referenced inside CTEs or subqueries after an assertion boundary).
+        arrow_materials: dict[str, pyarrow.Table] = {k: v.to_arrow() for k, v in materials.items()}
         result_ref, adapter_residual = await self._execute_fused_group(
             group,
             arrow_materials,
@@ -1863,32 +2443,9 @@ class Executor:
         runs the coroutine in a new thread with its own event loop.
         Otherwise, creates a new event loop with asyncio.run().
         """
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            # No event loop running — create one
-            return asyncio.run(coro)
-        else:
-            # Event loop already running — run in a thread pool with its own loop
-            import threading  # noqa: PLC0415
+        from rivet_core.async_utils import safe_run_async
 
-            result_container: list[T] = []
-            exception_container: list[Exception] = []
-
-            def run_in_thread() -> None:
-                try:
-                    result = asyncio.run(coro)
-                    result_container.append(result)
-                except Exception as e:  # noqa: BLE001
-                    exception_container.append(e)
-
-            thread = threading.Thread(target=run_in_thread)
-            thread.start()
-            thread.join()
-
-            if exception_container:
-                raise exception_container[0]
-            return result_container[0]
+        return safe_run_async(coro)
 
     async def _run_audits(
         self,
@@ -2020,63 +2577,6 @@ class Executor:
             ),
         )
 
-    # CLEANUP-RISK: _execute_via_plugin (complexity 13) — plugin dispatch with error handling; refactoring risks changing error messages/types
-    @staticmethod
-    def _resolve_sql_for_execution(
-        group: FusedGroup,
-        joint_map: dict[str, CompiledJoint],
-        adapter_read_sources: set[str],
-        has_materialized_inputs: bool = False,
-    ) -> str | None:
-        """Resolve the SQL string for CTE-strategy execution.
-
-        Rewrites adapter-backed source CTE bodies to ``SELECT * FROM <name>``
-        so the engine reads from the registered Arrow table (input_tables).
-        When a reference resolver has produced resolved SQL, that is returned
-        directly since it already contains fully-qualified table references.
-        Falls back through fusion_result and group-level SQL attributes.
-
-        When *has_materialized_inputs* is True (upstream data was materialized
-        across an engine boundary), resolved SQL is skipped because the
-        receiving engine works with in-memory tables registered by joint name,
-        not catalog-qualified references.
-        """
-        # Prefer resolved SQL (reference-resolver output) when available
-        # AND the engine can natively resolve catalog references (no
-        # materialized inputs from an engine boundary).
-        if not has_materialized_inputs:
-            resolved = None
-            if group.fusion_result:
-                resolved = group.fusion_result.resolved_fused_sql
-            if resolved is None:
-                resolved = group.resolved_sql
-            if resolved is not None:
-                return resolved
-
-        # No reference resolver ran — rewrite adapter-read sources as CTEs
-        # so the engine can resolve them from input_tables.
-        sql: str | None = None
-        if adapter_read_sources and len(group.joints) > 1:
-            from rivet_core.optimizer import _compose_cte
-
-            rewritten_joint_sql: dict[str, str | None] = {}
-            for jn in group.joints:
-                cj = joint_map.get(jn)
-                if jn in adapter_read_sources:
-                    rewritten_joint_sql[jn] = f"SELECT * FROM {jn}"
-                elif cj:
-                    rewritten_joint_sql[jn] = cj.sql_resolved or cj.sql_translated or cj.sql
-                else:
-                    rewritten_joint_sql[jn] = None
-            rewritten = _compose_cte(group.joints, rewritten_joint_sql)
-            if rewritten:
-                sql = rewritten.fused_sql
-        if sql is None and group.fusion_result:
-            sql = group.fusion_result.fused_sql
-        if sql is None:
-            sql = group.fused_sql
-        return sql
-
     @staticmethod
     async def _dispatch_to_engine(
         plugin: ComputeEnginePlugin,
@@ -2139,6 +2639,44 @@ class Executor:
                     input_tables[up] = materials[up]
                     has_materialized_inputs = True
 
+        # Add cross-wave materialized tables referenced in fused SQL
+        # When joints are fused into CTEs, the fused SQL may reference joints
+        # from previous waves that aren't in any individual joint's upstream list.
+        # Extract all table references from all possible SQL sources and check if
+        # they're available in materials from previous waves.
+
+        # Check all possible SQL sources
+        sql_sources: list[str] = []
+        if group.fusion_result:
+            if group.fusion_result.fused_sql:
+                sql_sources.append(group.fusion_result.fused_sql)
+            if group.fusion_result.resolved_fused_sql:
+                sql_sources.append(group.fusion_result.resolved_fused_sql)
+        if group.fused_sql:
+            sql_sources.append(group.fused_sql)
+        if group.resolved_sql:
+            sql_sources.append(group.resolved_sql)
+
+        # Also check individual joint SQL for references
+        for jn in group.joints:
+            cj = joint_map.get(jn)
+            if cj:
+                if cj.sql:
+                    sql_sources.append(cj.sql)
+                if cj.sql_translated:
+                    sql_sources.append(cj.sql_translated)
+                if cj.sql_resolved:
+                    sql_sources.append(cj.sql_resolved)
+
+        # Extract all referenced tables from all SQL sources
+        referenced_tables = _extract_table_references(sql_sources)
+
+        # Add any referenced tables that are in materials
+        for table_name in referenced_tables:
+            if table_name in materials and table_name not in input_tables:
+                input_tables[table_name] = materials[table_name]
+                has_materialized_inputs = True
+
         # Read source joints into input_tables.
         # When a reference resolver has rewritten the fused SQL (resolved_sql
         # is set), table references are fully-qualified catalog names and the
@@ -2166,6 +2704,27 @@ class Executor:
             and joint_map[jn].adapter
         }
 
+        # Standalone source groups: when all joints are sources that were
+        # read into input_tables (via adapter or fallback source plugin),
+        # return the data directly.  The source SQL (from YAML columns/filter
+        # or explicit SQL annotation) was used only for LogicalPlan extraction
+        # and pushdown — it references catalog table names that don't exist in
+        # the engine's namespace.
+        all_sources_read = (
+            all(
+                joint_map.get(jn) is not None
+                and joint_map[jn].type == "source"
+                and jn in input_tables
+                for jn in group.joints
+            )
+            if group.joints
+            else False
+        )
+        if all_sources_read:
+            exit_jn = group.exit_joints[-1] if group.exit_joints else group.joints[-1]
+            if exit_jn in input_tables:
+                return input_tables[exit_jn], adapter_residual
+
         # Handle temp_view strategy: execute intermediate statements, then final select
         if group.fusion_strategy == "temp_view" and group.fusion_result:
             return await self._execute_temp_view_via_plugin(
@@ -2177,7 +2736,7 @@ class Executor:
             ), adapter_residual
 
         # CTE strategy
-        sql = self._resolve_sql_for_execution(
+        sql = resolve_execution_sql(
             group,
             joint_map,
             adapter_read_sources,
@@ -2301,7 +2860,7 @@ class Executor:
             try:
                 return await asyncio.to_thread(
                     plugin.execute_sql, engine_instance, final_select, input_tables
-                )  # type: ignore[arg-type]
+                )
             except ExecutionError:
                 raise
             except Exception as exc:
@@ -2389,6 +2948,8 @@ class Executor:
         try:
             engine_instance = self._registry.get_compute_engine(cj.engine)
             effective_pushdown = _merge_source_limit_into_pushdown(group.pushdown, cj)
+            effective_pushdown = _merge_source_predicates_into_pushdown(effective_pushdown, cj)
+            effective_pushdown = _merge_source_projections_into_pushdown(effective_pushdown, cj)
             effective_pushdown = _merge_cross_group_predicates(effective_pushdown, group, jn)
             effective_pushdown = _merge_cross_group_projections(effective_pushdown, group, jn)
             effective_pushdown = _merge_cross_group_limits(effective_pushdown, group, jn)
@@ -2549,11 +3110,12 @@ class Executor:
                             has_residual=has_residual,
                         )
                     if tbl is not None:
+                        tbl = _apply_source_expressions(tbl, cj)
                         input_tables[jn] = tbl
-                    if residual is not None:
-                        merged_adapter_residual = _merge_residuals(
-                            merged_adapter_residual, residual
-                        )
+                        if residual is not None:
+                            merged_adapter_residual = _merge_residuals(
+                                merged_adapter_residual, residual
+                            )
                     continue
 
             try:
@@ -2588,7 +3150,10 @@ class Executor:
                         row_count=tbl.num_rows,
                         read_ms=read_ms,
                     )
-                input_tables[jn] = tbl
+                input_tables[jn] = _apply_source_expressions(
+                    _apply_source_inline_residuals(tbl, cj),
+                    cj,
+                )
         return merged_adapter_residual
 
     async def _execute_python_joint(
@@ -2603,10 +3168,15 @@ class Executor:
         optional RivetContext, async functions, and normalizes return to Arrow.
         Returns a MaterializedRef.
         """
-        # Import the callable
+        # Import the callable — temporarily add project root to sys.path
         func_path = cj.function or ""
         mod_path, func_name = func_path.rsplit(":", 1)
+        root_str = str(self._project_root) if self._project_root else None
+        added = False
         try:
+            if root_str and root_str not in sys.path:
+                sys.path.insert(0, root_str)
+                added = True
             mod = importlib.import_module(mod_path)
             func = getattr(mod, func_name)
         except Exception as exc:
@@ -2622,6 +3192,12 @@ class Executor:
                     remediation="Ensure the function path is importable.",
                 )
             )
+        finally:
+            if added and root_str:
+                try:
+                    sys.path.remove(root_str)
+                except ValueError:
+                    pass
 
         # Build Material inputs from upstream — use MaterializedRef directly
         inputs: dict[str, Material] = {}
@@ -2709,10 +3285,39 @@ class Executor:
             from rivet_core.models import Catalog, Joint
 
             cat = Catalog(name=cc.name, type=cc.type, options=cc.options)
+
+            # Attach inferred schema to Material if available
+            inferred_schema_dict = _schema_to_dict(cj.output_schema) if cj.output_schema else None
+
+            # Check for schema mismatch and emit warning if needed
+            if inferred_schema_dict:
+                try:
+                    arrow_table = ref.to_arrow()
+                    actual_schema = {field.name: str(field.type) for field in arrow_table.schema}
+
+                    if not _schemas_are_compatible(inferred_schema_dict, actual_schema):
+                        import logging
+
+                        expected_cols = ", ".join(
+                            f"{k}: {v}" for k, v in inferred_schema_dict.items()
+                        )
+                        actual_cols = ", ".join(f"{k}: {v}" for k, v in actual_schema.items())
+                        logging.getLogger("rivet_core.executor").warning(
+                            "Sink '%s' Material schema differs from inferred schema. "
+                            "Expected: [%s], Got: [%s]",
+                            cj.name,
+                            expected_cols,
+                            actual_cols,
+                        )
+                except Exception:
+                    # If we can't get the Arrow table or compare schemas, continue without warning
+                    pass
+
             mat = Material(
                 name=cj.name,
                 catalog=cj.catalog,
                 table=cj.table,
+                schema=inferred_schema_dict,
                 materialized_ref=ref,
                 state="materialized",
             )

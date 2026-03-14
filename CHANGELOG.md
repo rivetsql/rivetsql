@@ -7,6 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.14] - 2026-03-14
+
+### Added
+- Shared `FormatRegistry` in `rivet_core.formats`: canonical `FileFormat` enum, extension mappings, format detection with directory probing (local dirs and S3 prefixes), cascading resolution, validation, and per-plugin capability declarations
+- IPC (Arrow/Feather) write support in filesystem sink — append, replace, and partition strategies using PyArrow IPC file writer with `.arrow` default extension
+- Unified format detection across filesystem catalog, filesystem sink, S3 source, and S3 sink — all four plugins now delegate to `FormatRegistry` instead of maintaining independent format logic
+- Plugin coherence audit script (`scripts/check_plugin_coherence.py`): scans all plugin packages against an expected capability matrix and produces a structured report for CI (exit 0 = coherent, exit 1 = gaps found)
+- DuckDB catalog plugin now implements `test_connection` (lightweight `SELECT 1` connectivity check)
+- Arrow catalog plugin now implements `test_connection` (unconditional success for in-memory catalog) and `list_children` (table and column hierarchy navigation)
+- Filesystem catalog plugin now implements `test_connection` (base path existence check) and `list_children` (directory listing and schema-inferred column navigation)
+- Databricks catalog plugin now implements `test_connection` (lightweight `/catalogs` API check) and `list_children` (schema → table → column hierarchy navigation)
+- PostgreSQL catalog plugin now implements `test_connection` (lightweight `SELECT 1` check) and `list_children` (schema → table → column hierarchy navigation)
+- REST API sink now declares `supported_strategies` and validates write strategies upfront
+- Arrow sink now declares `supported_strategies` class attribute
+
+### Fixed
+- Arrow sink now raises `ExecutionError` (RVT-501) for unsupported write strategies instead of silently falling back to replace
+- Arrow source now raises `ExecutionError` instead of bare `KeyError` when a table is not found
+- Arrow catalog `get_schema` now raises `ExecutionError` instead of bare `NotImplementedError` for missing tables
+- Arrow engine `validate` now rejects unrecognized options with `PluginValidationError` instead of silently accepting them
+- Filesystem catalog `validate` now rejects unrecognized options with `PluginValidationError` instead of silently accepting them
+- REST API sink now raises `ExecutionError` (RVT-501) for unsupported write strategies instead of silently accepting them
+- Multi-engine execution plans no longer fail when a reference resolver from one engine type (e.g. postgres) incorrectly rewrites SQL in groups belonging to a different engine type (e.g. duckdb)
+- Source inline transforms now work correctly for filesystem and other non-adapter catalogs — predicates, projections, and limits from YAML `filter`/`columns`/`limit` are applied as post-read residuals when the source plugin does not support pushdown
+- Source joints with YAML `filter` or `limit` (without `columns`) now correctly generate SQL for LogicalPlan extraction — previously only `columns` triggered SQL generation
+
+### Added
+- Databricks catalog plugin now implements `test_connection` (lightweight `/catalogs` API check) and `list_children` (schema → table → column hierarchy navigation)
+- PostgreSQL catalog plugin now implements `test_connection` (lightweight `SELECT 1` check) and `list_children` (schema → table → column hierarchy navigation)
+- Source inline transforms: `columns`, `filter`, and `limit` YAML fields on source joints push predicates, projections, and row limits to the adapter during reads — column expressions (renames, CAST, computed) are applied as post-read residuals; both YAML and SQL forms are interchangeable
+- Source inline transform validation in the compiler: single-table constraint enforcement (RVT-760, RVT-761, RVT-762), column reference warnings against introspected schema, and transformed output schema propagation for source joints with projections, renames, and CAST expressions
+- Python joints now automatically resolve project-local imports — no need to set `PYTHONPATH` manually; the compiler and executor inject the project root into `sys.path` transparently
+- Enhanced compilation output: `rivet compile` now displays execution SQL (the actual SQL sent to engines), detailed pushdown information per joint, and a dedicated cross-group optimizations summary section
+- Sink schema inference: compiler automatically determines and attaches output schemas to sink joints based on upstream data flow, with schema confidence levels (introspected, inferred, partial, none) and conflict detection for multi-upstream sinks
+- Centralized type parser in `rivet_core` for complex types (arrays and structs) across all catalog plugins, eliminating code duplication and enabling proper Arrow type mapping for nested data structures
+- Complex type support for Unity Catalog, AWS Glue Catalog, DuckDB Catalog, and PostgreSQL Catalog — array and struct columns now map to Arrow list and struct types instead of defaulting to string
+- PostgreSQL array syntax support (`type[]`) in addition to standard `array<T>` syntax used by other catalogs
+- SQL parser now supports ARRAY and STRUCT types in type declarations using centralized type parser
+- PostgreSQL engine now accepts individual connection parameters (`host`, `port`, `database`, `user`, `password`) in addition to `conninfo` string, allowing engines to use the same connection configuration as catalogs without duplication
+- Engine instantiation now automatically inherits connection parameters from matching catalogs — when an engine references a catalog of the same type, connection params (host, port, database, user, password) are inherited from the catalog, with engine options taking precedence for overrides
+
+### Changed
+- Fused group display now shows individual joint SQL (original, translated, resolved) instead of duplicating execution SQL for each joint, making it clearer how joints compose into the final fused query
+
+### Fixed
+- CTE fusion bug: joints containing WITH clauses now fuse correctly — CTEs are extracted and merged into a single top-level WITH clause instead of generating invalid SQL with multiple WITH keywords
+- Cross-wave table references: joints in later execution waves can now correctly reference materialized tables from earlier waves when those tables have assertion boundaries — improved SQL parser now extracts table references from CTEs, subqueries, and complex SQL patterns, not just simple FROM/JOIN clauses
+- PostgreSQL plugin now works correctly when called from async contexts (REPL, explore sessions) — replaced direct `asyncio.run()` calls with safe async execution that detects running event loops and uses thread-based execution when necessary
+- PostgreSQL DuckDB adapter now installs the postgres extension from the official repository instead of community repository, fixing installation failures in some environments
+- PostgreSQL DuckDB adapter now correctly handles RecordBatchReader results from DuckDB by converting them to Arrow Tables, fixing `'RecordBatchReader' object has no attribute 'num_rows'` errors
+- PostgreSQL engine now supports CTE fusion with PostgreSQL sources — added reference resolver that rewrites source joint references to fully-qualified `schema.table` names, allowing native PostgreSQL sources to execute without materialization
+- Sink schema validation warnings now use type compatibility checking to avoid false positives for semantically equivalent types (utf8 vs string, float64 vs double, date32 vs date32[day], decimal128(38,0) vs int64) and allow string/timestamp interchangeability for date columns that sinks can handle automatically
+- S3 catalog `endpoint_url` no longer gets corrupted when used with DuckDB — the scheme (`http://`/`https://`) is now stripped before passing to DuckDB's secret manager, and `USE_SSL false` is set for HTTP endpoints, fixing `https://http://localhost%3A9000` mangling with MinIO/LocalStack
+- S3 catalog no longer blindly appends `.parquet` to table names — file format is now auto-detected from the table name's extension (e.g., `customers.csv` uses `read_csv_auto`), falling back to the catalog `format` option only when no recognized extension is present
+- S3 DuckDB adapter now correctly handles RecordBatchReader results from DuckDB by converting them to Arrow Tables via `.read_all()`, fixing `'RecordBatchReader' object has no attribute 'num_rows'` errors
+- Replaced bare `ValueError` with `ExecutionError` in DuckDB filesystem sink (`_read_file`), filesystem catalog (`_read_table`, `_read_schema_lightweight`) for unsupported format handling
+- Replaced bare `NotImplementedError` with `ExecutionError` in Databricks source, Unity source (deferred `schema`/`row_count`), S3 catalog (`get_schema`), and S3 source (`to_arrow`) for unsupported delta format
+- Replaced bare `ValueError` with `PluginValidationError` in REST auth (`create_auth`) and pagination (`create_paginator`) factories for unrecognized types
+
 ## [0.1.13] - 2026-03-12
 
 ### Added
@@ -21,6 +80,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Documentation: REST API plugin reference (`docs/plugins/rest.md`), REST API integration guide (`docs/guides/rest-api-integration.md`), wildcard adapter architecture (`docs/concepts/wildcard-adapters.md`)
 
 ### Fixed
+- Fixed Unity catalog creation wizard saving authentication method as 'auth' instead of 'auth_type', causing validation error RVT-201
 - `rivet catalog create` wizard now correctly parses optional parameter types (dict, int, float, bool) instead of storing as strings
 - REPL ad-hoc queries with LIMIT now push the limit to REST API sources, stopping page fetches once limit is reached
 - Optimizer `pushdown_pass` searches backwards through fused groups to find LogicalPlan when exit joint has none

@@ -443,16 +443,18 @@ class TestInferSchema:
 
     def test_all_mapped_types(self, parser: SQLParser) -> None:
         upstream = {
-            "t": self._schema({
-                "a": "int16",
-                "b": "int32",
-                "c": "int64",
-                "d": "float32",
-                "e": "float64",
-                "f": "bool",
-                "g": "date32",
-                "h": "timestamp[us]",
-            })
+            "t": self._schema(
+                {
+                    "a": "int16",
+                    "b": "int32",
+                    "c": "int64",
+                    "d": "float32",
+                    "e": "float64",
+                    "f": "bool",
+                    "g": "date32",
+                    "h": "timestamp[us]",
+                }
+            )
         }
         ast = parser.parse("SELECT a, b, c, d, e, f, g, h FROM t")
         schema, warnings = parser.infer_schema(ast, upstream)
@@ -531,6 +533,46 @@ class TestInferSchema:
         schema, _ = parser.infer_schema(ast, upstream)
         assert schema is not None
         assert all(col.nullable for col in schema.columns)
+
+    def test_array_type_parsing(self, parser: SQLParser) -> None:
+        """Test that ARRAY types are correctly parsed using type_parser."""
+        upstream = {"t": self._schema({"a": "int32"})}
+        ast = parser.parse("SELECT CAST(a AS ARRAY<INT>) AS arr FROM t")
+        schema, warnings = parser.infer_schema(ast, upstream)
+        assert schema is not None
+        assert schema.columns[0].name == "arr"
+        assert schema.columns[0].type == "list<int32>"
+        assert warnings == []
+
+    def test_struct_type_parsing(self, parser: SQLParser) -> None:
+        """Test that STRUCT types are correctly parsed using type_parser."""
+        upstream = {"t": self._schema({"a": "int32", "b": "utf8"})}
+        ast = parser.parse("SELECT CAST(a AS STRUCT<name TEXT, age INT>) AS st FROM t")
+        schema, warnings = parser.infer_schema(ast, upstream)
+        assert schema is not None
+        assert schema.columns[0].name == "st"
+        assert schema.columns[0].type == "struct<name:utf8,age:int32>"
+        assert warnings == []
+
+    def test_nested_array_type(self, parser: SQLParser) -> None:
+        """Test nested array types."""
+        upstream = {"t": self._schema({"a": "int32"})}
+        ast = parser.parse("SELECT CAST(a AS ARRAY<ARRAY<INT>>) AS nested FROM t")
+        schema, warnings = parser.infer_schema(ast, upstream)
+        assert schema is not None
+        assert schema.columns[0].type == "list<list<int32>>"
+        assert warnings == []
+
+    def test_array_of_struct(self, parser: SQLParser) -> None:
+        """Test array of struct types."""
+        upstream = {"t": self._schema({"a": "int32"})}
+        ast = parser.parse(
+            "SELECT CAST(a AS ARRAY<STRUCT<id INT, name TEXT>>) AS arr_struct FROM t"
+        )
+        schema, warnings = parser.infer_schema(ast, upstream)
+        assert schema is not None
+        assert schema.columns[0].type == "list<struct<id:int32,name:utf8>>"
+        assert warnings == []
 
 
 class TestTranslate:

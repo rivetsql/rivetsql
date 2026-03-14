@@ -24,7 +24,9 @@ def add_repl_parser(subparsers: argparse._SubParsersAction) -> argparse.Argument
 
     # --- default interactive mode (no subcommand) ---
     # These stay on repl_p so `rivet repl --profile x` still works.
-    repl_p.add_argument("--profile", "-p", default="default", help="Profile name (default: default)")
+    repl_p.add_argument(
+        "--profile", "-p", default="default", help="Profile name (default: default)"
+    )
     repl_p.add_argument("--project", default=".", help="Project directory (default: .)")
     repl_p.add_argument("--theme", default="rivet", help="UI theme (default: rivet)")
     repl_p.add_argument("--no-watch", action="store_true", help="Disable file watching")
@@ -34,13 +36,21 @@ def add_repl_parser(subparsers: argparse._SubParsersAction) -> argparse.Argument
     # --- execute subcommand ---
     exec_p = repl_subs.add_parser("execute", help="Execute a SQL query non-interactively")
     exec_p.add_argument("--query", "-q", required=True, help="SQL query to execute")
-    exec_p.add_argument("--engine", "-e", default=None, help="Engine to use (default: profile default)")
-    exec_p.add_argument("--profile", "-p", default="default", help="Profile name (default: default)")
+    exec_p.add_argument(
+        "--engine", "-e", default=None, help="Engine to use (default: profile default)"
+    )
+    exec_p.add_argument(
+        "--profile", "-p", default="default", help="Profile name (default: default)"
+    )
     exec_p.add_argument("--project", default=".", help="Project directory (default: .)")
-    exec_p.add_argument("--format", "-f", default="table", help="Output format: table, json, csv (default: table)")
-    exec_p.add_argument("--max-rows", type=int, default=10_000, help="Maximum rows to return (default: 10000)")
+    exec_p.add_argument(
+        "--format", "-f", default="table", help="Output format: table, json, csv (default: table)"
+    )
+    exec_p.add_argument(
+        "--max-rows", type=int, default=10_000, help="Maximum rows to return (default: 10000)"
+    )
 
-    return repl_p  # type: ignore[no-any-return]
+    return repl_p
 
 
 def _make_loader() -> Any:
@@ -92,11 +102,7 @@ def _make_loader() -> Any:
             )
 
             bridge_result = build_assembly(config_result, registry)
-            default_engine = (
-                config_result.profile.default_engine
-                if config_result.profile
-                else ""
-            )
+            default_engine = config_result.profile.default_engine if config_result.profile else ""
             return (
                 bridge_result.assembly,
                 bridge_result.catalogs,

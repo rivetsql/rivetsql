@@ -31,8 +31,24 @@ default:
 | `bucket` | yes | `str` | — | S3 bucket name |
 | `prefix` | no | `str` | `""` | Key prefix |
 | `region` | no | `str` | `"us-east-1"` | AWS region |
-| `endpoint_url` | no | `str` | `None` | Custom endpoint (MinIO, LocalStack) |
-| `format` | no | `str` | `"parquet"` | Default format (`parquet`, `csv`, `json`, `orc`, `delta`) |
+| `endpoint_url` | no | `str` | `None` | Custom endpoint (MinIO, LocalStack). Passed as-is; scheme is stripped for DuckDB's httpfs. |
+| `format` | no | `str` | `"parquet"` | Default format (`parquet`, `csv`, `json`, `orc`, `delta`). Auto-detected from file extension when the table name includes one (e.g., `customers.csv`). |
+
+### S3 with Custom Endpoint (MinIO, LocalStack)
+
+```yaml
+default:
+  catalogs:
+    - name: local_s3
+      type: s3
+      options:
+        bucket: rivet-data
+        endpoint_url: http://localhost:9000
+        path_style_access: true
+        access_key_id: minioadmin
+        secret_access_key: minioadmin123
+        format: csv
+```
 
 ### S3 Credentials
 
@@ -72,6 +88,16 @@ default:
 | `region` | no | `str` | `"us-east-1"` | AWS region |
 | `catalog_id` | no | `str` | `None` | AWS account ID for cross-account |
 | `lf_enabled` | no | `bool` | `false` | Use Lake Formation vended credentials |
+
+### Complex Type Support
+
+Glue Catalog supports complex types through schema introspection:
+
+- **Arrays**: `array<T>` syntax (e.g., `array<string>`, `array<int>`)
+- **Structs**: `struct<field:type,...>` syntax (e.g., `struct<name:string,value:double>`)
+- **Nested types**: Arbitrary nesting supported (e.g., `array<struct<...>>`)
+
+Complex types are automatically mapped to Arrow types during schema introspection. See [Complex Type Support](../concepts/catalogs.md#complex-type-support) for details.
 
 Uses the same credential options as S3.
 

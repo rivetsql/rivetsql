@@ -6,14 +6,14 @@ from typing import TYPE_CHECKING, Any
 
 import pyarrow
 
+from rivet_core.errors import ExecutionError, plugin_error
+from rivet_core.formats import FormatRegistry
 from rivet_core.models import Material
 from rivet_core.plugins import SourcePlugin
 from rivet_core.strategies import MaterializedRef
 
 if TYPE_CHECKING:
     from rivet_core.models import Catalog, Joint
-
-_VALID_FORMATS = {"parquet", "csv", "json", "orc", "delta"}
 
 
 def _resolve_s3_path(catalog_options: dict[str, Any], source_options: dict[str, Any]) -> str:
@@ -36,7 +36,10 @@ def _resolve_s3_path(catalog_options: dict[str, Any], source_options: dict[str, 
     # Build from catalog options
     bucket = catalog_options["bucket"]
     prefix = catalog_options.get("prefix", "")
-    fmt = source_options.get("format") or catalog_options.get("format", "parquet")
+    fmt = FormatRegistry.resolve_format(
+        source_options.get("format"),
+        catalog_options.get("format"),
+    )
     base = f"{bucket}/{prefix}" if prefix else bucket
     return f"s3://{base}/*.{fmt}"
 
@@ -79,7 +82,7 @@ class S3DeferredMaterializedRef(MaterializedRef):
             endpoint = endpoint_url
             for scheme in ("https://", "http://"):
                 if endpoint.startswith(scheme):
-                    endpoint = endpoint[len(scheme):]
+                    endpoint = endpoint[len(scheme) :]
                     break
             kwargs["endpoint_override"] = endpoint
             if endpoint_url.startswith("http://"):
@@ -99,7 +102,7 @@ class S3DeferredMaterializedRef(MaterializedRef):
         # Strip s3:// prefix for pyarrow dataset
         path = self._s3_path
         if path.startswith("s3://"):
-            path = path[len("s3://"):]
+            path = path[len("s3://") :]
 
         fmt = self._fmt
         if fmt == "parquet":
@@ -112,15 +115,22 @@ class S3DeferredMaterializedRef(MaterializedRef):
             file_format = pad.OrcFileFormat()
         else:
             # delta — not supported via simple pyarrow dataset; raise informative error
-            raise NotImplementedError(
-                f"Direct S3 read for format '{fmt}' is not supported by S3Source. "
-                "Use a compute engine adapter (e.g. DuckDB with delta extension)."
+            raise ExecutionError(
+                plugin_error(
+                    "RVT-501",
+                    f"Direct S3 read for format '{fmt}' is not supported by S3Source",
+                    plugin_name="rivet_aws",
+                    plugin_type="source",
+                    remediation="Use a supported format (parquet, csv, json). Delta format is not yet supported.",
+                )
             )
 
         partitioning = None
         if self._partition_columns:
             partitioning = pad.partitioning(
-                pyarrow.schema([pyarrow.field(c, pyarrow.string()) for c in self._partition_columns]),
+                pyarrow.schema(
+                    [pyarrow.field(c, pyarrow.string()) for c in self._partition_columns]
+                ),
                 flavor="hive",
             )
 
@@ -190,7 +200,10 @@ class S3Source(SourcePlugin):
         if not source_options.get("path") and joint.table:
             source_options = {**source_options, "path": joint.table}
 
-        fmt = source_options.get("format") or catalog_options.get("format", "parquet")
+        fmt = FormatRegistry.resolve_format(
+            source_options.get("format"),
+            catalog_options.get("format"),
+        )
         partition_columns: list[str] | None = source_options.get("partition_columns")
         schema: pyarrow.Schema | None = source_options.get("schema")
 

@@ -39,7 +39,11 @@ def run_run(
         for e in config_result.errors:
             print(
                 format_upstream_error(
-                    "RVT-850" if "rivet.yaml" in e.message.lower() else e.message[:7] if len(e.message) > 7 else "CFG",
+                    "RVT-850"
+                    if "rivet.yaml" in e.message.lower()
+                    else e.message[:7]
+                    if len(e.message) > 7
+                    else "CFG",
                     e.message,
                     e.remediation,
                     globals.color,
@@ -72,6 +76,7 @@ def run_run(
         tags=tags or None,
         tag_mode="and" if tag_all else "or",
         default_engine=config_result.profile.default_engine if config_result.profile else None,
+        project_root=globals.project_path,
     )
     if not compiled.success:
         for e in compiled.errors:  # type: ignore[assignment]
@@ -82,7 +87,9 @@ def run_run(
         return GENERAL_ERROR
 
     # Execute
-    result = Executor(registry).run_sync(compiled, fail_fast=fail_fast)
+    result = Executor(registry, project_root=globals.project_path).run_sync(
+        compiled, fail_fast=fail_fast
+    )
 
     # Determine exit code from execution result
     has_assertion = any(
@@ -108,7 +115,9 @@ def run_run(
         for jr in result.joint_results:
             if not jr.success and jr.error:
                 print(
-                    format_upstream_error(jr.error.code, jr.error.message, jr.error.remediation or "", globals.color),
+                    format_upstream_error(
+                        jr.error.code, jr.error.message, jr.error.remediation or "", globals.color
+                    ),
                     file=sys.stderr,
                 )
             for cr in jr.check_results:

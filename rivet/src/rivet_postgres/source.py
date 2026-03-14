@@ -22,8 +22,8 @@ class PostgresDeferredMaterializedRef(MaterializedRef):
         self._sql = sql
 
     def to_arrow(self) -> pa.Table:
-        import asyncio
 
+        from rivet_core.async_utils import safe_run_async
         from rivet_core.errors import ExecutionError, plugin_error
 
         async def _fetch() -> pa.Table:
@@ -46,7 +46,9 @@ class PostgresDeferredMaterializedRef(MaterializedRef):
                     async with conn.cursor() as cur:
                         await cur.execute(self._sql)
                         rows = await cur.fetchall()
-                        col_names = [desc.name for desc in cur.description] if cur.description else []
+                        col_names = (
+                            [desc.name for desc in cur.description] if cur.description else []
+                        )
             except ExecutionError:
                 raise
             except Exception as exc:
@@ -75,7 +77,7 @@ class PostgresDeferredMaterializedRef(MaterializedRef):
             arrays = [pa.array(columns[name]) for name in col_names]
             return pa.table(dict(zip(col_names, arrays)))
 
-        return asyncio.run(_fetch())
+        return safe_run_async(_fetch())
 
     @property
     def schema(self) -> Schema:

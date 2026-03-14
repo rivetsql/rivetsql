@@ -215,6 +215,7 @@ class InteractiveSession:
             registry=self._registry,
             profile_name=self._profile_name,
             default_engine=self._default_engine,
+            project_root=self._project_path,
         )
         self._metrics["compilations"] += 1
 
@@ -353,6 +354,7 @@ class InteractiveSession:
             engines=list(self._engines.values()),
             registry=self._registry,
             profile_name=self._profile_name,
+            project_root=self._project_path,
         )
 
         if not compiled.success:
@@ -459,7 +461,7 @@ class InteractiveSession:
 
             from rivet_core.executor import Executor  # noqa: PLC0415
 
-            executor = Executor(registry=self._registry)
+            executor = Executor(registry=self._registry, project_root=self._project_path)
             table, run_stats = executor.run_query_with_stats_sync(
                 compiled, target_joint="__display"
             )
@@ -675,6 +677,7 @@ class InteractiveSession:
                 registry=self._registry,
                 profile_name=self._profile_name,
                 default_engine=self._default_engine,
+                project_root=self._project_path,
             )
             self._metrics["compilations"] += 1
 
@@ -1068,6 +1071,7 @@ class InteractiveSession:
             registry=self._registry,
             profile_name=self._profile_name,
             default_engine=self._default_engine,
+            project_root=self._project_path,
         )
         self._metrics["compilations"] += 1
 

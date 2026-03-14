@@ -387,7 +387,7 @@ def _extract_records(data: Any, response_path: str | None) -> list[dict[str, Any
                 return []
 
     if isinstance(data, list):
-        return data  # type: ignore[return-value]
+        return data
     if isinstance(data, dict):
         return [data]
     return []

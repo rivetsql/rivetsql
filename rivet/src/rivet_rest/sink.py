@@ -11,9 +11,11 @@ from typing import Any
 
 import requests
 
-from rivet_core.errors import ExecutionError, RivetError
+from rivet_core.errors import ExecutionError, RivetError, plugin_error
 from rivet_core.models import Catalog, Joint, Material
 from rivet_core.plugins import SinkPlugin
+
+REST_SUPPORTED_STRATEGIES = frozenset({"append", "replace"})
 from rivet_rest.adapter import _build_session_config, _resolve_endpoint
 from rivet_rest.auth import create_auth
 from rivet_rest.flatten import arrow_to_records
@@ -34,6 +36,7 @@ class RestApiSink(SinkPlugin):
     """
 
     catalog_type = "rest_api"
+    supported_strategies = REST_SUPPORTED_STRATEGIES
 
     def write(
         self,
@@ -51,8 +54,21 @@ class RestApiSink(SinkPlugin):
             strategy: Write strategy ("append" or "replace")
 
         Raises:
-            ExecutionError: When write requests fail after retries
+            ExecutionError: When the strategy is unsupported or write requests fail after retries
         """
+        if strategy not in REST_SUPPORTED_STRATEGIES:
+            raise ExecutionError(
+                plugin_error(
+                    "RVT-501",
+                    f"Unsupported write strategy '{strategy}' for REST API sink.",
+                    plugin_name="rest_api",
+                    plugin_type="sink",
+                    remediation=f"Supported strategies: {', '.join(sorted(REST_SUPPORTED_STRATEGIES))}",
+                    strategy=strategy,
+                    catalog=catalog.name,
+                )
+            )
+
         # Resolve endpoint configuration
         endpoint_config = _resolve_endpoint(catalog, joint)
         options: dict[str, Any] = catalog.options if hasattr(catalog, "options") else {}

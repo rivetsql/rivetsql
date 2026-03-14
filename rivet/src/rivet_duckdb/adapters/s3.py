@@ -42,7 +42,20 @@ def _configure_s3_secret(conn: Any, catalog_options: dict[str, Any]) -> None:
 
     endpoint = catalog_options.get("endpoint_url")
     if endpoint:
-        parts.append(f"ENDPOINT '{endpoint}'")
+        # DuckDB expects ENDPOINT as host:port without scheme.
+        # Strip the scheme and set USE_SSL accordingly.
+        use_ssl = True
+        stripped = endpoint
+        if stripped.startswith("https://"):
+            stripped = stripped[len("https://") :]
+        elif stripped.startswith("http://"):
+            stripped = stripped[len("http://") :]
+            use_ssl = False
+        # Remove trailing slash if present
+        stripped = stripped.rstrip("/")
+        parts.append(f"ENDPOINT '{stripped}'")
+        if not use_ssl:
+            parts.append("USE_SSL false")
 
     if catalog_options.get("path_style_access"):
         parts.append("URL_STYLE 'path'")
@@ -51,16 +64,38 @@ def _configure_s3_secret(conn: Any, catalog_options: dict[str, Any]) -> None:
     conn.execute(f"CREATE OR REPLACE SECRET s3_secret ({secret_body})")
 
 
+def _detect_s3_format(table: str, catalog_options: dict[str, Any]) -> tuple[str, str]:
+    """Detect format from table name extension or catalog option.
+
+    Returns (s3_path_suffix, format) where s3_path_suffix is the table name
+    (with extension if already present, or with appended format extension).
+    """
+    ext_map: dict[str, str] = {
+        ".parquet": "parquet",
+        ".csv": "csv",
+        ".json": "json",
+        ".orc": "orc",
+    }
+    dot_idx = table.rfind(".")
+    if dot_idx >= 0:
+        ext = table[dot_idx:].lower()
+        if ext in ext_map:
+            return table, ext_map[ext]
+    # No recognized extension — use catalog format option
+    fmt = catalog_options.get("format", "parquet")
+    if fmt == "delta":
+        return table, fmt
+    return f"{table}.{fmt}", fmt
+
+
 def _build_s3_path(catalog_options: dict[str, Any], table: str | None) -> str:
     """Build the S3 URI for reading."""
     bucket = catalog_options["bucket"]
     prefix = catalog_options.get("prefix", "")
-    fmt = catalog_options.get("format", "parquet")
     name = table or "*"
-    path = f"{prefix}/{name}" if prefix else name
-    if fmt == "delta":
-        return f"s3://{bucket}/{path}"
-    return f"s3://{bucket}/{path}.{fmt}"
+    suffix, _fmt = _detect_s3_format(name, catalog_options)
+    path = f"{prefix}/{suffix}" if prefix else suffix
+    return f"s3://{bucket}/{path}"
 
 
 class _S3DuckDBMaterializedRef(MaterializedRef):
@@ -79,10 +114,10 @@ class _S3DuckDBMaterializedRef(MaterializedRef):
             _configure_s3_secret(conn, self._catalog_options)
 
             if self._sql:
-                return conn.execute(self._sql).arrow()
+                return conn.execute(self._sql).arrow().read_all()
 
             s3_path = _build_s3_path(self._catalog_options, self._table)
-            fmt = self._catalog_options.get("format", "parquet")
+            _suffix, fmt = _detect_s3_format(self._table or "*", self._catalog_options)
             reader = _FORMAT_TO_READER.get(fmt)
             if reader is None:
                 raise ExecutionError(
@@ -96,7 +131,7 @@ class _S3DuckDBMaterializedRef(MaterializedRef):
                         format=fmt,
                     )
                 )
-            return conn.execute(f"SELECT * FROM {reader}('{s3_path}')").arrow()
+            return conn.execute(f"SELECT * FROM {reader}('{s3_path}')").arrow().read_all()
         except ExecutionError:
             raise
         except Exception as exc:
@@ -124,8 +159,7 @@ class _S3DuckDBMaterializedRef(MaterializedRef):
         table = self.to_arrow()
         return Schema(
             columns=[
-                Column(name=f.name, type=str(f.type), nullable=f.nullable)
-                for f in table.schema
+                Column(name=f.name, type=str(f.type), nullable=f.nullable) for f in table.schema
             ]
         )
 
@@ -160,13 +194,15 @@ class S3DuckDBAdapter(ComputeEngineAdapter):
     source = "engine_plugin"
     source_plugin = "rivet_duckdb"
 
-    def read_dispatch(self, engine: Any, catalog: Any, joint: Any, pushdown: PushdownPlan | None = None) -> AdapterPushdownResult:
+    def read_dispatch(
+        self, engine: Any, catalog: Any, joint: Any, pushdown: PushdownPlan | None = None
+    ) -> AdapterPushdownResult:
         # Build base SQL upfront so pushdown can modify it
         if joint.sql:
             base_sql = joint.sql
         else:
             s3_path = _build_s3_path(catalog.options, joint.table)
-            fmt = catalog.options.get("format", "parquet")
+            _suffix, fmt = _detect_s3_format(joint.table or "*", catalog.options)
             reader = _FORMAT_TO_READER.get(fmt)
             if reader is None:
                 raise ExecutionError(
@@ -206,7 +242,7 @@ class S3DuckDBAdapter(ComputeEngineAdapter):
             conn.register("__write_data", arrow_table)
 
             s3_path = _build_s3_path(catalog.options, joint.table)
-            fmt = catalog.options.get("format", "parquet")
+            _suffix, fmt = _detect_s3_format(joint.table or "*", catalog.options)
             strategy = joint.write_strategy or "replace"
 
             if fmt == "parquet":

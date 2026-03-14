@@ -140,11 +140,29 @@ class UnityDeferredMaterializedRef(MaterializedRef):
 
     @property
     def schema(self) -> Schema:
-        raise NotImplementedError("Schema resolution requires adapter dispatch.")
+        raise ExecutionError(
+            plugin_error(
+                "RVT-501",
+                f"Schema for Unity source '{self._table}' is not available without adapter dispatch.",
+                plugin_name="rivet_databricks",
+                plugin_type="source",
+                remediation="Execute the pipeline through an adapter to resolve schema.",
+                table=self._table,
+            )
+        )
 
     @property
     def row_count(self) -> int:
-        raise NotImplementedError("Row count requires adapter dispatch.")
+        raise ExecutionError(
+            plugin_error(
+                "RVT-501",
+                f"Row count for Unity source '{self._table}' is not available without adapter dispatch.",
+                plugin_name="rivet_databricks",
+                plugin_type="source",
+                remediation="Execute the pipeline through an adapter to resolve row count.",
+                table=self._table,
+            )
+        )
 
     @property
     def size_bytes(self) -> int | None:

@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING, Any
 
 import pyarrow as pa
 
+from rivet_core.async_utils import safe_run_async
 from rivet_core.errors import ExecutionError, PluginValidationError, plugin_error
 from rivet_core.plugins import SinkPlugin
 
@@ -14,13 +14,29 @@ if TYPE_CHECKING:
     from rivet_core.models import Catalog, Joint, Material
 
 SUPPORTED_STRATEGIES = frozenset(
-    {"append", "replace", "truncate_insert", "merge", "delete_insert", "incremental_append", "scd2", "partition"}
+    {
+        "append",
+        "replace",
+        "truncate_insert",
+        "merge",
+        "delete_insert",
+        "incremental_append",
+        "scd2",
+        "partition",
+    }
 )
 
 _VALID_ON_CONFLICT_ACTIONS = frozenset({"error", "update", "nothing"})
 _STRATEGIES_REQUIRING_CONFLICT_KEY = frozenset({"merge", "delete_insert", "scd2"})
 _KNOWN_SINK_OPTIONS = frozenset(
-    {"table", "write_strategy", "create_table", "batch_size", "on_conflict_action", "on_conflict_key"}
+    {
+        "table",
+        "write_strategy",
+        "create_table",
+        "batch_size",
+        "on_conflict_action",
+        "on_conflict_key",
+    }
 )
 
 
@@ -35,7 +51,9 @@ def _build_conninfo(options: dict[str, Any]) -> str:
 
 def _get_merge_keys(joint: Any) -> list[str]:
     ws = getattr(joint, "write_strategy_config", None) or {}
-    keys = ws.get("merge_key") or ws.get("key_columns") or ws.get("keys") or ws.get("on_conflict_key")
+    keys = (
+        ws.get("merge_key") or ws.get("key_columns") or ws.get("keys") or ws.get("on_conflict_key")
+    )
     if keys:
         return keys if isinstance(keys, list) else [keys]
     return []
@@ -87,9 +105,7 @@ def _pg_type(arrow_type: pa.DataType) -> str:
 
 
 def _create_table_sql(table: str, arrow_schema: pa.Schema) -> str:
-    cols = ", ".join(
-        f"{_quote(f.name)} {_pg_type(f.type)}" for f in arrow_schema
-    )
+    cols = ", ".join(f"{_quote(f.name)} {_pg_type(f.type)}" for f in arrow_schema)
     return f"CREATE TABLE IF NOT EXISTS {table} ({cols})"
 
 
@@ -236,7 +252,7 @@ class PostgresSink(SinkPlugin):
         arrow_table = material.to_arrow()
 
         try:
-            asyncio.run(_execute_strategy(conninfo, table_name, arrow_table, strategy, joint))
+            safe_run_async(_execute_strategy(conninfo, table_name, arrow_table, strategy, joint))
         except ExecutionError:
             raise
         except Exception as exc:
@@ -311,10 +327,7 @@ async def _binary_copy(conn: Any, table: str, data: pa.Table) -> None:
     async with conn.cursor() as cur, cur.copy(copy_sql) as copy:
         copy.set_types([_oid_for_arrow(data.schema.field(c).type) for c in cols])
         for row_idx in range(data.num_rows):
-            row = tuple(
-                _py_value(data.column(c)[row_idx].as_py())
-                for c in cols
-            )
+            row = tuple(_py_value(data.column(c)[row_idx].as_py()) for c in cols)
             await copy.write_row(row)
 
 
@@ -327,21 +340,21 @@ def _oid_for_arrow(arrow_type: pa.DataType) -> int:
     """Map Arrow type to PostgreSQL OID for binary COPY type hints."""
     type_str = str(arrow_type)
     oid_map: dict[str, int] = {
-        "int8": 21,       # int2
-        "int16": 21,      # int2
-        "int32": 23,      # int4
-        "int64": 20,      # int8
+        "int8": 21,  # int2
+        "int16": 21,  # int2
+        "int32": 23,  # int4
+        "int64": 20,  # int8
         "uint8": 21,
         "uint16": 23,
         "uint32": 20,
         "uint64": 20,
-        "halffloat": 700, # float4
-        "float": 700,     # float4
-        "double": 701,    # float8
-        "bool": 16,       # bool
-        "string": 25,     # text
+        "halffloat": 700,  # float4
+        "float": 700,  # float4
+        "double": 701,  # float8
+        "bool": 16,  # bool
+        "string": 25,  # text
         "large_string": 25,
-        "binary": 17,     # bytea
+        "binary": 17,  # bytea
         "large_binary": 17,
     }
     if type_str in oid_map:
@@ -397,9 +410,7 @@ async def _do_delete_insert(conn: Any, table: str, data: pa.Table, joint: Any) -
             for row_idx in range(data.num_rows):
                 key_vals.add(tuple(data.column(k)[row_idx].as_py() for k in keys))
             if key_vals:
-                cond = " AND ".join(
-                    f"{_quote(k)} = %s" for k in keys
-                )
+                cond = " AND ".join(f"{_quote(k)} = %s" for k in keys)
                 for kv in key_vals:
                     await cur.execute(f"DELETE FROM {table} WHERE {cond}", kv)
         else:
@@ -438,14 +449,14 @@ async def _do_scd2(conn: Any, table: str, data: pa.Table, joint: Any) -> None:
         base_cols = [c for c in cols if c not in ("valid_from", "valid_to", "is_current")]
         keys = base_cols[:1]
 
-    non_keys = [c for c in cols if c not in keys and c not in ("valid_from", "valid_to", "is_current")]
+    non_keys = [
+        c for c in cols if c not in keys and c not in ("valid_from", "valid_to", "is_current")
+    ]
 
     async with conn.cursor() as cur:
         # Close existing current records that have changed
         if non_keys:
-            change_cond = " OR ".join(
-                f"{table}.{_quote(c)} IS DISTINCT FROM %s" for c in non_keys
-            )
+            change_cond = " OR ".join(f"{table}.{_quote(c)} IS DISTINCT FROM %s" for c in non_keys)
             key_cond = " AND ".join(f"{table}.{_quote(k)} = %s" for k in keys)
             close_sql = (
                 f"UPDATE {table} SET valid_to = NOW(), is_current = false "
@@ -471,7 +482,10 @@ async def _do_scd2(conn: Any, table: str, data: pa.Table, joint: Any) -> None:
                 placeholders = ", ".join(["%s"] * len(insert_cols))
                 insert_sql = f"INSERT INTO {table} ({col_list}) VALUES ({placeholders})"
                 import datetime
-                await cur.execute(insert_sql, key_vals + non_key_vals + [datetime.datetime.now(), None, True])
+
+                await cur.execute(
+                    insert_sql, key_vals + non_key_vals + [datetime.datetime.now(), None, True]
+                )
 
     await conn.commit()
 

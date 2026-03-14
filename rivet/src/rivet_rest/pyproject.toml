@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rivetsql-rest"
-version = "0.1.13"
+version = "0.1.14"
 description = "REST API catalog plugin for Rivet SQL"
 readme = "README.md"
 requires-python = ">=3.11"

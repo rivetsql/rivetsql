@@ -13,6 +13,7 @@ from sqlglot.optimizer.simplify import simplify
 from rivet_core.errors import RivetError, SQLParseError
 from rivet_core.lineage import ColumnLineage, ColumnOrigin
 from rivet_core.models import Column, Schema
+from rivet_core.type_parser import parse_type
 
 
 @dataclass(frozen=True)
@@ -101,19 +102,20 @@ _NON_SELECT_TYPES = (
     exp.Command,
 )
 
-# sqlglot DataType.Type → Arrow type name
-_SQLGLOT_TO_ARROW: dict[exp.DataType.Type, str] = {
-    exp.DataType.Type.INT: "int32",
-    exp.DataType.Type.BIGINT: "int64",
-    exp.DataType.Type.SMALLINT: "int16",
-    exp.DataType.Type.FLOAT: "float32",
-    exp.DataType.Type.DOUBLE: "float64",
-    exp.DataType.Type.VARCHAR: "utf8",
-    exp.DataType.Type.TEXT: "utf8",
-    exp.DataType.Type.BOOLEAN: "bool",
-    exp.DataType.Type.DATE: "date32",
-    exp.DataType.Type.TIMESTAMP: "timestamp[us]",
-    exp.DataType.Type.DECIMAL: "decimal128",
+# sqlglot DataType.Type → Arrow type name (for primitive types)
+# This mapping is used by parse_type() for SQL type declarations
+_SQLGLOT_TO_ARROW: dict[str, str] = {
+    "int": "int32",
+    "bigint": "int64",
+    "smallint": "int16",
+    "float": "float32",
+    "double": "float64",
+    "varchar": "utf8",
+    "text": "utf8",
+    "boolean": "bool",
+    "date": "date32",
+    "timestamp": "timestamp[us]",
+    "decimal": "decimal128",
 }
 
 # Arrow type name → sqlglot type string (for upstream schema conversion)
@@ -196,9 +198,7 @@ class SQLParser:
         self._validate_select(ast, sql, dialect)
         return ast
 
-    def _validate_select(
-        self, ast: exp.Expression, sql: str, dialect: str | None
-    ) -> None:
+    def _validate_select(self, ast: exp.Expression, sql: str, dialect: str | None) -> None:
         """Validate that the AST is a single read-only SELECT (CTEs allowed)."""
         if isinstance(ast, _NON_SELECT_TYPES):
             kind = type(ast).__name__.upper()
@@ -321,7 +321,9 @@ class SQLParser:
         # COALESCE simplification: COALESCE(a, a) -> a, remove NULL args
         for node in list(ast.walk()):
             if isinstance(node, exp.Coalesce):
-                all_args = [node.this] + list(node.expressions) if node.this else list(node.expressions)
+                all_args = (
+                    [node.this] + list(node.expressions) if node.this else list(node.expressions)
+                )
                 # Remove NULL literals
                 filtered = [a for a in all_args if not isinstance(a, exp.Null)]
                 if not filtered:
@@ -359,9 +361,7 @@ class SQLParser:
             result = exp.And(this=result, expression=c.copy())
         return result
 
-    def extract_logical_plan(
-        self, ast: exp.Expression, dialect: str | None = None
-    ) -> LogicalPlan:
+    def extract_logical_plan(self, ast: exp.Expression, dialect: str | None = None) -> LogicalPlan:
         """Extract a LogicalPlan from a parsed SQL AST."""
         source_tables = self.extract_table_references(ast, dialect)
 
@@ -514,9 +514,7 @@ class SQLParser:
                 columns.append((o.sql(), "asc"))
         return Ordering(columns=columns)
 
-    def translate(
-        self, ast: exp.Expression, source_dialect: str, target_dialect: str
-    ) -> str:
+    def translate(self, ast: exp.Expression, source_dialect: str, target_dialect: str) -> str:
         """Translate SQL from source_dialect to target_dialect using sqlglot transpile.
 
         Raises SQLParseError with RVT-703 on translation failure.
@@ -595,11 +593,7 @@ class SQLParser:
             annotated = annotate_types(qualified, schema=sg_schema)
 
             # Find the outermost SELECT
-            select = (
-                annotated
-                if isinstance(annotated, exp.Select)
-                else annotated.find(exp.Select)
-            )
+            select = annotated if isinstance(annotated, exp.Select) else annotated.find(exp.Select)
             if select is None:
                 return None, warnings
 
@@ -659,7 +653,11 @@ class SQLParser:
             output_col = alias or inner.sql()
             source_cols = list(inner.find_all(exp.Column))
             transform, origins, expr_str = self._classify_transform(
-                inner, source_cols, alias, upstream_schemas, joint_name,
+                inner,
+                source_cols,
+                alias,
+                upstream_schemas,
+                joint_name,
                 alias_map=alias_map,
             )
             lineage.append(
@@ -717,12 +715,16 @@ class SQLParser:
         """Classify a projection expression's transform type and extract origins."""
         # Window function
         if inner.find(exp.Window):
-            origins = SQLParser._cols_to_origins(source_cols, upstream_schemas, joint_name, alias_map)
+            origins = SQLParser._cols_to_origins(
+                source_cols, upstream_schemas, joint_name, alias_map
+            )
             return "window", origins, inner.sql()
 
         # Aggregate function
         if inner.find(exp.AggFunc):
-            origins = SQLParser._cols_to_origins(source_cols, upstream_schemas, joint_name, alias_map)
+            origins = SQLParser._cols_to_origins(
+                source_cols, upstream_schemas, joint_name, alias_map
+            )
             return "aggregation", origins, inner.sql()
 
         # Literal (no column references)
@@ -782,7 +784,7 @@ class SQLParser:
             for col in schema.columns:
                 # Handle decimal128(p,s) → DECIMAL(p,s)
                 if col.type.startswith("decimal128"):
-                    params = col.type[len("decimal128"):]
+                    params = col.type[len("decimal128") :]
                     cols[col.name] = f"DECIMAL{params}"
                 else:
                     cols[col.name] = _ARROW_TO_SQLGLOT.get(col.type, "TEXT")
@@ -790,13 +792,69 @@ class SQLParser:
         return sg
 
     @staticmethod
-    def _sqlglot_type_to_arrow(
-        dt: exp.DataType, warnings: list[str]
-    ) -> str:
-        """Map a sqlglot DataType to an Arrow type name."""
+    @staticmethod
+    def _normalize_sqlglot_type(dt: exp.DataType) -> str:
+        """Convert sqlglot DataType to type_parser format recursively.
+
+        Handles:
+        - ARRAY<T> → array<normalized_T>
+        - STRUCT<name TYPE, ...> → struct<name:normalized_type,...>
+        - Primitives → lowercase type name
+        """
+        type_kind = dt.this if isinstance(dt, exp.DataType) else None
+        if type_kind is None or type_kind == exp.DataType.Type.UNKNOWN:
+            return "unknown"
+
+        # Handle ARRAY types recursively
+        if type_kind == exp.DataType.Type.ARRAY:
+            if dt.expressions:
+                element_dt = dt.expressions[0]
+                element_type = SQLParser._normalize_sqlglot_type(element_dt)
+                return f"array<{element_type}>"
+            return "array<unknown>"
+
+        # Handle STRUCT types recursively
+        if type_kind == exp.DataType.Type.STRUCT:
+            fields = []
+            for col_def in dt.expressions:
+                if isinstance(col_def, exp.ColumnDef):
+                    # Get field name without quotes
+                    field_name = (
+                        col_def.this.this if hasattr(col_def.this, "this") else str(col_def.this)
+                    )
+                    # Recursively normalize field type
+                    field_type = (
+                        SQLParser._normalize_sqlglot_type(col_def.kind) if col_def.kind else "text"
+                    )
+                    fields.append(f"{field_name}:{field_type}")
+            return f"struct<{','.join(fields)}>"
+
+        # Handle DECIMAL with precision/scale
+        if type_kind == exp.DataType.Type.DECIMAL:
+            params = dt.expressions
+            if len(params) >= 2:
+                p = params[0].this.this
+                s = params[1].this.this
+                return f"decimal({p},{s})"
+            return "decimal(38,18)"
+
+        # For primitive types, return lowercase name
+        return dt.sql().lower().split("(")[0].strip()
+
+    @staticmethod
+    def _sqlglot_type_to_arrow(dt: exp.DataType, warnings: list[str]) -> str:
+        """Map a sqlglot DataType to an Arrow type name.
+
+        Uses the centralized type_parser for complex types (arrays, structs).
+        """
         type_kind = dt.this if isinstance(dt, exp.DataType) else None
         if type_kind is None or type_kind == exp.DataType.Type.UNKNOWN:
             return "large_binary"
+
+        # For ARRAY and STRUCT types, normalize and use parse_type()
+        if type_kind in (exp.DataType.Type.ARRAY, exp.DataType.Type.STRUCT):
+            type_str = SQLParser._normalize_sqlglot_type(dt)
+            return parse_type(type_str, _SQLGLOT_TO_ARROW, warn_on_unknown=True)
 
         if type_kind == exp.DataType.Type.DECIMAL:
             # Extract precision and scale from expressions
@@ -807,12 +865,12 @@ class SQLParser:
                 return f"decimal128({p},{s})"
             return "decimal128(38,18)"
 
-        arrow = _SQLGLOT_TO_ARROW.get(type_kind)
+        # For primitive types, use direct string lookup
+        type_str = dt.sql().lower().split("(")[0].strip()
+        arrow = _SQLGLOT_TO_ARROW.get(type_str)
         if arrow is not None:
             return arrow
 
         # Unmapped type → large_binary + RVT-706 warning
-        warnings.append(
-            f"RVT-706: Unmapped SQL type '{dt}' defaulting to large_binary."
-        )
+        warnings.append(f"RVT-706: Unmapped SQL type '{dt}' defaulting to large_binary.")
         return "large_binary"

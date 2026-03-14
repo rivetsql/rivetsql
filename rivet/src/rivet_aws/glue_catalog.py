@@ -12,6 +12,7 @@ from botocore.exceptions import ClientError
 from rivet_core.errors import PluginValidationError, plugin_error
 from rivet_core.models import Catalog
 from rivet_core.plugins import CatalogPlugin
+from rivet_core.type_parser import parse_type
 
 MAX_GLUE_WORKERS = 4
 
@@ -38,9 +39,15 @@ _CREDENTIAL_OPTIONS = [
     "credential_cache",
     "auth_type",
 ]
-_VALID_AUTH_TYPES = frozenset({
-    "iam_keys", "profile", "assume_role", "web_identity", "default",
-})
+_VALID_AUTH_TYPES = frozenset(
+    {
+        "iam_keys",
+        "profile",
+        "assume_role",
+        "web_identity",
+        "default",
+    }
+)
 
 # Maps auth_type → which credential options are relevant
 _CREDENTIAL_GROUPS: dict[str, list[str]] = {
@@ -72,6 +79,7 @@ def _credential_resolver_factory(options: dict[str, Any], region: str) -> Any:
 
     return AWSCredentialResolver(options, region)
 
+
 # Map Glue/Hive column types to Arrow type names
 _GLUE_TO_ARROW: dict[str, str] = {
     "bigint": "int64",
@@ -89,17 +97,7 @@ _GLUE_TO_ARROW: dict[str, str] = {
     "binary": "large_binary",
     "date": "date32",
     "timestamp": "timestamp[us]",
-    "array": "large_utf8",
-    "map": "large_utf8",
-    "struct": "large_utf8",
 }
-
-
-def _glue_type_to_arrow(native_type: str) -> str:
-    lower = native_type.lower().strip()
-    # Strip precision/scale: decimal(10,2) → decimal, varchar(255) → varchar
-    base = lower.split("(")[0].strip()
-    return _GLUE_TO_ARROW.get(base, "large_utf8")
 
 
 def _resolve_database(catalog: Catalog, table: str | None = None) -> tuple[str, str | None]:
@@ -217,7 +215,9 @@ def _warn_if_parquet_schema_diverges(
         def _normalize(t: str) -> str:
             return _TYPE_ALIASES.get(t, t)
 
-        glue_cols = [(c.name, _normalize(c.type)) for c in glue_schema.columns if not c.is_partition_key]
+        glue_cols = [
+            (c.name, _normalize(c.type)) for c in glue_schema.columns if not c.is_partition_key
+        ]
         footer_cols = [(field.name, _normalize(str(field.type))) for field in footer_schema]
 
         if glue_cols != footer_cols:
@@ -322,12 +322,11 @@ class GlueCatalogPlugin(CatalogPlugin):
                     databases.append(db["Name"])
         except ClientError as exc:
             from rivet_aws.errors import handle_glue_error
+
             raise handle_glue_error(exc, database=None, action="glue:GetDatabases") from exc  # type: ignore[arg-type]
         return databases
 
-    def _list_tables_in_database(
-        self, catalog: Catalog, database: str
-    ) -> list[CatalogNode]:
+    def _list_tables_in_database(self, catalog: Catalog, database: str) -> list[CatalogNode]:
         """List tables in a single Glue database."""
         from rivet_core.introspection import CatalogNode, NodeSummary
 
@@ -372,6 +371,7 @@ class GlueCatalogPlugin(CatalogPlugin):
                     )
         except ClientError as exc:
             from rivet_aws.errors import handle_glue_error
+
             raise handle_glue_error(exc, database=database, action="glue:GetTables") from exc
         return nodes
 
@@ -405,17 +405,14 @@ class GlueCatalogPlugin(CatalogPlugin):
             result = []
             with ThreadPoolExecutor(max_workers=min(MAX_GLUE_WORKERS, len(databases))) as pool:
                 futures = {
-                    pool.submit(self._list_tables_in_database, catalog, db): db
-                    for db in databases
+                    pool.submit(self._list_tables_in_database, catalog, db): db for db in databases
                 }
                 for future in as_completed(futures):
                     db = futures[future]
                     try:
                         result.extend(future.result())
                     except Exception as exc:
-                        logger.warning(
-                            "Failed to list tables in Glue database '%s': %s", db, exc
-                        )
+                        logger.warning("Failed to list tables in Glue database '%s': %s", db, exc)
 
         self._table_cache[key] = (time.monotonic(), result)
         return result
@@ -435,7 +432,10 @@ class GlueCatalogPlugin(CatalogPlugin):
             resp = client.get_table(**kwargs)
         except ClientError as exc:
             from rivet_aws.errors import handle_glue_error
-            raise handle_glue_error(exc, database=database, table=table, action="glue:GetTable") from exc
+
+            raise handle_glue_error(
+                exc, database=database, table=table, action="glue:GetTable"
+            ) from exc
         tbl = resp["Table"]
         sd = tbl.get("StorageDescriptor", {})
 
@@ -464,7 +464,7 @@ class GlueCatalogPlugin(CatalogPlugin):
             columns.append(
                 ColumnDetail(
                     name=col_name,
-                    type=_glue_type_to_arrow(col_type),
+                    type=parse_type(col_type, _GLUE_TO_ARROW),
                     native_type=col_type,
                     nullable=True,
                     default=None,
@@ -480,7 +480,7 @@ class GlueCatalogPlugin(CatalogPlugin):
             columns.append(
                 ColumnDetail(
                     name=pk_name,
-                    type=_glue_type_to_arrow(pk_type),
+                    type=parse_type(pk_type, _GLUE_TO_ARROW),
                     native_type=pk_type,
                     nullable=True,
                     default=None,
@@ -524,7 +524,10 @@ class GlueCatalogPlugin(CatalogPlugin):
             resp = client.get_table(**kwargs)
         except ClientError as exc:
             from rivet_aws.errors import handle_glue_error
-            raise handle_glue_error(exc, database=database, table=table, action="glue:GetTable") from exc
+
+            raise handle_glue_error(
+                exc, database=database, table=table, action="glue:GetTable"
+            ) from exc
         tbl = resp["Table"]
         sd = tbl.get("StorageDescriptor", {})
         params = tbl.get("Parameters", {})
@@ -570,7 +573,10 @@ class GlueCatalogPlugin(CatalogPlugin):
                         )
             except ClientError as exc:
                 from rivet_aws.errors import handle_glue_error
-                raise handle_glue_error(exc, database=database, table=table, action="glue:GetPartitions") from exc
+
+                raise handle_glue_error(
+                    exc, database=database, table=table, action="glue:GetPartitions"
+                ) from exc
             partitioning = PartitionInfo(columns=partition_keys, partitions=partition_values)
 
         return ObjectMetadata(

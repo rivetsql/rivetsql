@@ -194,8 +194,10 @@ class TestCreateAuthFactory:
         )
         assert isinstance(auth, OAuth2Auth)
 
-    def test_unknown_type_raises_value_error(self) -> None:
+    def test_unknown_type_raises_plugin_validation_error(self) -> None:
         import pytest
 
-        with pytest.raises(ValueError, match="Unknown auth type"):
+        from rivet_core.errors import PluginValidationError
+
+        with pytest.raises(PluginValidationError):
             create_auth("magic", {})

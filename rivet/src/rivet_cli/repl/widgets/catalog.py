@@ -356,9 +356,9 @@ class CatalogPanel(Widget):
 
     def _add_check_node(
         self,
-        parent: TreeNode,
+        parent: TreeNode,  # type: ignore[type-arg]
         check: CompiledCheck,
-        joint_name: str,  # type: ignore[type-arg]
+        joint_name: str,
     ) -> None:
         """Add a quality check node under a joint."""
         symbol = CHECK_SYMBOLS.get(check.phase, "◆")

@@ -5,61 +5,54 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from rivet_core.errors import PluginValidationError, plugin_error
+from rivet_core.errors import ExecutionError, PluginValidationError, plugin_error
 from rivet_core.models import Catalog
 from rivet_core.plugins import CatalogPlugin
+from rivet_core.type_parser import parse_type
 
 if TYPE_CHECKING:
     from rivet_core.introspection import CatalogNode, ObjectMetadata, ObjectSchema
 
 _KNOWN_OPTIONS = {"path", "read_only", "schema", "table_map"}
 
-# Map DuckDB native types to Arrow type names
 _DUCKDB_TO_ARROW: dict[str, str] = {
-    "BIGINT": "int64",
-    "HUGEINT": "int64",
-    "INTEGER": "int32",
-    "INT": "int32",
-    "INT4": "int32",
-    "SMALLINT": "int16",
-    "INT2": "int16",
-    "TINYINT": "int8",
-    "INT1": "int8",
-    "UBIGINT": "uint64",
-    "UINTEGER": "uint32",
-    "USMALLINT": "uint16",
-    "UTINYINT": "uint8",
-    "FLOAT": "float32",
-    "FLOAT4": "float32",
-    "REAL": "float32",
-    "DOUBLE": "float64",
-    "FLOAT8": "float64",
-    "DECIMAL": "float64",
-    "NUMERIC": "float64",
-    "BOOLEAN": "bool",
-    "BOOL": "bool",
-    "VARCHAR": "large_utf8",
-    "TEXT": "large_utf8",
-    "STRING": "large_utf8",
-    "CHAR": "large_utf8",
-    "BLOB": "large_binary",
-    "BYTEA": "large_binary",
-    "DATE": "date32",
-    "TIME": "time64[us]",
-    "TIMESTAMP": "timestamp[us]",
-    "TIMESTAMP WITH TIME ZONE": "timestamp[us, UTC]",
-    "TIMESTAMPTZ": "timestamp[us, UTC]",
-    "INTERVAL": "duration[us]",
-    "JSON": "large_utf8",
-    "UUID": "large_utf8",
+    "bigint": "int64",
+    "hugeint": "int64",
+    "integer": "int32",
+    "int": "int32",
+    "int4": "int32",
+    "smallint": "int16",
+    "int2": "int16",
+    "tinyint": "int8",
+    "int1": "int8",
+    "ubigint": "uint64",
+    "uinteger": "uint32",
+    "usmallint": "uint16",
+    "utinyint": "uint8",
+    "float": "float32",
+    "float4": "float32",
+    "real": "float32",
+    "double": "float64",
+    "float8": "float64",
+    "decimal": "float64",
+    "numeric": "float64",
+    "boolean": "bool",
+    "bool": "bool",
+    "varchar": "large_utf8",
+    "text": "large_utf8",
+    "string": "large_utf8",
+    "char": "large_utf8",
+    "blob": "large_binary",
+    "bytea": "large_binary",
+    "date": "date32",
+    "time": "time64[us]",
+    "timestamp": "timestamp[us]",
+    "timestamp with time zone": "timestamp[us, UTC]",
+    "timestamptz": "timestamp[us, UTC]",
+    "interval": "duration[us]",
+    "json": "large_utf8",
+    "uuid": "large_utf8",
 }
-
-
-def _duckdb_type_to_arrow(native_type: str) -> str:
-    upper = native_type.upper().strip()
-    # Handle parameterized types like DECIMAL(10,2), VARCHAR(255)
-    base = upper.split("(")[0].strip()
-    return _DUCKDB_TO_ARROW.get(base, "large_utf8")
 
 
 def _open_connection(catalog: Catalog) -> Any:
@@ -104,6 +97,31 @@ class DuckDBCatalogPlugin(CatalogPlugin):
                         parent=str(parent),
                     )
                 )
+
+    def test_connection(self, catalog: Catalog) -> None:
+        """Lightweight DuckDB connectivity check via ``SELECT 1``.
+
+        For ``:memory:`` databases the connection always succeeds without
+        file-existence validation.  Raises ``ExecutionError`` with structured
+        error info on failure.
+        """
+        try:
+            conn = _open_connection(catalog)
+            try:
+                conn.execute("SELECT 1")
+            finally:
+                conn.close()
+        except Exception as exc:
+            raise ExecutionError(
+                plugin_error(
+                    "RVT-501",
+                    f"DuckDB connectivity check failed: {exc}",
+                    plugin_name="rivet_duckdb",
+                    plugin_type="catalog",
+                    remediation="Verify the DuckDB database path is correct and accessible.",
+                    path=catalog.options.get("path", ":memory:"),
+                )
+            ) from exc
 
     def instantiate(self, name: str, options: dict[str, Any]) -> Catalog:
         self.validate(options)
@@ -267,7 +285,7 @@ class DuckDBCatalogPlugin(CatalogPlugin):
             columns.append(
                 ColumnDetail(
                     name=col_name,
-                    type=_duckdb_type_to_arrow(col_type),
+                    type=parse_type(col_type, _DUCKDB_TO_ARROW),
                     native_type=col_type,
                     nullable=nullable,
                     default=str(default) if default is not None else None,

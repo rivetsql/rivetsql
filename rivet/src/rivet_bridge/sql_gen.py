@@ -46,10 +46,17 @@ class SQLGenerator:
                             )
                         )
 
-            select = exp.Select().select(*select_cols).from_(exp.Table(this=exp.to_identifier(table_ref)))
+            select = (
+                exp.Select()
+                .select(*select_cols)
+                .from_(exp.Table(this=exp.to_identifier(table_ref)))
+            )
 
             if declaration.filter:
                 select = select.where(sqlglot.parse_one(declaration.filter))
+
+            if declaration.limit is not None:
+                select = select.limit(declaration.limit)
 
             return select.sql(), []
 

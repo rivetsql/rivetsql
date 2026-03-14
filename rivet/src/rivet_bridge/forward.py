@@ -28,13 +28,15 @@ def build_assembly(
     if isinstance(project, ConfigResult):
         config_result = project
         if not config_result.success:
-            raise BridgeValidationError([
-                BridgeError(
-                    code="BRG-100",
-                    message="Config parsing failed.",
-                    remediation="Fix the errors reported by rivet-config.",
-                )
-            ])
+            raise BridgeValidationError(
+                [
+                    BridgeError(
+                        code="BRG-100",
+                        message="Config parsing failed.",
+                        remediation="Fix the errors reported by rivet-config.",
+                    )
+                ]
+            )
         profile = config_result.profile
         assert profile is not None
         declarations_input = list(config_result.declarations)
@@ -52,13 +54,16 @@ def build_assembly(
     engines, eng_errors = EngineInstantiator().instantiate_all(profile, plugin_registry)
     all_errors.extend(eng_errors)
 
-    # Step 4: Generate SQL for YAML source/sink joints with columns/filter
+    # Step 4: Generate SQL for YAML source/sink joints with columns/filter/limit
     joint_names = {d.name for d in declarations_input}
     sql_gen = SQLGenerator()
     declarations = list(declarations_input)
 
     for i, decl in enumerate(declarations):
-        if decl.joint_type in ("source", "sink") and decl.columns is not None and decl.sql is None:
+        has_yaml_transforms = (
+            decl.columns is not None or decl.filter is not None or decl.limit is not None
+        )
+        if decl.joint_type in ("source", "sink") and has_yaml_transforms and decl.sql is None:
             sql, sql_errors = sql_gen.generate(decl, joint_names)
             all_errors.extend(sql_errors)
             if sql and not sql_errors:
@@ -82,8 +87,12 @@ def build_assembly(
             joints.append(joint)
 
     # Step 7: Build assembly
-    source_formats = {d.name: "yaml" if d.columns is not None else "sql" for d in declarations_input}
-    result, build_errors = AssemblyBuilder().build(joints, catalogs, engines, profile, source_formats)
+    source_formats = {
+        d.name: "yaml" if d.columns is not None else "sql" for d in declarations_input
+    }
+    result, build_errors = AssemblyBuilder().build(
+        joints, catalogs, engines, profile, source_formats
+    )
     all_errors.extend(build_errors)
 
     if all_errors:

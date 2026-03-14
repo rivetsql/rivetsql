@@ -48,6 +48,27 @@ A source joint reads a table from a catalog. It has no upstream dependencies —
     )
     ```
 
+### Inline Transforms
+
+Source joints support optional `columns`, `filter`, and `limit` fields that push filtering, projection, and row limits to the adapter — so only the data you need is read from storage.
+
+```yaml
+name: recent_orders
+type: source
+catalog: warehouse
+table: raw_orders
+columns:
+  - order_id
+  - customer_name
+  - revenue: price * quantity
+filter: status = 'active' AND created_at > '2025-01-01'
+limit: 1000
+```
+
+Column entries can be plain names (pass-through) or `alias: expression` mappings for renames, casts, and computed columns. The same transforms can be expressed in SQL form instead.
+
+See [Source Inline Transforms](source-inline-transforms.md) for the full reference.
+
 ---
 
 ## SQL Joint

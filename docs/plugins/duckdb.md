@@ -81,6 +81,16 @@ default:
 | Get metadata | :material-check: |
 | Test connection | :material-check: |
 
+### Complex Type Support
+
+DuckDB supports complex types through schema introspection:
+
+- **Arrays**: `array<T>` syntax (e.g., `array<integer>`, `array<varchar>`)
+- **Structs**: `struct<field:type,...>` syntax (e.g., `struct<x:float,y:float>`)
+- **Nested types**: Arbitrary nesting supported (e.g., `array<struct<...>>`)
+
+Complex types are automatically mapped to Arrow types during schema introspection. See [Complex Type Support](../concepts/catalogs.md#complex-type-support) for details.
+
 ---
 
 ## File Formats

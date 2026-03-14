@@ -376,7 +376,7 @@ In this example, `sql_a + sql_b` fuse into one group, `sql_c + sql_d` fuse into 
 |------|-------|-------------|
 | `RVT-751` | Function import failed or raised an exception | Check the function path and fix the error |
 | `RVT-752` | Function returned `None` or unsupported type | Return one of the supported types |
-| `RVT-753` | Function path is not importable at compile time | Verify the dotted path resolves to a callable |
+| `RVT-753` | Function path is not importable at compile time | Verify the dotted path resolves to a callable. Rivet automatically adds the project root to the import path, so `joints/scoring.py` is importable as `joints.scoring` without any `PYTHONPATH` configuration. |
 
 ---
 

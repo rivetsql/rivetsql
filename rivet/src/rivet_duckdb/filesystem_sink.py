@@ -6,36 +6,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from rivet_core.errors import ExecutionError, plugin_error
+from rivet_core.formats import FormatRegistry
 from rivet_core.plugins import SinkPlugin
 
 if TYPE_CHECKING:
     from rivet_core.models import Catalog, Joint, Material
 
 FILESYSTEM_SUPPORTED_STRATEGIES = frozenset({"append", "replace", "partition"})
-
-_FORMAT_EXTENSIONS = {
-    "parquet": ".parquet",
-    "csv": ".csv",
-    "json": ".json",
-}
-
-_EXT_TO_FORMAT = {
-    ".parquet": "parquet",
-    ".pq": "parquet",
-    ".csv": "csv",
-    ".tsv": "csv",
-    ".json": "json",
-    ".jsonl": "json",
-    ".ndjson": "json",
-}
-
-
-def _detect_format(path: Path, catalog_options: dict[str, Any]) -> str:
-    fmt = catalog_options.get("format")
-    if fmt:
-        return fmt  # type: ignore[no-any-return]
-    ext = path.suffix.lower()
-    return _EXT_TO_FORMAT.get(ext, "parquet")
 
 
 def _cast_dict_columns(table: Any) -> Any:
@@ -66,8 +43,9 @@ def _write_arrow_to_file(table: Any, path: Path, fmt: str) -> None:
     elif fmt == "csv":
         pcsv.write_csv(table, str(path))
     elif fmt == "json":
-        # PyArrow doesn't have a direct JSON writer; use pandas or manual approach
+        # PyArrow doesn't have a direct JSON writer; use manual NDJSON approach
         import json
+
         rows = table.to_pydict()
         keys = list(rows.keys())
         n = len(rows[keys[0]]) if keys else 0
@@ -75,6 +53,13 @@ def _write_arrow_to_file(table: Any, path: Path, fmt: str) -> None:
             for i in range(n):
                 record = {k: rows[k][i] for k in keys}
                 f.write(json.dumps(record) + "\n")
+    elif fmt == "ipc":
+        import pyarrow as pa
+
+        with pa.OSFile(str(path), "wb") as sink:
+            writer = pa.ipc.new_file(sink, table.schema)
+            writer.write_table(table)
+            writer.close()
     else:
         raise ExecutionError(
             plugin_error(
@@ -82,7 +67,7 @@ def _write_arrow_to_file(table: Any, path: Path, fmt: str) -> None:
                 f"Unsupported format '{fmt}' for filesystem sink.",
                 plugin_name="rivet_duckdb",
                 plugin_type="sink",
-                remediation="Supported formats: parquet, csv, json",
+                remediation="Supported formats: parquet, csv, json, ipc",
                 format=fmt,
             )
         )
@@ -114,7 +99,7 @@ class FilesystemSink(SinkPlugin):
 
         arrow_table = material.to_arrow()
         base_path = Path(catalog.options["path"])
-        fmt = _detect_format(base_path, catalog.options)
+        fmt = FormatRegistry.resolve_format(catalog.options.get("format"), path=base_path)
 
         try:
             if strategy == "replace":
@@ -141,7 +126,9 @@ class FilesystemSink(SinkPlugin):
 
 def _resolve_file_path(base: Path, joint: Joint, fmt: str) -> Path:
     """Resolve the single output file path."""
-    ext = _FORMAT_EXTENSIONS.get(fmt, ".parquet")
+    from rivet_core.formats import FileFormat
+
+    ext = FormatRegistry.primary_extension(FileFormat(fmt)) or ".parquet"
     if base.is_dir() or not base.suffix:
         table_name = joint.table or joint.name
         return base / f"{table_name}{ext}"
@@ -188,9 +175,10 @@ def _do_partition(base: Path, table: Any, fmt: str, joint: Joint) -> None:
     if isinstance(partition_cols, str):
         partition_cols = [partition_cols]
 
-
     base.mkdir(parents=True, exist_ok=True)
-    ext = _FORMAT_EXTENSIONS.get(fmt, ".parquet")
+    from rivet_core.formats import FileFormat
+
+    ext = FormatRegistry.primary_extension(FileFormat(fmt)) or ".parquet"
 
     # Get unique partition values
     partition_values = _get_partition_values(table, partition_cols)
@@ -248,6 +236,20 @@ def _read_file(path: Path, fmt: str) -> Any:
         return pcsv.read_csv(str(path))
     elif fmt == "json":
         import pyarrow.json as pjson
+
         return pjson.read_json(str(path))
+    elif fmt == "ipc":
+        import pyarrow as pa
+
+        return pa.ipc.open_file(str(path)).read_all()
     else:
-        raise ValueError(f"Unsupported format for read: {fmt!r}")
+        raise ExecutionError(
+            plugin_error(
+                "RVT-501",
+                f"Unsupported format for read: {fmt!r}",
+                plugin_name="rivet_duckdb",
+                plugin_type="sink",
+                remediation="Use a supported format: parquet, csv, json, ipc",
+                format=fmt,
+            )
+        )

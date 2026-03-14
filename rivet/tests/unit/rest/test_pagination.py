@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from rivet_core.errors import ExecutionError
+from rivet_core.errors import ExecutionError, PluginValidationError
 from rivet_rest.pagination import (
     CursorPaginator,
     LinkHeaderPaginator,
@@ -439,5 +439,5 @@ class TestCreatePaginator:
         assert isinstance(create_paginator({"strategy": "link_header"}), LinkHeaderPaginator)
 
     def test_unknown_strategy_raises(self) -> None:
-        with pytest.raises(ValueError, match="Unknown pagination strategy"):
+        with pytest.raises(PluginValidationError, match="Unrecognized pagination strategy"):
             create_paginator({"strategy": "magic"})

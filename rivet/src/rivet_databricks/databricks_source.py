@@ -45,8 +45,10 @@ def _validate_source_options(options: dict[str, Any]) -> None:
             )
         )
     version = options.get("version")
-    if version is not None and not isinstance(version, int) and not (
-        isinstance(version, str) and _ISO8601_RE.match(version)
+    if (
+        version is not None
+        and not isinstance(version, int)
+        and not (isinstance(version, str) and _ISO8601_RE.match(version))
     ):
         raise PluginValidationError(
             plugin_error(
@@ -169,11 +171,29 @@ class DatabricksDeferredMaterializedRef(MaterializedRef):
 
     @property
     def schema(self) -> Schema:
-        raise NotImplementedError("Schema resolution requires engine execution.")
+        raise ExecutionError(
+            plugin_error(
+                "RVT-501",
+                f"Schema for Databricks source '{self._table}' is not available without engine execution.",
+                plugin_name="rivet_databricks",
+                plugin_type="source",
+                remediation="Execute the pipeline through an engine to resolve schema.",
+                table=self._table,
+            )
+        )
 
     @property
     def row_count(self) -> int:
-        raise NotImplementedError("Row count requires engine execution.")
+        raise ExecutionError(
+            plugin_error(
+                "RVT-501",
+                f"Row count for Databricks source '{self._table}' is not available without engine execution.",
+                plugin_name="rivet_databricks",
+                plugin_type="source",
+                remediation="Execute the pipeline through an engine to resolve row count.",
+                table=self._table,
+            )
+        )
 
     @property
     def size_bytes(self) -> int | None:

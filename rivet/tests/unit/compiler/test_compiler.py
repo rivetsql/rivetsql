@@ -87,8 +87,9 @@ class StubReferenceResolver(ReferenceResolver):
         self._return_value = return_value
         self._side_effect = side_effect
 
-    def resolve_references(self, sql, joint, catalog, compiled_joints=None,
-                           catalog_map=None, fused_group_joints=None):
+    def resolve_references(
+        self, sql, joint, catalog, compiled_joints=None, catalog_map=None, fused_group_joints=None
+    ):
         if self._side_effect is not None:
             if callable(self._side_effect) and not isinstance(self._side_effect, BaseException):
                 return self._side_effect(sql, joint, catalog)
@@ -128,7 +129,10 @@ class TestStrategyResolution:
             Joint(name="b", joint_type="sink", upstream=["a"], engine="eng"),
         ]
         result = compile(
-            Assembly(joints), [], _engines(), _make_registry(),
+            Assembly(joints),
+            [],
+            _engines(),
+            _make_registry(),
             default_fusion_strategy="temp_view",
         )
         assert result.success is True
@@ -137,8 +141,9 @@ class TestStrategyResolution:
 
     def test_joint_fusion_strategy_override_applied(self) -> None:
         joints = [
-            Joint(name="a", joint_type="source", engine="eng",
-                  fusion_strategy_override="temp_view"),
+            Joint(
+                name="a", joint_type="source", engine="eng", fusion_strategy_override="temp_view"
+            ),
             Joint(name="b", joint_type="sink", upstream=["a"], engine="eng"),
         ]
         result = compile(Assembly(joints), [], _engines(), _make_registry())
@@ -149,10 +154,15 @@ class TestStrategyResolution:
     def test_conflicting_fusion_overrides_produce_rvt_603(self) -> None:
         # Two joints in the same fused group with different overrides
         joints = [
-            Joint(name="a", joint_type="source", engine="eng",
-                  fusion_strategy_override="cte"),
-            Joint(name="b", joint_type="sql", upstream=["a"], engine="eng",
-                  sql="SELECT 1 FROM a", fusion_strategy_override="temp_view"),
+            Joint(name="a", joint_type="source", engine="eng", fusion_strategy_override="cte"),
+            Joint(
+                name="b",
+                joint_type="sql",
+                upstream=["a"],
+                engine="eng",
+                sql="SELECT 1 FROM a",
+                fusion_strategy_override="temp_view",
+            ),
             Joint(name="c", joint_type="sink", upstream=["b"], engine="eng"),
         ]
         result = compile(Assembly(joints), [], _engines(), _make_registry())
@@ -161,8 +171,12 @@ class TestStrategyResolution:
 
     def test_invalid_fusion_strategy_produces_rvt_601(self) -> None:
         joints = [
-            Joint(name="a", joint_type="source", engine="eng",
-                  fusion_strategy_override="invalid_strategy"),
+            Joint(
+                name="a",
+                joint_type="source",
+                engine="eng",
+                fusion_strategy_override="invalid_strategy",
+            ),
         ]
         result = compile(Assembly(joints), [], _engines(), _make_registry())
         assert result.success is False
@@ -170,8 +184,12 @@ class TestStrategyResolution:
 
     def test_invalid_materialization_strategy_produces_rvt_602(self) -> None:
         joints = [
-            Joint(name="a", joint_type="source", engine="eng",
-                  materialization_strategy_override="bad_strategy"),
+            Joint(
+                name="a",
+                joint_type="source",
+                engine="eng",
+                materialization_strategy_override="bad_strategy",
+            ),
         ]
         result = compile(Assembly(joints), [], _engines(), _make_registry())
         assert result.success is False
@@ -179,8 +197,12 @@ class TestStrategyResolution:
 
     def test_valid_materialization_strategy_override(self) -> None:
         joints = [
-            Joint(name="a", joint_type="source", engine="eng",
-                  materialization_strategy_override="temp_table"),
+            Joint(
+                name="a",
+                joint_type="source",
+                engine="eng",
+                materialization_strategy_override="temp_table",
+            ),
         ]
         result = compile(Assembly(joints), [], _engines(), _make_registry())
         assert result.success is True
@@ -207,8 +229,13 @@ class TestMaterializationTriggers:
     def test_python_boundary_trigger(self) -> None:
         joints = [
             Joint(name="a", joint_type="source", engine="eng"),
-            Joint(name="py", joint_type="python", upstream=["a"], engine="eng",
-                  function="os.path:exists"),
+            Joint(
+                name="py",
+                joint_type="python",
+                upstream=["a"],
+                engine="eng",
+                function="os.path:exists",
+            ),
         ]
         result = compile(Assembly(joints), [], _engines(), _make_registry())
         assert result.success is True
@@ -217,8 +244,12 @@ class TestMaterializationTriggers:
 
     def test_assertion_boundary_trigger(self) -> None:
         joints = [
-            Joint(name="a", joint_type="source", engine="eng",
-                  assertions=[Assertion(type="not_null", config={"column": "id"})]),
+            Joint(
+                name="a",
+                joint_type="source",
+                engine="eng",
+                assertions=[Assertion(type="not_null", config={"column": "id"})],
+            ),
             Joint(name="b", joint_type="sink", upstream=["a"], engine="eng"),
         ]
         result = compile(Assembly(joints), [], _engines(), _make_registry())
@@ -277,8 +308,13 @@ class TestMaterializationTriggers:
 
     def test_materialization_strategy_from_override(self) -> None:
         joints = [
-            Joint(name="a", joint_type="source", engine="eng", eager=True,
-                  materialization_strategy_override="temp_table"),
+            Joint(
+                name="a",
+                joint_type="source",
+                engine="eng",
+                eager=True,
+                materialization_strategy_override="temp_table",
+            ),
             Joint(name="b", joint_type="sink", upstream=["a"], engine="eng"),
         ]
         result = compile(Assembly(joints), [], _engines(), _make_registry())
@@ -311,11 +347,17 @@ class TestTagBasedScoping:
         joints = [
             Joint(name="a", joint_type="source", engine="eng", tags=["etl", "daily"]),
             Joint(name="b", joint_type="source", engine="eng", tags=["etl"]),
-            Joint(name="out", joint_type="sink", upstream=["a"], engine="eng", tags=["etl", "daily"]),
+            Joint(
+                name="out", joint_type="sink", upstream=["a"], engine="eng", tags=["etl", "daily"]
+            ),
         ]
         result = compile(
-            Assembly(joints), [], _engines(), _make_registry(),
-            tags=["etl", "daily"], tag_mode="and",
+            Assembly(joints),
+            [],
+            _engines(),
+            _make_registry(),
+            tags=["etl", "daily"],
+            tag_mode="and",
         )
         names = {cj.name for cj in result.joints}
         assert "a" in names and "out" in names
@@ -328,8 +370,12 @@ class TestTagBasedScoping:
             Joint(name="out", joint_type="sink", upstream=["s1", "s2"], engine="eng", tags=["etl"]),
         ]
         result = compile(
-            Assembly(joints), [], _engines(), _make_registry(),
-            target_sink="out", tags=["etl"],
+            Assembly(joints),
+            [],
+            _engines(),
+            _make_registry(),
+            target_sink="out",
+            tags=["etl"],
         )
         names = {cj.name for cj in result.joints}
         assert "out" in names
@@ -349,11 +395,15 @@ class TestReferenceResolution:
 
         joints = [
             Joint(name="src", joint_type="source", engine="eng"),
-            Joint(name="t", joint_type="sql", upstream=["src"], engine="eng",
-                  sql="SELECT id FROM src"),
+            Joint(
+                name="t", joint_type="sql", upstream=["src"], engine="eng", sql="SELECT id FROM src"
+            ),
         ]
         result = compile(
-            Assembly(joints), [], _engines(), _make_registry(),
+            Assembly(joints),
+            [],
+            _engines(),
+            _make_registry(),
             resolve_references=resolver,
         )
         assert result.success is True
@@ -367,7 +417,10 @@ class TestReferenceResolution:
             Joint(name="t", joint_type="sql", engine="eng", sql="SELECT 1"),
         ]
         result = compile(
-            Assembly(joints), [], _engines(), _make_registry(),
+            Assembly(joints),
+            [],
+            _engines(),
+            _make_registry(),
             resolve_references=resolver,
         )
         assert result.success is True
@@ -381,7 +434,10 @@ class TestReferenceResolution:
             Joint(name="t", joint_type="sql", engine="eng", sql="SELECT 1"),
         ]
         result = compile(
-            Assembly(joints), [], _engines(), _make_registry(),
+            Assembly(joints),
+            [],
+            _engines(),
+            _make_registry(),
             resolve_references=resolver,
         )
         assert result.success is True
@@ -392,12 +448,16 @@ class TestReferenceResolution:
 
         joints = [
             Joint(name="src", joint_type="source", engine="eng"),
-            Joint(name="t", joint_type="sql", upstream=["src"], engine="eng",
-                  sql="SELECT id FROM src"),
+            Joint(
+                name="t", joint_type="sql", upstream=["src"], engine="eng", sql="SELECT id FROM src"
+            ),
             Joint(name="out", joint_type="sink", upstream=["t"], engine="eng"),
         ]
         result = compile(
-            Assembly(joints), [], _engines(), _make_registry(),
+            Assembly(joints),
+            [],
+            _engines(),
+            _make_registry(),
             resolve_references=resolver,
         )
         assert result.success is True
@@ -412,3 +472,106 @@ class TestReferenceResolution:
         result = compile(Assembly(joints), [], _engines(), _make_registry())
         assert result.success is True
         assert result.joints[0].sql_resolved is None
+
+    def test_multi_engine_resolver_scoped_to_own_engine_type(self) -> None:
+        """Regression: a resolver from engine B must not rewrite SQL in engine A groups.
+
+        Previously _discover_resolver picked the first resolver globally and
+        applied it to all fused groups, causing DuckDB groups to get postgres-
+        resolved SQL in multi-engine plans.
+        """
+
+        class EngineAPlugin(ComputeEnginePlugin):
+            """Engine with no reference resolver (like DuckDB)."""
+
+            engine_type = "engine_a"
+            supported_catalog_types: dict[str, list[str]] = {"stub": []}
+
+            def create_engine(self, name: str, config: dict[str, Any]) -> ComputeEngine:
+                return ComputeEngine(name=name, engine_type=self.engine_type)
+
+            def validate(self, options: dict[str, Any]) -> None:
+                pass
+
+            def execute_sql(self, engine: Any, sql: Any, input_tables: Any) -> Any:
+                raise NotImplementedError
+
+        class EngineBResolver(ReferenceResolver):
+            """Resolver that rewrites src → schema.src."""
+
+            def resolve_references(
+                self,
+                sql: Any,
+                joint: Any,
+                catalog: Any,
+                compiled_joints: Any = None,
+                catalog_map: Any = None,
+                fused_group_joints: Any = None,
+            ) -> str | None:
+                if "src" in sql:
+                    return sql.replace("src", "schema.src")
+                return None
+
+        class EngineBPlugin(ComputeEnginePlugin):
+            """Engine with a reference resolver (like Postgres)."""
+
+            engine_type = "engine_b"
+            supported_catalog_types: dict[str, list[str]] = {"stub": []}
+
+            def create_engine(self, name: str, config: dict[str, Any]) -> ComputeEngine:
+                return ComputeEngine(name=name, engine_type=self.engine_type)
+
+            def validate(self, options: dict[str, Any]) -> None:
+                pass
+
+            def execute_sql(self, engine: Any, sql: Any, input_tables: Any) -> Any:
+                raise NotImplementedError
+
+            def get_reference_resolver(self) -> ReferenceResolver | None:
+                return EngineBResolver()
+
+        reg = PluginRegistry()
+        reg.register_catalog_plugin(StubCatalogPlugin())
+        reg.register_engine_plugin(EngineAPlugin())
+        reg.register_engine_plugin(EngineBPlugin())
+        reg.register_compute_engine(ComputeEngine(name="eng_a", engine_type="engine_a"))
+        reg.register_compute_engine(ComputeEngine(name="eng_b", engine_type="engine_b"))
+        reg.register_source(StubSource())
+        reg.register_sink(StubSink())
+
+        engines = [
+            ComputeEngine(name="eng_a", engine_type="engine_a"),
+            ComputeEngine(name="eng_b", engine_type="engine_b"),
+        ]
+
+        joints = [
+            Joint(name="src_a", joint_type="source", engine="eng_a"),
+            Joint(
+                name="t_a",
+                joint_type="sql",
+                upstream=["src_a"],
+                engine="eng_a",
+                sql="SELECT id FROM src_a",
+            ),
+            Joint(name="src_b", joint_type="source", engine="eng_b"),
+            Joint(
+                name="t_b",
+                joint_type="sql",
+                upstream=["src_b"],
+                engine="eng_b",
+                sql="SELECT id FROM src_b",
+            ),
+        ]
+
+        result = compile(Assembly(joints), [], engines, reg)
+        assert result.success is True
+
+        cj_a = next(j for j in result.joints if j.name == "t_a")
+        cj_b = next(j for j in result.joints if j.name == "t_b")
+
+        # Engine A has no resolver — its SQL must NOT be rewritten
+        assert cj_a.sql_resolved is None, (
+            f"Engine A joint was incorrectly resolved: {cj_a.sql_resolved}"
+        )
+        # Engine B has a resolver — its SQL should be rewritten
+        assert cj_b.sql_resolved is not None, "Engine B joint should have resolved SQL"

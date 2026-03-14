@@ -17,6 +17,7 @@ import pyarrow.ipc as ipc
 import pyarrow.json as pjson
 import pyarrow.parquet as pq
 
+from rivet_core.formats import EXT_TO_FORMAT, FormatRegistry
 from rivet_core.introspection import (
     CatalogNode,
     ColumnDetail,
@@ -27,19 +28,6 @@ from rivet_core.introspection import (
 from rivet_core.models import Catalog, Joint, Material
 from rivet_core.plugins import CatalogPlugin, SourcePlugin
 from rivet_core.strategies import ArrowMaterialization, MaterializationContext
-
-_EXT_TO_FORMAT: dict[str, str] = {
-    ".parquet": "parquet",
-    ".pq": "parquet",
-    ".csv": "csv",
-    ".tsv": "csv",
-    ".json": "json",
-    ".jsonl": "json",
-    ".ndjson": "json",
-    ".arrow": "ipc",
-    ".feather": "ipc",
-    ".ipc": "ipc",
-}
 
 _ARROW_TYPE_MAP: dict[str, str] = {
     "int8": "int8",
@@ -75,18 +63,7 @@ def _arrow_type_name(arrow_type: pa.DataType) -> str:
     return _ARROW_TYPE_MAP.get(s, s)
 
 
-def _detect_format(path: Path, catalog_options: dict[str, Any]) -> str:
-    """Detect file format from catalog option override or file extension."""
-    fmt = catalog_options.get("format")
-    if fmt:
-        return fmt  # type: ignore[no-any-return]
-    ext = path.suffix.lower()
-    return _EXT_TO_FORMAT.get(ext, "parquet")
-
-
-def _read_table(
-    path: Path, fmt: str, catalog_options: dict[str, Any]
-) -> pa.Table:
+def _read_table(path: Path, fmt: str, catalog_options: dict[str, Any]) -> pa.Table:
     """Read a file or directory into a PyArrow Table."""
     if path.is_dir():
         fmt_map = {"parquet": "parquet", "csv": "csv", "json": "json", "ipc": "ipc"}
@@ -98,9 +75,7 @@ def _read_table(
         case "parquet":
             return pq.read_table(str(path))
         case "csv":
-            parse_opts = pcsv.ParseOptions(
-                delimiter=catalog_options.get("csv_delimiter", ",")
-            )
+            parse_opts = pcsv.ParseOptions(delimiter=catalog_options.get("csv_delimiter", ","))
             read_opts = pcsv.ReadOptions()
             header = catalog_options.get("csv_header", True)
             if not header:
@@ -112,7 +87,17 @@ def _read_table(
             reader = ipc.open_file(str(path))
             return reader.read_all()
         case _:
-            raise ValueError(f"Unsupported format: {fmt!r}")
+            from rivet_core.errors import ExecutionError, plugin_error
+
+            raise ExecutionError(
+                plugin_error(
+                    "RVT-501",
+                    f"Unsupported format: '{fmt}'",
+                    plugin_name="filesystem",
+                    plugin_type="source",
+                    remediation="Use a supported format: parquet, csv, json, ipc",
+                )
+            )
 
 
 def _read_schema_lightweight(path: Path, fmt: str, catalog_options: dict[str, Any]) -> pa.Schema:
@@ -125,9 +110,7 @@ def _read_schema_lightweight(path: Path, fmt: str, catalog_options: dict[str, An
         case "parquet":
             return pq.read_schema(str(path))
         case "csv":
-            parse_opts = pcsv.ParseOptions(
-                delimiter=catalog_options.get("csv_delimiter", ",")
-            )
+            parse_opts = pcsv.ParseOptions(delimiter=catalog_options.get("csv_delimiter", ","))
             read_opts = pcsv.ReadOptions()
             header = catalog_options.get("csv_header", True)
             if not header:
@@ -142,7 +125,17 @@ def _read_schema_lightweight(path: Path, fmt: str, catalog_options: dict[str, An
             reader = ipc.open_file(str(path))
             return reader.schema
         case _:
-            raise ValueError(f"Unsupported format: {fmt!r}")
+            from rivet_core.errors import ExecutionError, plugin_error
+
+            raise ExecutionError(
+                plugin_error(
+                    "RVT-501",
+                    f"Unsupported format for schema inference: '{fmt}'",
+                    plugin_name="filesystem",
+                    plugin_type="catalog",
+                    remediation="Use a supported format: parquet, csv, json, ipc",
+                )
+            )
 
 
 def _resolve_path(catalog: Catalog, table: str | None = None) -> Path:
@@ -183,14 +176,50 @@ class FilesystemCatalogPlugin(CatalogPlugin):
     credential_options: list[str] = []
 
     def validate(self, options: dict[str, Any]) -> None:
-        if "path" not in options:
-            from rivet_core.errors import PluginValidationError, RivetError
+        """Validate filesystem catalog options, rejecting unrecognized keys."""
+        from rivet_core.errors import PluginValidationError, RivetError
 
+        if "path" not in options:
             raise PluginValidationError(
                 RivetError(
                     code="RVT-201",
                     message="FilesystemCatalog requires 'path' option.",
                     remediation="Add 'path' to catalog options pointing to a file or directory.",
+                )
+            )
+
+        recognized = (
+            set(self.required_options) | set(self.optional_options) | set(self.credential_options)
+        )
+        for key in options:
+            if key not in recognized:
+                raise PluginValidationError(
+                    RivetError(
+                        code="RVT-201",
+                        message=f"Unknown option '{key}' for filesystem catalog.",
+                        context={"plugin": "filesystem", "option": key},
+                        remediation=f"Valid options: {', '.join(sorted(recognized))}",
+                    )
+                )
+
+    def test_connection(self, catalog: Catalog) -> None:
+        """Verify the configured base path exists and is accessible.
+
+        Raises ``ExecutionError`` with structured error info if the path
+        does not exist.
+        """
+        from rivet_core.errors import ExecutionError, plugin_error
+
+        base = Path(catalog.options["path"])
+        if not base.exists():
+            raise ExecutionError(
+                plugin_error(
+                    "RVT-501",
+                    f"Filesystem catalog path does not exist: {base}",
+                    plugin_name="filesystem",
+                    plugin_type="catalog",
+                    remediation="Verify the 'path' option points to an existing file or directory.",
+                    path=str(base),
                 )
             )
 
@@ -208,7 +237,7 @@ class FilesystemCatalogPlugin(CatalogPlugin):
             return []
         if base.is_file():
             stat = base.stat()
-            fmt = _detect_format(base, catalog.options)
+            fmt = FormatRegistry.resolve_format(catalog.options.get("format"), path=base)
             table_name = _file_stem_to_table_name(base)
             return [
                 CatalogNode(
@@ -229,9 +258,9 @@ class FilesystemCatalogPlugin(CatalogPlugin):
             ]
         nodes: list[CatalogNode] = []
         for entry in sorted(base.iterdir()):
-            if entry.is_file() and entry.suffix.lower() in _EXT_TO_FORMAT:
+            if entry.is_file() and entry.suffix.lower() in EXT_TO_FORMAT:
                 stat = entry.stat()
-                fmt = _detect_format(entry, catalog.options)
+                fmt = FormatRegistry.resolve_format(catalog.options.get("format"), path=entry)
                 table_name = _file_stem_to_table_name(entry)
                 nodes.append(
                     CatalogNode(
@@ -244,9 +273,7 @@ class FilesystemCatalogPlugin(CatalogPlugin):
                             row_count=None,
                             size_bytes=stat.st_size,
                             format=fmt,
-                            last_modified=datetime.fromtimestamp(
-                                stat.st_mtime, tz=UTC
-                            ),
+                            last_modified=datetime.fromtimestamp(stat.st_mtime, tz=UTC),
                             owner=None,
                             comment=None,
                         ),
@@ -254,9 +281,109 @@ class FilesystemCatalogPlugin(CatalogPlugin):
                 )
         return nodes
 
+    def list_children(self, catalog: Catalog, path: list[str]) -> list[CatalogNode]:
+        """Lazy single-level listing for filesystem catalogs.
+
+        - path=[] → list files/directories in the base path
+        - path=[file_name] → list columns of that file via schema inference
+        """
+        depth = len(path)
+        base = Path(catalog.options["path"])
+
+        if depth == 0:
+            if not base.exists():
+                return []
+            if base.is_file():
+                stat = base.stat()
+                fmt = FormatRegistry.resolve_format(catalog.options.get("format"), path=base)
+                table_name = _file_stem_to_table_name(base)
+                return [
+                    CatalogNode(
+                        name=table_name,
+                        node_type="table",
+                        path=[table_name],
+                        is_container=False,
+                        children_count=None,
+                        summary=NodeSummary(
+                            row_count=None,
+                            size_bytes=stat.st_size,
+                            format=fmt,
+                            last_modified=datetime.fromtimestamp(stat.st_mtime, tz=UTC),
+                            owner=None,
+                            comment=None,
+                        ),
+                    )
+                ]
+            nodes: list[CatalogNode] = []
+            for entry in sorted(base.iterdir()):
+                if entry.is_dir():
+                    nodes.append(
+                        CatalogNode(
+                            name=entry.name,
+                            node_type="schema",
+                            path=[entry.name],
+                            is_container=True,
+                            children_count=None,
+                            summary=None,
+                        )
+                    )
+                elif entry.is_file() and entry.suffix.lower() in EXT_TO_FORMAT:
+                    stat = entry.stat()
+                    fmt = FormatRegistry.resolve_format(catalog.options.get("format"), path=entry)
+                    table_name = _file_stem_to_table_name(entry)
+                    nodes.append(
+                        CatalogNode(
+                            name=table_name,
+                            node_type="table",
+                            path=[table_name],
+                            is_container=False,
+                            children_count=None,
+                            summary=NodeSummary(
+                                row_count=None,
+                                size_bytes=stat.st_size,
+                                format=fmt,
+                                last_modified=datetime.fromtimestamp(stat.st_mtime, tz=UTC),
+                                owner=None,
+                                comment=None,
+                            ),
+                        )
+                    )
+            return nodes
+
+        if depth == 1:
+            file_name = path[0]
+            file_path = _resolve_path(catalog, file_name)
+            if not file_path.exists():
+                return []
+            fmt = FormatRegistry.resolve_format(catalog.options.get("format"), path=file_path)
+            try:
+                schema = _read_schema_lightweight(file_path, fmt, catalog.options)
+            except Exception:
+                return []
+            return [
+                CatalogNode(
+                    name=field.name,
+                    node_type="column",
+                    path=[file_name, field.name],
+                    is_container=False,
+                    children_count=None,
+                    summary=NodeSummary(
+                        row_count=None,
+                        size_bytes=None,
+                        format=_arrow_type_name(field.type),
+                        last_modified=None,
+                        owner=None,
+                        comment=None,
+                    ),
+                )
+                for field in schema
+            ]
+
+        return []
+
     def get_schema(self, catalog: Catalog, table: str) -> ObjectSchema:
         path = _resolve_path(catalog, table)
-        fmt = _detect_format(path, catalog.options)
+        fmt = FormatRegistry.resolve_format(catalog.options.get("format"), path=path)
         schema = _read_schema_lightweight(path, fmt, catalog.options)
         columns = [
             ColumnDetail(
@@ -290,7 +417,7 @@ class FilesystemCatalogPlugin(CatalogPlugin):
                         break
         if not path.exists():
             return None
-        fmt = _detect_format(path, catalog.options)
+        fmt = FormatRegistry.resolve_format(catalog.options.get("format"), path=path)
         stat = path.stat()
         row_count: int | None = None
         if fmt == "parquet" and path.is_file():
@@ -305,9 +432,7 @@ class FilesystemCatalogPlugin(CatalogPlugin):
             row_count=row_count,
             size_bytes=stat.st_size,
             last_modified=datetime.fromtimestamp(stat.st_mtime, tz=UTC),
-            created_at=datetime.fromtimestamp(
-                os.path.getctime(str(path)), tz=UTC
-            ),
+            created_at=datetime.fromtimestamp(os.path.getctime(str(path)), tz=UTC),
             format=fmt,
             compression=None,
             owner=None,
@@ -335,7 +460,7 @@ class FilesystemSource(SourcePlugin):
         else:
             path = Path(catalog.options["path"])
 
-        fmt = _detect_format(path, catalog.options)
+        fmt = FormatRegistry.resolve_format(catalog.options.get("format"), path=path)
         table = _read_table(path, fmt, catalog.options)
 
         ref = ArrowMaterialization().materialize(

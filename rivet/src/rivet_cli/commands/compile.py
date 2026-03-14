@@ -56,9 +56,7 @@ def run_compile(
     if not config_result.success:
         for e in config_result.errors:
             print(
-                format_upstream_error(
-                    "RVT-850", e.message, e.remediation, globals.color
-                ),
+                format_upstream_error("RVT-850", e.message, e.remediation, globals.color),
                 file=sys.stderr,
             )
         return GENERAL_ERROR
@@ -89,9 +87,7 @@ def run_compile(
     except BridgeValidationError as exc:
         for be in exc.errors:
             print(
-                format_upstream_error(
-                    be.code, be.message, be.remediation, globals.color
-                ),
+                format_upstream_error(be.code, be.message, be.remediation, globals.color),
                 file=sys.stderr,
             )
         return GENERAL_ERROR
@@ -107,13 +103,17 @@ def run_compile(
         tags=tags if tags else None,
         tag_mode=tag_mode,
         default_engine=config_result.profile.default_engine if config_result.profile else None,
+        project_root=globals.project_path,
     )
 
     if not compiled.success:
         for e in compiled.errors:  # type: ignore[assignment]
             print(
                 format_upstream_error(
-                    e.code, e.message, e.remediation, globals.color  # type: ignore[attr-defined]
+                    e.code,  # type: ignore[attr-defined]
+                    e.message,  # type: ignore[attr-defined]
+                    e.remediation,  # type: ignore[attr-defined]
+                    globals.color,  # type: ignore[attr-defined]
                 ),
                 file=sys.stderr,
             )

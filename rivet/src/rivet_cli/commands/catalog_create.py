@@ -703,7 +703,7 @@ def _prompt_credentials(plugin: Any, state: WizardState) -> None:
         auth_types = sorted(cred_groups.keys())
         print("Authentication method:")
         auth_type = prompt_choice("Select auth type", auth_types)
-        state.optional_opts["auth"] = auth_type
+        state.optional_opts["auth_type"] = auth_type
         cred_keys = cred_groups[auth_type]
     else:
         cred_keys = plugin.credential_options

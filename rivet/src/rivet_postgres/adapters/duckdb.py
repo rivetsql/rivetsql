@@ -71,10 +71,14 @@ def _apply_pushdown(
         except Exception:
             residual_casts.append(cast)
 
-    return sql, ResidualPlan(predicates=residual_predicates, limit=residual_limit, casts=residual_casts)
+    return sql, ResidualPlan(
+        predicates=residual_predicates, limit=residual_limit, casts=residual_casts
+    )
 
 
-def _ensure_duckdb_extension(conn: duckdb.DuckDBPyConnection, ext: str, install_from: str | None = None) -> None:
+def _ensure_duckdb_extension(
+    conn: duckdb.DuckDBPyConnection, ext: str, install_from: str | None = None
+) -> None:
     """Check-then-load a DuckDB extension."""
     try:
         row = conn.execute(
@@ -130,7 +134,9 @@ def _attach_alias(catalog_name: str) -> str:
 class _PostgresDuckDBMaterializedRef(MaterializedRef):
     """Deferred ref that reads PostgreSQL data via DuckDB postgres extension on to_arrow()."""
 
-    def __init__(self, catalog_options: dict[str, Any], catalog_name: str, sql: str | None, table: str | None) -> None:
+    def __init__(
+        self, catalog_options: dict[str, Any], catalog_name: str, sql: str | None, table: str | None
+    ) -> None:
         self._catalog_options = catalog_options
         self._catalog_name = catalog_name
         self._sql = sql
@@ -144,17 +150,24 @@ class _PostgresDuckDBMaterializedRef(MaterializedRef):
 
         conn = duckdb.connect(":memory:")
         try:
-            _ensure_duckdb_extension(conn, "postgres", install_from="community")
+            _ensure_duckdb_extension(conn, "postgres")
             dsn = _build_dsn(self._catalog_options)
             alias = _attach_alias(self._catalog_name)
             conn.execute(f"ATTACH '{dsn}' AS {alias} (TYPE postgres, READ_ONLY)")
 
             if self._sql:
-                result = conn.execute(self._sql).arrow()
+                arrow_result = conn.execute(self._sql).arrow()
             else:
                 pg_schema = self._catalog_options.get("schema", "public")
                 table_ref = f"{alias}.{pg_schema}.{self._table}"
-                result = conn.execute(f"SELECT * FROM {table_ref}").arrow()
+                arrow_result = conn.execute(f"SELECT * FROM {table_ref}").arrow()
+
+            # DuckDB .arrow() can return either Table or RecordBatchReader
+            # Convert to Table if needed
+            if isinstance(arrow_result, pyarrow.RecordBatchReader):
+                result = arrow_result.read_all()
+            else:
+                result = arrow_result
 
             self._cached = result
             return result
@@ -165,7 +178,10 @@ class _PostgresDuckDBMaterializedRef(MaterializedRef):
                 RivetError(
                     code="RVT-504",
                     message=f"DuckDB postgres extension failed: {exc}",
-                    context={"host": self._catalog_options.get("host"), "database": self._catalog_options.get("database")},
+                    context={
+                        "host": self._catalog_options.get("host"),
+                        "database": self._catalog_options.get("database"),
+                    },
                     remediation="Check PostgreSQL connectivity, credentials, and that the DuckDB postgres extension is available.",
                 )
             ) from exc
@@ -178,7 +194,11 @@ class _PostgresDuckDBMaterializedRef(MaterializedRef):
     @property
     def schema(self) -> Schema:
         table = self._execute()
-        return Schema(columns=[Column(name=f.name, type=str(f.type), nullable=f.nullable) for f in table.schema])
+        return Schema(
+            columns=[
+                Column(name=f.name, type=str(f.type), nullable=f.nullable) for f in table.schema
+            ]
+        )
 
     @property
     def row_count(self) -> int:
@@ -213,7 +233,9 @@ class PostgresDuckDBAdapter(ComputeEngineAdapter):
     source = "catalog_plugin"
     source_plugin = "rivet_postgres"
 
-    def read_dispatch(self, engine: Any, catalog: Any, joint: Any, pushdown: PushdownPlan | None = None) -> AdapterPushdownResult:
+    def read_dispatch(
+        self, engine: Any, catalog: Any, joint: Any, pushdown: PushdownPlan | None = None
+    ) -> AdapterPushdownResult:
         if joint.sql:
             base_sql = joint.sql
         else:
@@ -241,7 +263,7 @@ class PostgresDuckDBAdapter(ComputeEngineAdapter):
 
         conn = duckdb.connect(":memory:")
         try:
-            _ensure_duckdb_extension(conn, "postgres", install_from="community")
+            _ensure_duckdb_extension(conn, "postgres")
             dsn = _build_dsn(catalog.options)
             alias = _attach_alias(catalog.name)
             conn.execute(f"ATTACH '{dsn}' AS {alias} (TYPE postgres)")
@@ -271,7 +293,10 @@ class PostgresDuckDBAdapter(ComputeEngineAdapter):
                 RivetError(
                     code="RVT-504",
                     message=f"DuckDB postgres extension write failed: {exc}",
-                    context={"host": catalog.options.get("host"), "database": catalog.options.get("database")},
+                    context={
+                        "host": catalog.options.get("host"),
+                        "database": catalog.options.get("database"),
+                    },
                     remediation="Check PostgreSQL connectivity, credentials, and write permissions.",
                 )
             ) from exc

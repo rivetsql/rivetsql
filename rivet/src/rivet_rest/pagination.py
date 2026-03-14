@@ -14,7 +14,7 @@ from typing import Any, Protocol
 
 import requests
 
-from rivet_core.errors import ExecutionError, RivetError
+from rivet_core.errors import ExecutionError, PluginValidationError, RivetError, plugin_error
 
 
 class RateLimiterLike(Protocol):
@@ -378,7 +378,7 @@ def create_paginator(config: dict[str, Any] | None) -> Paginator:
         A ``Paginator`` instance.
 
     Raises:
-        ValueError: If the strategy name is not recognised.
+        PluginValidationError: If the strategy name is not recognised.
     """
     if config is None:
         return NoPaginator()
@@ -412,4 +412,12 @@ def create_paginator(config: dict[str, Any] | None) -> Paginator:
     if strategy == "link_header":
         return LinkHeaderPaginator()
 
-    raise ValueError(f"Unknown pagination strategy: {strategy!r}")
+    raise PluginValidationError(
+        plugin_error(
+            "RVT-201",
+            f"Unrecognized pagination strategy: '{strategy}'",
+            plugin_name="rivet_rest",
+            plugin_type="catalog",
+            remediation="Valid pagination strategies: none, offset, cursor, page_number, link_header",
+        )
+    )

@@ -7,11 +7,11 @@ materializes to Arrow and writes directly to PostgreSQL.
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING, Any
 
 import pyarrow
 
+from rivet_core.async_utils import safe_run_async
 from rivet_core.errors import ExecutionError, RivetError
 from rivet_core.models import Column, Material, Schema
 from rivet_core.optimizer import AdapterPushdownResult, Cast, PushdownPlan, ResidualPlan
@@ -32,7 +32,9 @@ ALL_6_CAPABILITIES = [
 
 _JDBC_DRIVER = "org.postgresql.Driver"
 _JDBC_MAVEN = "org.postgresql:postgresql:42.7.3"
-_SIDE_CHANNEL_STRATEGIES = frozenset({"truncate_insert", "merge", "delete_insert", "incremental_append", "scd2"})
+_SIDE_CHANNEL_STRATEGIES = frozenset(
+    {"truncate_insert", "merge", "delete_insert", "incremental_append", "scd2"}
+)
 
 _EMPTY_RESIDUAL = ResidualPlan(predicates=[], limit=None, casts=[])
 
@@ -173,7 +175,9 @@ class PostgresPySparkAdapter(ComputeEngineAdapter):
     source = "catalog_plugin"
     source_plugin = "rivet_postgres"
 
-    def read_dispatch(self, engine: Any, catalog: Any, joint: Any, pushdown: PushdownPlan | None = None) -> AdapterPushdownResult:
+    def read_dispatch(
+        self, engine: Any, catalog: Any, joint: Any, pushdown: PushdownPlan | None = None
+    ) -> AdapterPushdownResult:
         """Read from PostgreSQL via Spark JDBC with optional parallel partitioned reads."""
         session = engine.get_session()
         _check_jdbc_driver(session)
@@ -201,16 +205,14 @@ class PostgresPySparkAdapter(ComputeEngineAdapter):
 
         try:
             if partition_column and num_partitions:
-                df = (
-                    session.read.jdbc(
-                        url=url,
-                        table=dbtable,
-                        column=partition_column,
-                        lowerBound=int(lower_bound) if lower_bound is not None else 0,
-                        upperBound=int(upper_bound) if upper_bound is not None else 1000000,
-                        numPartitions=int(num_partitions),
-                        properties=props,
-                    )
+                df = session.read.jdbc(
+                    url=url,
+                    table=dbtable,
+                    column=partition_column,
+                    lowerBound=int(lower_bound) if lower_bound is not None else 0,
+                    upperBound=int(upper_bound) if upper_bound is not None else 1000000,
+                    numPartitions=int(num_partitions),
+                    properties=props,
                 )
             else:
                 df = session.read.jdbc(url=url, table=dbtable, properties=props)
@@ -219,7 +221,10 @@ class PostgresPySparkAdapter(ComputeEngineAdapter):
                 RivetError(
                     code="RVT-501",
                     message=f"PostgreSQL JDBC read failed: {exc}",
-                    context={"host": catalog.options.get("host"), "database": catalog.options.get("database")},
+                    context={
+                        "host": catalog.options.get("host"),
+                        "database": catalog.options.get("database"),
+                    },
                     remediation="Check PostgreSQL credentials, host, and network connectivity.",
                 )
             ) from exc
@@ -267,7 +272,10 @@ class PostgresPySparkAdapter(ComputeEngineAdapter):
                 RivetError(
                     code="RVT-501",
                     message=f"PostgreSQL JDBC write failed: {exc}",
-                    context={"host": catalog.options.get("host"), "database": catalog.options.get("database")},
+                    context={
+                        "host": catalog.options.get("host"),
+                        "database": catalog.options.get("database"),
+                    },
                     remediation="Check PostgreSQL credentials, host, and write permissions.",
                 )
             ) from exc
@@ -287,7 +295,7 @@ def _psycopg3_side_channel(catalog: Any, joint: Any, material: Any, strategy: st
     qualified_table = f"{schema}.{table}"
 
     try:
-        asyncio.run(_execute_strategy(conninfo, qualified_table, arrow_table, strategy, joint))
+        safe_run_async(_execute_strategy(conninfo, qualified_table, arrow_table, strategy, joint))
     except ExecutionError:
         raise
     except Exception as exc:

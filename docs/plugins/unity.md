@@ -74,6 +74,16 @@ default:
 | `catalog_name` | yes | `str` | — | Catalog name |
 | `schema` | no | `str` | `None` | Default schema |
 
+### Complex Type Support
+
+Unity Catalog supports complex types through schema introspection:
+
+- **Arrays**: `array<T>` syntax (e.g., `array<string>`, `array<bigint>`)
+- **Structs**: `struct<field:type,...>` syntax (e.g., `struct<name:string,age:int>`)
+- **Nested types**: Arbitrary nesting supported (e.g., `array<struct<...>>`, `struct<field:array<...>>`)
+
+Complex types are automatically mapped to Arrow types during schema introspection. See [Complex Type Support](../concepts/catalogs.md#complex-type-support) for details.
+
 ### Unity Credentials
 
 | Option | Description |

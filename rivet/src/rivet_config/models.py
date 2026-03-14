@@ -16,23 +16,56 @@ MANIFEST_REQUIRED_KEYS = frozenset({"profiles", "sources", "joints", "sinks"})
 MANIFEST_OPTIONAL_KEYS = frozenset({"quality", "tests", "fixtures"})
 MANIFEST_DEPRECATED_KEYS = frozenset({"assertions", "audits"})
 
-YAML_JOINT_FIELDS = frozenset({
-    "name", "type", "sql", "columns", "filter", "catalog", "engine",
-    "eager", "upstream", "tags", "description", "table", "write_strategy",
-    "function", "fusion_strategy", "materialization_strategy", "quality",
-})
+YAML_JOINT_FIELDS = frozenset(
+    {
+        "name",
+        "type",
+        "sql",
+        "columns",
+        "filter",
+        "limit",
+        "catalog",
+        "engine",
+        "eager",
+        "upstream",
+        "tags",
+        "description",
+        "table",
+        "write_strategy",
+        "function",
+        "fusion_strategy",
+        "materialization_strategy",
+        "quality",
+    }
+)
 
 JOINT_TYPES = frozenset({"source", "sql", "sink", "python"})
 
-WRITE_STRATEGY_MODES = frozenset({
-    "append", "replace", "truncate_insert", "merge",
-    "delete_insert", "incremental_append", "scd2",
-})
+WRITE_STRATEGY_MODES = frozenset(
+    {
+        "append",
+        "replace",
+        "truncate_insert",
+        "merge",
+        "delete_insert",
+        "incremental_append",
+        "scd2",
+    }
+)
 
-CHECK_TYPES = frozenset({
-    "not_null", "unique", "row_count", "accepted_values", "expression",
-    "custom", "schema", "freshness", "relationship",
-})
+CHECK_TYPES = frozenset(
+    {
+        "not_null",
+        "unique",
+        "row_count",
+        "accepted_values",
+        "expression",
+        "custom",
+        "schema",
+        "freshness",
+        "relationship",
+    }
+)
 
 
 # --- Data Models ---
@@ -122,6 +155,7 @@ class JointDeclaration:
     table: str | None = None
     columns: list[ColumnDecl] | None = None
     filter: str | None = None
+    limit: int | None = None
     write_strategy: WriteStrategyDecl | None = None
     function: str | None = None
     engine: str | None = None

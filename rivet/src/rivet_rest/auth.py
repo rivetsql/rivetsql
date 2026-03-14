@@ -12,6 +12,8 @@ from typing import Any, Protocol
 
 import requests
 
+from rivet_core.errors import PluginValidationError, plugin_error
+
 
 class AuthStrategy(Protocol):
     """Protocol for authentication strategies."""
@@ -60,8 +62,9 @@ class ApiKeyAuth:
 
     def apply(self, session: requests.Session) -> None:
         if self._location == "query":
-            session.params = dict(session.params or {})  # type: ignore[arg-type]
-            session.params[self._key_name] = self._key_value  # type: ignore[index]
+            params: dict[str, str] = dict(session.params or {})  # type: ignore[arg-type]
+            params[self._key_name] = self._key_value
+            session.params = params
         else:
             session.headers[self._key_name] = self._key_value
 
@@ -103,8 +106,8 @@ class OAuth2Auth:
             self._fetch_token_manual()
 
     def _fetch_token_oauthlib(self) -> None:
-        from oauthlib.oauth2 import BackendApplicationClient  # type: ignore[import-untyped]
-        from requests_oauthlib import OAuth2Session  # type: ignore[import-untyped]
+        from oauthlib.oauth2 import BackendApplicationClient
+        from requests_oauthlib import OAuth2Session
 
         client = BackendApplicationClient(client_id=self._client_id)
         oauth = OAuth2Session(client=client)
@@ -146,7 +149,7 @@ def create_auth(auth_type: str, options: dict[str, Any]) -> AuthStrategy:
         An AuthStrategy instance ready to apply to a session.
 
     Raises:
-        ValueError: If ``auth_type`` is not recognised.
+        PluginValidationError: If ``auth_type`` is not recognised.
     """
     if auth_type == "none":
         return NoAuth()
@@ -169,4 +172,12 @@ def create_auth(auth_type: str, options: dict[str, Any]) -> AuthStrategy:
             client_secret=options["client_secret"],
             token_url=options["token_url"],
         )
-    raise ValueError(f"Unknown auth type: {auth_type!r}")
+    raise PluginValidationError(
+        plugin_error(
+            "RVT-201",
+            f"Unrecognized auth type: '{auth_type}'",
+            plugin_name="rivet_rest",
+            plugin_type="catalog",
+            remediation="Valid auth types: none, bearer, basic, api_key, oauth2",
+        )
+    )

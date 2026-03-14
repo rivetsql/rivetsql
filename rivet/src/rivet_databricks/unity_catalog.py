@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 from rivet_core.errors import ExecutionError, PluginValidationError, plugin_error
 from rivet_core.models import Catalog
 from rivet_core.plugins import CatalogPlugin
+from rivet_core.type_parser import parse_type
 from rivet_databricks.auth import ResolvedCredential, resolve_credentials
 
 if TYPE_CHECKING:
@@ -22,7 +23,10 @@ _REQUIRED_OPTIONS = ["host", "catalog_name"]
 _CREDENTIAL_OPTIONS = ["token", "client_id", "client_secret", "auth_type"]
 _OPTIONAL_OPTIONS: dict[str, Any] = {"schema": "default"}
 _KNOWN_OPTIONS = (
-    set(_REQUIRED_OPTIONS) | set(_CREDENTIAL_OPTIONS) | set(_OPTIONAL_OPTIONS) | {"table_map", "region"}
+    set(_REQUIRED_OPTIONS)
+    | set(_CREDENTIAL_OPTIONS)
+    | set(_OPTIONAL_OPTIONS)
+    | {"table_map", "region"}
 )
 _VALID_AUTH_TYPES = frozenset({"pat", "oauth_m2m", "azure_cli", "gcp_login"})
 
@@ -67,14 +71,6 @@ _UNITY_TO_ARROW: dict[str, str] = {
     "interval": "duration[us]",
     "void": "null",
 }
-
-
-def _unity_type_to_arrow(type_text: str) -> str:
-    """Map a Unity Catalog type_text string to an Arrow type name."""
-    lower = (type_text or "").lower().strip()
-    # Handle parameterized types like decimal(10,2), varchar(255)
-    base = lower.split("(")[0].strip()
-    return _UNITY_TO_ARROW.get(base, "large_utf8")
 
 
 class UnityCatalogPlugin(CatalogPlugin):
@@ -305,6 +301,7 @@ class UnityCatalogPlugin(CatalogPlugin):
         finally:
             client.close()
         return nodes
+
     def test_connection(self, catalog: Catalog) -> None:
         """Lightweight connectivity check — single GET /catalogs call."""
         from rivet_databricks.client import UnityCatalogClient
@@ -337,59 +334,71 @@ class UnityCatalogPlugin(CatalogPlugin):
                 # Level 0: list Unity catalogs
                 for cat in client.list_catalogs():
                     cat_name = cat.get("name", "")
-                    nodes.append(CatalogNode(
-                        name=cat_name,
-                        node_type="catalog",
-                        path=[cat_name],
-                        is_container=True,
-                        children_count=None,
-                        summary=NodeSummary(
-                            row_count=None, size_bytes=None, format=None,
-                            last_modified=None, owner=cat.get("owner"),
-                            comment=cat.get("comment"),
-                        ),
-                    ))
+                    nodes.append(
+                        CatalogNode(
+                            name=cat_name,
+                            node_type="catalog",
+                            path=[cat_name],
+                            is_container=True,
+                            children_count=None,
+                            summary=NodeSummary(
+                                row_count=None,
+                                size_bytes=None,
+                                format=None,
+                                last_modified=None,
+                                owner=cat.get("owner"),
+                                comment=cat.get("comment"),
+                            ),
+                        )
+                    )
             elif len(path) == 1:
                 # Level 1: list schemas in a catalog
                 cat_name = path[0]
                 for schema in client.list_schemas(cat_name):
                     schema_name = schema.get("name", "")
-                    nodes.append(CatalogNode(
-                        name=schema_name,
-                        node_type="schema",
-                        path=[cat_name, schema_name],
-                        is_container=True,
-                        children_count=None,
-                        summary=NodeSummary(
-                            row_count=None, size_bytes=None, format=None,
-                            last_modified=None, owner=schema.get("owner"),
-                            comment=schema.get("comment"),
-                        ),
-                    ))
+                    nodes.append(
+                        CatalogNode(
+                            name=schema_name,
+                            node_type="schema",
+                            path=[cat_name, schema_name],
+                            is_container=True,
+                            children_count=None,
+                            summary=NodeSummary(
+                                row_count=None,
+                                size_bytes=None,
+                                format=None,
+                                last_modified=None,
+                                owner=schema.get("owner"),
+                                comment=schema.get("comment"),
+                            ),
+                        )
+                    )
             elif len(path) == 2:
                 # Level 2: list tables in a schema
                 cat_name, schema_name = path[0], path[1]
                 for table in client.list_tables(cat_name, schema_name):
                     table_name = table.get("name", "")
-                    nodes.append(CatalogNode(
-                        name=table_name,
-                        node_type="table",
-                        path=[cat_name, schema_name, table_name],
-                        is_container=False,
-                        children_count=None,
-                        summary=NodeSummary(
-                            row_count=None, size_bytes=None, format=None,
-                            last_modified=None,
-                            owner=table.get("owner"),
-                            comment=table.get("comment"),
-                        ),
-                    ))
+                    nodes.append(
+                        CatalogNode(
+                            name=table_name,
+                            node_type="table",
+                            path=[cat_name, schema_name, table_name],
+                            is_container=False,
+                            children_count=None,
+                            summary=NodeSummary(
+                                row_count=None,
+                                size_bytes=None,
+                                format=None,
+                                last_modified=None,
+                                owner=table.get("owner"),
+                                comment=table.get("comment"),
+                            ),
+                        )
+                    )
             # Level 3+ (columns): handled by CatalogExplorer via get_schema()
         finally:
             client.close()
         return nodes
-
-
 
     def get_schema(self, catalog: Catalog, table: str) -> ObjectSchema:
         """Get schema for a table via GET /tables/{full_name}.
@@ -413,13 +422,7 @@ class UnityCatalogPlugin(CatalogPlugin):
         for col in columns_raw:
             col_name = col.get("name", "")
             type_text = col.get("type_text", "")
-            arrow_type = _unity_type_to_arrow(type_text)
-            if arrow_type == "large_utf8" and type_text and type_text.lower().strip().split("(")[0] not in _UNITY_TO_ARROW:
-                warnings.warn(
-                    f"Unity Catalog type '{type_text}' for column '{col_name}' in '{table}' "
-                    "has no Arrow mapping; defaulting to large_utf8.",
-                    stacklevel=2,
-                )
+            arrow_type = parse_type(type_text, _UNITY_TO_ARROW)
             columns.append(
                 ColumnDetail(
                     name=col_name,
@@ -475,8 +478,12 @@ class UnityCatalogPlugin(CatalogPlugin):
         return ObjectMetadata(
             path=path,
             node_type=raw.get("table_type", "table").lower(),
-            row_count=raw.get("properties", {}).get("numRows") if isinstance(raw.get("properties"), dict) else None,
-            size_bytes=raw.get("properties", {}).get("sizeInBytes") if isinstance(raw.get("properties"), dict) else None,
+            row_count=raw.get("properties", {}).get("numRows")
+            if isinstance(raw.get("properties"), dict)
+            else None,
+            size_bytes=raw.get("properties", {}).get("sizeInBytes")
+            if isinstance(raw.get("properties"), dict)
+            else None,
             last_modified=_parse_ts(raw.get("updated_at")),
             created_at=_parse_ts(raw.get("created_at")),
             format=raw.get("data_source_format"),
@@ -486,5 +493,7 @@ class UnityCatalogPlugin(CatalogPlugin):
             location=raw.get("storage_location"),
             column_statistics=[],
             partitioning=None,
-            properties={k: str(v) for k, v in raw.get("properties", {}).items()} if isinstance(raw.get("properties"), dict) else {},
+            properties={k: str(v) for k, v in raw.get("properties", {}).items()}
+            if isinstance(raw.get("properties"), dict)
+            else {},
         )

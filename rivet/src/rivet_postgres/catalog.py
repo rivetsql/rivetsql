@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 from rivet_core.errors import PluginValidationError, plugin_error
 from rivet_core.models import Catalog
 from rivet_core.plugins import CatalogPlugin
+from rivet_core.type_parser import parse_type
 
 if TYPE_CHECKING:
     from rivet_core.introspection import CatalogNode, ObjectMetadata, ObjectSchema
@@ -65,13 +66,6 @@ _PG_TO_ARROW: dict[str, str] = {
     "uuid": "large_utf8",
     "oid": "uint32",
 }
-
-
-def _pg_type_to_arrow(native_type: str) -> str:
-    lower = native_type.lower().strip()
-    # Strip precision/scale: character varying(255) → character varying
-    base = lower.split("(")[0].strip()
-    return _PG_TO_ARROW.get(base, "large_utf8")
 
 
 class PostgresCatalogPlugin(CatalogPlugin):
@@ -273,7 +267,7 @@ class PostgresCatalogPlugin(CatalogPlugin):
             columns.append(
                 ColumnDetail(
                     name=col_name,
-                    type=_pg_type_to_arrow(data_type),
+                    type=parse_type(data_type, _PG_TO_ARROW),
                     native_type=data_type,
                     nullable=nullable,
                     default=str(col_default) if col_default is not None else None,
@@ -341,3 +335,141 @@ class PostgresCatalogPlugin(CatalogPlugin):
             column_statistics=[],
             partitioning=None,
         )
+
+    def test_connection(self, catalog: Catalog) -> None:
+        """Lightweight PostgreSQL connectivity check via ``SELECT 1``.
+
+        Faster than the base-class fallback (which calls ``list_tables``),
+        because it avoids querying ``information_schema``.
+
+        Raises ``ExecutionError`` with structured error info on failure.
+        """
+        from rivet_core.errors import ExecutionError
+
+        conn = self._connect(catalog)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+        except Exception as exc:
+            from rivet_postgres.errors import classify_pg_error
+
+            code, message, remediation = classify_pg_error(exc, plugin_type="catalog")
+            raise ExecutionError(
+                plugin_error(
+                    code,
+                    message,
+                    plugin_name="rivet_postgres",
+                    plugin_type="catalog",
+                    remediation=remediation,
+                    host=catalog.options.get("host"),
+                    database=catalog.options.get("database"),
+                )
+            ) from exc
+        finally:
+            conn.close()
+
+    def list_children(self, catalog: Catalog, path: list[str]) -> list[CatalogNode]:
+        """Lazy single-level listing for PostgreSQL catalogs.
+
+        - path=[] → list schemas
+        - path=[schema] → list tables/views in that schema
+        - path=[schema, table] → list columns via get_schema()
+        """
+        from rivet_core.introspection import CatalogNode, NodeSummary
+
+        depth = len(path)
+
+        if depth == 0:
+            # Level 0: list schemas
+            conn = self._connect(catalog)
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT schema_name
+                        FROM information_schema.schemata
+                        WHERE schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+                        ORDER BY schema_name
+                        """
+                    )
+                    rows = cur.fetchall()
+            finally:
+                conn.close()
+            return [
+                CatalogNode(
+                    name=schema_name,
+                    node_type="schema",
+                    path=[schema_name],
+                    is_container=True,
+                    children_count=None,
+                    summary=None,
+                )
+                for (schema_name,) in rows
+            ]
+
+        if depth == 1:
+            # Level 1: list tables/views in a schema
+            schema_name = path[0]
+            conn = self._connect(catalog)
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT table_name, table_type
+                        FROM information_schema.tables
+                        WHERE table_schema = %s
+                          AND table_type IN ('BASE TABLE', 'VIEW')
+                        ORDER BY table_name
+                        """,
+                        (schema_name,),
+                    )
+                    rows = cur.fetchall()
+            finally:
+                conn.close()
+            return [
+                CatalogNode(
+                    name=table_name,
+                    node_type="view" if table_type == "VIEW" else "table",
+                    path=[schema_name, table_name],
+                    is_container=False,
+                    children_count=None,
+                    summary=NodeSummary(
+                        row_count=None,
+                        size_bytes=None,
+                        format="postgres",
+                        last_modified=None,
+                        owner=None,
+                        comment=None,
+                    ),
+                )
+                for table_name, table_type in rows
+            ]
+
+        if depth == 2:
+            # Level 2: list columns of a table
+            schema_name, table_name = path[0], path[1]
+            qualified = f"{schema_name}.{table_name}"
+            try:
+                schema = self.get_schema(catalog, qualified)
+            except Exception:
+                return []
+            return [
+                CatalogNode(
+                    name=col.name,
+                    node_type="column",
+                    path=[schema_name, table_name, col.name],
+                    is_container=False,
+                    children_count=None,
+                    summary=NodeSummary(
+                        row_count=None,
+                        size_bytes=None,
+                        format=col.type,
+                        last_modified=None,
+                        owner=None,
+                        comment=None,
+                    ),
+                )
+                for col in schema.columns
+            ]
+
+        return []

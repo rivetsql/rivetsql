@@ -227,3 +227,71 @@ Some catalog types support introspection: listing tables and fetching schemas. R
 ### Caching
 
 Catalog introspection results are cached on disk by the [Smart Cache](smart-cache.md). Interactive commands (`repl`, `explore`) load cached data instantly on startup, while non-interactive commands (`catalog list`, `catalog search`) always fetch live data but write results back to the cache for future sessions. See [Smart Cache](smart-cache.md) for details on TTL, staleness detection, and invalidation.
+
+---
+
+## Complex Type Support
+
+Rivet supports complex types (arrays and structs) across all catalog plugins through a centralized type parser. When a catalog introspects a table schema, complex types are correctly mapped to their Arrow equivalents, preserving type information for downstream processing.
+
+### Supported Complex Types
+
+**Arrays** — Collections of elements of the same type:
+
+- **Standard syntax**: `array<T>` (Unity Catalog, Glue, DuckDB)
+- **PostgreSQL syntax**: `type[]` (PostgreSQL arrays)
+
+**Structs** — Records with named fields of potentially different types:
+
+- **Syntax**: `struct<field1:type1,field2:type2,...>`
+- Supported by Unity Catalog, Glue, DuckDB
+
+**Nested types** — Arrays and structs can be nested arbitrarily:
+
+- `array<struct<name:string,age:int>>` — array of structs
+- `struct<items:array<string>>` — struct with array field
+- `array<array<int>>` — nested arrays
+
+### Examples
+
+When Rivet introspects a table with complex types, they appear in the schema:
+
+```
+schema (introspected): [
+  id: int64,
+  tags: list<large_utf8>,                           # array<string>
+  metadata: struct<created:timestamp[us],author:large_utf8>,  # struct
+  events: list<struct<type:large_utf8,count:int32>>  # array<struct>
+]
+```
+
+### Catalog-Specific Syntax
+
+| Catalog | Array Syntax | Struct Syntax | Example |
+|---------|--------------|---------------|---------|
+| Unity Catalog | `array<T>` | `struct<field:type>` | `array<string>`, `struct<name:string,age:int>` |
+| Glue | `array<T>` | `struct<field:type>` | `array<bigint>`, `struct<lat:double,lon:double>` |
+| DuckDB | `array<T>` | `struct<field:type>` | `array<integer>`, `struct<x:float,y:float>` |
+| PostgreSQL | `type[]` | — | `integer[]`, `text[]`, `timestamp[]` |
+
+!!! note
+    PostgreSQL JSONB types remain mapped to `large_utf8` (string) because JSONB is schema-less — the structure can vary per row. Arrow requires a fixed schema, so runtime inference would be needed to map JSONB to struct types.
+
+### Error Handling
+
+The type parser is fail-safe: if a type cannot be parsed (malformed syntax, unknown primitive type), it defaults to `large_utf8` with a warning. Schema introspection never fails due to type parsing errors.
+
+```
+UserWarning: Unknown primitive type 'custom_type' in column 'data'; defaulting to large_utf8.
+```
+
+### Implementation
+
+All catalog plugins use the centralized `parse_type()` function from `rivet_core.type_parser`, which handles:
+
+- Recursive parsing of nested types
+- Whitespace normalization
+- Catalog-specific primitive type mappings
+- Graceful fallback for unparseable types
+
+This ensures consistent complex type handling across all catalogs without code duplication.

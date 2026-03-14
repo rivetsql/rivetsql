@@ -62,22 +62,24 @@ def _parse_yaml_to_testdefs(path: Path) -> list[TestDef]:
             continue
         if not target and targets:
             target = next(iter(targets))
-        defs.append(TestDef(
-            name=name,
-            target=target,  # type: ignore[arg-type]
-            targets=targets,
-            scope=doc.get("scope", "joint"),
-            inputs=doc.get("inputs", {}),
-            expected=doc.get("expected"),
-            compare=doc.get("compare", "exact"),
-            compare_function=doc.get("compare_function"),
-            tags=doc.get("tags", []),
-            description=doc.get("description"),
-            options=doc.get("options", {}),
-            extends=doc.get("extends"),
-            source_file=path,
-            engine=doc.get("engine"),
-        ))
+        defs.append(
+            TestDef(
+                name=name,
+                target=target,  # type: ignore[arg-type]
+                targets=targets,
+                scope=doc.get("scope", "joint"),
+                inputs=doc.get("inputs", {}),
+                expected=doc.get("expected"),
+                compare=doc.get("compare", "exact"),
+                compare_function=doc.get("compare_function"),
+                tags=doc.get("tags", []),
+                description=doc.get("description"),
+                options=doc.get("options", {}),
+                extends=doc.get("extends"),
+                source_file=path,
+                engine=doc.get("engine"),
+            )
+        )
     return defs
 
 
@@ -97,16 +99,18 @@ def discover_tests(
     for f in files:
         for td in _parse_yaml_to_testdefs(f):
             if td.name in seen_names:
-                raise TestDiscoveryError(RivetError(
-                    code="RVT-908",
-                    message=f"Duplicate test name '{td.name}'",
-                    context={
-                        "name": td.name,
-                        "first": str(seen_names[td.name]),
-                        "second": str(f),
-                    },
-                    remediation="Rename one of the tests to have a unique name.",
-                ))
+                raise TestDiscoveryError(
+                    RivetError(
+                        code="RVT-908",
+                        message=f"Duplicate test name '{td.name}'",
+                        context={
+                            "name": td.name,
+                            "first": str(seen_names[td.name]),
+                            "second": str(f),
+                        },
+                        remediation="Rename one of the tests to have a unique name.",
+                    )
+                )
             seen_names[td.name] = f
             all_tests.append(td)
     return all_tests
@@ -144,12 +148,14 @@ def resolve_extends(tests: list[TestDef]) -> list[TestDef]:
             continue
         base_name = test.extends
         if base_name not in by_name:
-            raise TestDiscoveryError(RivetError(
-                code="RVT-909",
-                message=f"Base test '{base_name}' not found for extends in '{test.name}'",
-                context={"test": test.name, "base": base_name},
-                remediation=f"Ensure a test named '{base_name}' is defined before '{test.name}'.",
-            ))
+            raise TestDiscoveryError(
+                RivetError(
+                    code="RVT-909",
+                    message=f"Base test '{base_name}' not found for extends in '{test.name}'",
+                    context={"test": test.name, "base": base_name},
+                    remediation=f"Ensure a test named '{base_name}' is defined before '{test.name}'.",
+                )
+            )
         base = by_name[base_name]
         # Merge inputs: base first, then extending overrides
         merged_inputs = {**base.inputs, **test.inputs}
@@ -157,23 +163,31 @@ def resolve_extends(tests: list[TestDef]) -> list[TestDef]:
         compare = base.compare if test.compare == _TESTDEF_DEFAULTS["compare"] else test.compare
         tags = base.tags if test.tags == _TESTDEF_DEFAULTS["tags"] else test.tags
         options = base.options if test.options == _TESTDEF_DEFAULTS["options"] else test.options
-        description = base.description if test.description == _TESTDEF_DEFAULTS["description"] else test.description
-        resolved.append(TestDef(
-            name=test.name,
-            target=test.target,
-            targets=test.targets,
-            scope=test.scope if test.scope != _TESTDEF_DEFAULTS["scope"] else base.scope,
-            inputs=merged_inputs,
-            expected=test.expected if test.expected is not None else base.expected,
-            compare=compare,
-            compare_function=test.compare_function if test.compare_function is not None else base.compare_function,
-            tags=tags,
-            description=description,
-            options=options,
-            extends=test.extends,
-            source_file=test.source_file,
-            engine=test.engine if test.engine is not None else base.engine,
-        ))
+        description = (
+            base.description
+            if test.description == _TESTDEF_DEFAULTS["description"]
+            else test.description
+        )
+        resolved.append(
+            TestDef(
+                name=test.name,
+                target=test.target,
+                targets=test.targets,
+                scope=test.scope if test.scope != _TESTDEF_DEFAULTS["scope"] else base.scope,
+                inputs=merged_inputs,
+                expected=test.expected if test.expected is not None else base.expected,
+                compare=compare,
+                compare_function=test.compare_function
+                if test.compare_function is not None
+                else base.compare_function,
+                tags=tags,
+                description=description,
+                options=options,
+                extends=test.extends,
+                source_file=test.source_file,
+                engine=test.engine if test.engine is not None else base.engine,
+            )
+        )
     return resolved
 
 
@@ -236,12 +250,14 @@ def build_isolated_assembly(
 
     target = test_def.target
     if target not in assembly.joints:
-        raise TestDiscoveryError(RivetError(
-            code="RVT-907",
-            message=f"Target joint '{target}' not found in assembly.",
-            context={"target": target},
-            remediation="Check the 'target' field in your test definition.",
-        ))
+        raise TestDiscoveryError(
+            RivetError(
+                code="RVT-907",
+                message=f"Target joint '{target}' not found in assembly.",
+                context={"target": target},
+                remediation="Check the 'target' field in your test definition.",
+            )
+        )
 
     catalog_name = f"__test_{test_def.name}"
 
@@ -252,52 +268,59 @@ def build_isolated_assembly(
         provided = set(fixtures.keys())
         missing = required_upstreams - provided
         if missing:
-            raise TestDiscoveryError(RivetError(
-                code="RVT-903",
-                message=f"Missing fixture inputs for upstream joints: {sorted(missing)}",
-                context={"target": target, "missing": sorted(missing), "provided": sorted(provided)},
-                remediation="Add inputs for all upstream joints of the target.",
-            ))
+            raise TestDiscoveryError(
+                RivetError(
+                    code="RVT-903",
+                    message=f"Missing fixture inputs for upstream joints: {sorted(missing)}",
+                    context={
+                        "target": target,
+                        "missing": sorted(missing),
+                        "provided": sorted(provided),
+                    },
+                    remediation="Add inputs for all upstream joints of the target.",
+                )
+            )
 
         # Build source joints for each fixture + keep the target joint
         joints: list[Joint] = []
         for name, table in fixtures.items():
             _get_shared_store()[(catalog_name, name)] = table
-            joints.append(Joint(
-                name=name,
-                joint_type="source",
-                catalog=catalog_name,
-                path=name,
-            ))
+            joints.append(
+                Joint(
+                    name=name,
+                    joint_type="source",
+                    catalog=catalog_name,
+                    path=name,
+                )
+            )
 
         # Re-create target joint pointing at the test catalog
-        joints.append(Joint(
-            name=target_joint.name,
-            joint_type=target_joint.joint_type,
-            catalog=catalog_name,
-            upstream=target_joint.upstream,
-            tags=target_joint.tags,
-            description=target_joint.description,
-            assertions=target_joint.assertions,
-            path=target_joint.path,
-            sql=target_joint.sql,
-            engine=target_joint.engine,
-            eager=target_joint.eager,
-            table=target_joint.table,
-            write_strategy=target_joint.write_strategy,
-            function=target_joint.function,
-            source_file=target_joint.source_file,
-            dialect=target_joint.dialect,
-        ))
+        joints.append(
+            Joint(
+                name=target_joint.name,
+                joint_type=target_joint.joint_type,
+                catalog=catalog_name,
+                upstream=target_joint.upstream,
+                tags=target_joint.tags,
+                description=target_joint.description,
+                assertions=target_joint.assertions,
+                path=target_joint.path,
+                sql=target_joint.sql,
+                engine=target_joint.engine,
+                eager=target_joint.eager,
+                table=target_joint.table,
+                write_strategy=target_joint.write_strategy,
+                function=target_joint.function,
+                source_file=target_joint.source_file,
+                dialect=target_joint.dialect,
+            )
+        )
 
     else:
         # scope=assembly: walk upstream closure from target, replace leaf sources
         upstream_closure = assembly._upstream_closure({target})
         # Identify leaf sources: joints in the closure with no upstream
-        leaf_sources = {
-            name for name in upstream_closure
-            if not assembly.joints[name].upstream
-        }
+        leaf_sources = {name for name in upstream_closure if not assembly.joints[name].upstream}
 
         # Register fixture data for leaf sources
         for name in leaf_sources:
@@ -313,32 +336,36 @@ def build_isolated_assembly(
             orig = assembly.joints[jname]
             if jname in leaf_sources:
                 # Replace with source joint backed by fixture
-                joints.append(Joint(
-                    name=orig.name,
-                    joint_type="source",
-                    catalog=catalog_name,
-                    path=orig.name,
-                ))
+                joints.append(
+                    Joint(
+                        name=orig.name,
+                        joint_type="source",
+                        catalog=catalog_name,
+                        path=orig.name,
+                    )
+                )
             else:
                 # Keep joint but point catalog to test catalog
-                joints.append(Joint(
-                    name=orig.name,
-                    joint_type=orig.joint_type,
-                    catalog=catalog_name,
-                    upstream=orig.upstream,
-                    tags=orig.tags,
-                    description=orig.description,
-                    assertions=orig.assertions,
-                    path=orig.path,
-                    sql=orig.sql,
-                    engine=orig.engine,
-                    eager=orig.eager,
-                    table=orig.table,
-                    write_strategy=orig.write_strategy,
-                    function=orig.function,
-                    source_file=orig.source_file,
-                    dialect=orig.dialect,
-                ))
+                joints.append(
+                    Joint(
+                        name=orig.name,
+                        joint_type=orig.joint_type,
+                        catalog=catalog_name,
+                        upstream=orig.upstream,
+                        tags=orig.tags,
+                        description=orig.description,
+                        assertions=orig.assertions,
+                        path=orig.path,
+                        sql=orig.sql,
+                        engine=orig.engine,
+                        eager=orig.eager,
+                        table=orig.table,
+                        write_strategy=orig.write_strategy,
+                        function=orig.function,
+                        source_file=orig.source_file,
+                        dialect=orig.dialect,
+                    )
+                )
 
     isolated_assembly = Assembly(joints)
     catalog = Catalog(name=catalog_name, type="arrow", options={})
@@ -379,21 +406,31 @@ def run_single_test(
 
         # Build isolated assembly
         iso_asm, catalogs, engines = build_isolated_assembly(
-            test_def, fixtures, bridge_result.assembly, registry,
+            test_def,
+            fixtures,
+            bridge_result.assembly,
+            registry,
         )
 
         # Compile (same pipeline as production)
-        compiled = rivet_compile(iso_asm, catalogs, engines, registry)
+        compiled = rivet_compile(iso_asm, catalogs, engines, registry, project_root=project_root)
         if not compiled.success:
             elapsed = (time.monotonic() - start) * 1000
             msgs = "; ".join(e.message for e in compiled.errors)
-            return TestResult(name=test_def.name, passed=False, duration_ms=elapsed, error=f"Compilation failed: {msgs}")
+            return TestResult(
+                name=test_def.name,
+                passed=False,
+                duration_ms=elapsed,
+                error=f"Compilation failed: {msgs}",
+            )
 
-        executor = Executor(registry)
+        executor = Executor(registry, project_root=project_root)
 
         # Multi-target tests
         if test_def.targets:
-            return _run_multi_target(test_def, executor, compiled, project_root, start, update_snapshots)
+            return _run_multi_target(
+                test_def, executor, compiled, project_root, start, update_snapshots
+            )
 
         # Single-target: get output table via run_query
         has_expected = test_def.expected is not None
@@ -402,7 +439,11 @@ def run_single_test(
             result_table = executor.run_query_sync(compiled, test_def.target)
 
             # Snapshot update: write actual output to expected file path (file refs only)
-            if update_snapshots and isinstance(test_def.expected, dict) and "file" in test_def.expected:
+            if (
+                update_snapshots
+                and isinstance(test_def.expected, dict)
+                and "file" in test_def.expected
+            ):
                 snapshot_path = project_root / test_def.expected["file"]
                 snapshot_path.parent.mkdir(parents=True, exist_ok=True)
                 pq.write_table(result_table, str(snapshot_path))
@@ -411,7 +452,8 @@ def run_single_test(
 
             expected_table = load_fixture(test_def.expected, project_root)  # type: ignore[arg-type]
             comparison = compare_tables(
-                result_table, expected_table,
+                result_table,
+                expected_table,
                 mode=test_def.compare,
                 options=test_def.options,
                 compare_function=test_def.compare_function,
@@ -476,7 +518,8 @@ def _run_multi_target(
                 continue
             expected_table = load_fixture(expected_spec, project_root)
             comparison = compare_tables(
-                result_table, expected_table,
+                result_table,
+                expected_table,
                 mode=test_def.compare,
                 options=test_def.options,
                 compare_function=test_def.compare_function,
@@ -541,7 +584,11 @@ def run_test(
         all_tests = discover_tests(manifest.project_root, manifest.tests_dir, manifest.joints_dir)
         all_tests = resolve_extends(all_tests)
     except TestDiscoveryError as exc:
-        cli_err = CLIError(code=exc.error.code, message=exc.error.message, remediation=exc.error.remediation)  # type: ignore[arg-type]
+        cli_err = CLIError(
+            code=exc.error.code,
+            message=exc.error.message,
+            remediation=exc.error.remediation,  # type: ignore[arg-type]
+        )
         print(format_cli_error(cli_err, globals.color), file=sys.stderr)
         return GENERAL_ERROR
 
@@ -556,6 +603,7 @@ def run_test(
     registry = PluginRegistry()
     registry.register_builtins()
     from rivet_bridge import register_optional_plugins
+
     register_optional_plugins(registry)
 
     # Execute

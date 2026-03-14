@@ -36,9 +36,15 @@ _CREDENTIAL_OPTIONS = [
     "credential_cache",
     "auth_type",
 ]
-_VALID_AUTH_TYPES = frozenset({
-    "iam_keys", "profile", "assume_role", "web_identity", "default",
-})
+_VALID_AUTH_TYPES = frozenset(
+    {
+        "iam_keys",
+        "profile",
+        "assume_role",
+        "web_identity",
+        "default",
+    }
+)
 
 # Maps auth_type → which credential options are relevant
 _CREDENTIAL_GROUPS: dict[str, list[str]] = {
@@ -81,20 +87,27 @@ def _raise_if_s3_client_error(exc: Exception, bucket: str) -> None:
     cause = exc.__cause__ if exc.__cause__ else exc
     if isinstance(cause, ClientError):
         from rivet_aws.errors import handle_s3_error
+
         raise handle_s3_error(cause, bucket=bucket, action="s3:ListBucket") from cause
     # Also check if the exception itself carries an error response (ArrowInvalid wrapping)
     for arg in getattr(exc, "args", ()):
         if isinstance(arg, str) and "NoSuchBucket" in arg:
             from rivet_aws.errors import handle_s3_error
+
             raise handle_s3_error(
-                ClientError({"Error": {"Code": "NoSuchBucket", "Message": str(exc)}}, "ListObjects"),
+                ClientError(
+                    {"Error": {"Code": "NoSuchBucket", "Message": str(exc)}}, "ListObjects"
+                ),
                 bucket=bucket,
                 action="s3:ListBucket",
             ) from exc
         if isinstance(arg, str) and "AccessDenied" in arg:
             from rivet_aws.errors import handle_s3_error
+
             raise handle_s3_error(
-                ClientError({"Error": {"Code": "AccessDenied", "Message": str(exc)}}, "ListObjects"),
+                ClientError(
+                    {"Error": {"Code": "AccessDenied", "Message": str(exc)}}, "ListObjects"
+                ),
                 bucket=bucket,
                 action="s3:ListBucket",
             ) from exc
@@ -144,7 +157,7 @@ def _build_s3fs(options: dict[str, Any]) -> Any:
         endpoint = endpoint_url
         for scheme in ("https://", "http://"):
             if endpoint.startswith(scheme):
-                endpoint = endpoint[len(scheme):]
+                endpoint = endpoint[len(scheme) :]
                 break
         kwargs["endpoint_override"] = endpoint
         if endpoint_url.startswith("http://"):
@@ -248,9 +261,15 @@ class S3CatalogPlugin(CatalogPlugin):
     def default_table_reference(self, logical_name: str, options: dict[str, Any]) -> str:
         bucket = options["bucket"]
         prefix = options.get("prefix", "")
-        fmt = options.get("format", _OPTIONAL_OPTIONS["format"])
-        path = f"{prefix}/{logical_name}" if prefix else logical_name
-        return f"s3://{bucket}/{path}.{fmt}"
+        # Detect format from file extension if present, otherwise use catalog option
+        suffix = logical_name
+        dot_idx = logical_name.rfind(".")
+        if dot_idx < 0 or logical_name[dot_idx:].lower() not in _RECOGNIZED_EXTENSIONS:
+            fmt = options.get("format", _OPTIONAL_OPTIONS["format"])
+            if fmt != "delta":
+                suffix = f"{logical_name}.{fmt}"
+        path = f"{prefix}/{suffix}" if prefix else suffix
+        return f"s3://{bucket}/{path}"
 
     # ── Introspection ─────────────────────────────────────────────────
 
@@ -340,32 +359,61 @@ class S3CatalogPlugin(CatalogPlugin):
         options = catalog.options
         bucket = options["bucket"]
         prefix = options.get("prefix", "")
+
+        # Detect format from table name extension if present
         fmt = options.get("format", _OPTIONAL_OPTIONS["format"])
+        dot_idx = table.rfind(".")
+        table_for_path = table
+        if dot_idx >= 0:
+            ext = table[dot_idx:].lower()
+            ext_fmt = {".parquet": "parquet", ".csv": "csv", ".json": "json", ".orc": "orc"}.get(
+                ext
+            )
+            if ext_fmt:
+                fmt = ext_fmt
+                # Table name already has extension — don't append again
+                table_for_path = table
 
         fs = _build_s3fs(options)
 
         path_parts = [bucket]
         if prefix:
             path_parts.append(prefix)
-        path_parts.append(table)
+        path_parts.append(table_for_path)
+
+        # Build file path — only append extension if table name doesn't already have one
+        needs_ext = dot_idx < 0 or table[dot_idx:].lower() not in {
+            ".parquet",
+            ".csv",
+            ".json",
+            ".orc",
+        }
 
         try:
             if fmt == "parquet":
-                file_path = f"{'/'.join(path_parts)}.parquet"
+                file_path = f"{'/'.join(path_parts)}" + (".parquet" if needs_ext else "")
                 return self._schema_from_parquet(fs, file_path, bucket, table)
             elif fmt in ("csv", "json"):
-                file_path = f"{'/'.join(path_parts)}.{fmt}"
+                file_path = f"{'/'.join(path_parts)}" + (f".{fmt}" if needs_ext else "")
                 n_rows = options.get(
                     "csv_inference_rows" if fmt == "csv" else "json_inference_rows", 1000
                 )
                 return self._schema_from_text(fs, file_path, fmt, n_rows, bucket, table)
             elif fmt == "orc":
-                file_path = f"{'/'.join(path_parts)}.orc"
+                file_path = f"{'/'.join(path_parts)}" + (".orc" if needs_ext else "")
                 return self._schema_from_orc(fs, file_path, bucket, table)
             else:
-                # delta or unknown — raise NotImplementedError
-                raise NotImplementedError(f"Schema inference not supported for format '{fmt}'")
-        except (ExecutionError, PluginValidationError, NotImplementedError):
+                # delta or unknown — structured error
+                raise ExecutionError(
+                    plugin_error(
+                        "RVT-501",
+                        f"Schema inference not supported for format '{fmt}'",
+                        plugin_name="rivet_aws",
+                        plugin_type="catalog",
+                        remediation="Use a supported format (parquet, csv, json). Delta format is not yet supported.",
+                    )
+                )
+        except (ExecutionError, PluginValidationError):
             raise
         except Exception as exc:
             _raise_if_s3_client_error(exc, bucket)
@@ -377,7 +425,19 @@ class S3CatalogPlugin(CatalogPlugin):
         options = catalog.options
         bucket = options["bucket"]
         prefix = options.get("prefix", "")
+
+        # Detect format from table name extension if present
         fmt = options.get("format", _OPTIONAL_OPTIONS["format"])
+        dot_idx = table.rfind(".")
+        has_recognized_ext = False
+        if dot_idx >= 0:
+            ext_lower = table[dot_idx:].lower()
+            ext_fmt = {".parquet": "parquet", ".csv": "csv", ".json": "json", ".orc": "orc"}.get(
+                ext_lower
+            )
+            if ext_fmt:
+                fmt = ext_fmt
+                has_recognized_ext = True
 
         fs = _build_s3fs(options)
 
@@ -409,7 +469,7 @@ class S3CatalogPlugin(CatalogPlugin):
                 partitioning=None,
             )
 
-        ext = f".{fmt}"
+        ext = "" if has_recognized_ext else f".{fmt}"
         s3_key = "/".join(path_parts[1:]) + ext  # key without bucket
         file_path = "/".join(path_parts) + ext
 
@@ -430,6 +490,7 @@ class S3CatalogPlugin(CatalogPlugin):
                 properties["etag"] = etag
         except ClientError as exc:
             from rivet_aws.errors import handle_s3_error
+
             raise handle_s3_error(exc, bucket=bucket, action="s3:GetObject") from exc
         except Exception:
             # Fallback to PyArrow file info
@@ -632,9 +693,7 @@ class S3CatalogPlugin(CatalogPlugin):
             comment=None,
         )
 
-    def _schema_from_orc(
-        self, fs: Any, file_path: str, bucket: str, table: str
-    ) -> ObjectSchema:
+    def _schema_from_orc(self, fs: Any, file_path: str, bucket: str, table: str) -> ObjectSchema:
         import pyarrow.orc as pa_orc
 
         from rivet_core.introspection import ColumnDetail, ObjectSchema

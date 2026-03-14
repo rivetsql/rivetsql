@@ -128,7 +128,7 @@ def _extract_records(
         data = current
 
     if isinstance(data, list):
-        return data  # type: ignore[return-value]
+        return data
     if isinstance(data, dict):
         return [data]
     return []

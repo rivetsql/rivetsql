@@ -74,6 +74,8 @@ class AssemblyFormatter:
             if compiled.engine_boundaries:
                 lines.append("")
                 self._render_engine_boundaries(lines, compiled)
+            # Cross-group optimizations section (after engine boundaries, before summary)
+            self._render_cross_group_optimizations(lines, compiled)
             lines.append("")
             self._render_summary(lines, compiled)
         summary = self.render_summary_line(compiled)
@@ -213,9 +215,12 @@ class AssemblyFormatter:
         lines.append(f"Catalogs ({len(compiled.catalogs)}): {cat_names}")
         eng_names = ", ".join(f"{e.name} ({e.engine_type})" for e in compiled.engines) or "none"
         lines.append(f"Engines ({len(compiled.engines)}): {eng_names}")
-        adp_names = ", ".join(
-            f"{a.engine_type} -> {a.catalog_type} ({a.source})" for a in compiled.adapters
-        ) or "none"
+        adp_names = (
+            ", ".join(
+                f"{a.engine_type} -> {a.catalog_type} ({a.source})" for a in compiled.adapters
+            )
+            or "none"
+        )
         lines.append(f"Adapters ({len(compiled.adapters)}): {adp_names}")
 
     # ------------------------------------------------------------------
@@ -278,6 +283,17 @@ class AssemblyFormatter:
         fg: FusedGroup,
         joint_map: dict[str, CompiledJoint],
     ) -> None:
+        """Render a fused group.
+
+        At verbosity >= 1, uses enhanced display with prominent fused SQL.
+        At verbosity 0, uses compact display.
+        """
+        # Use enhanced rendering at verbosity >= 1
+        if self.verbosity >= 1:
+            self._render_enhanced_fused_group(lines, fg, joint_map)
+            return
+
+        # Compact display at verbosity 0
         lines.append(
             f"╔══ Fused Group: {self._c(fg.id, BOLD)}"
             f" (engine: {fg.engine}, strategy: {fg.fusion_strategy}) ══╗"
@@ -288,10 +304,82 @@ class AssemblyFormatter:
                 self._render_joint_line(lines, j, indent="║ ")
                 if i < len(fg.joints) - 1:
                     lines.append("║   ↓")
-        if self.verbosity >= 2 and fg.fused_sql:
-            lines.append(f"║ Fused SQL: {self._highlight_sql(fg.fused_sql)}")
-            if fg.resolved_sql:
-                lines.append(f"║ Resolved Fused SQL: {self._highlight_sql(fg.resolved_sql)}")
+        lines.append("╚" + "═" * 40 + "╝")
+
+    def _render_enhanced_fused_group(
+        self,
+        lines: list[str],
+        fg: FusedGroup,
+        joint_map: dict[str, CompiledJoint],
+    ) -> None:
+        """Enhanced fused group rendering with prominent fused SQL display.
+
+        At verbosity >= 1, displays:
+        - Fused SQL prominently at the top of the group
+        - Fusion strategy (CTE or temp_view)
+        - List of joints in the group with their individual SQL
+        - Per-joint pushdown details
+
+        Args:
+            lines: List to append output lines to
+            fg: The fused group to render
+            joint_map: Dictionary mapping joint names to CompiledJoint objects
+        """
+        # Header with group info
+        lines.append(
+            f"╔══ Fused Group: {self._c(fg.id, BOLD)}"
+            f" (engine: {fg.engine}, strategy: {fg.fusion_strategy}) ══╗"
+        )
+
+        # Fused SQL prominently at the top (verbosity >= 1)
+        if fg.fused_sql:
+            lines.append("║")
+            lines.append("║ Fused SQL:")
+            # Format SQL with proper indentation
+            sql_lines = fg.fused_sql.strip().split("\n")
+            for sql_line in sql_lines:
+                highlighted = self._highlight_sql(sql_line)
+                lines.append(f"║   {highlighted}")
+
+        # Joint details section
+        lines.append("║")
+        lines.append("║ Joint Details:")
+        for i, jname in enumerate(fg.joints):
+            j = joint_map.get(jname)
+            if j:
+                # Joint name and type
+                icon = _TYPE_ICONS.get(j.type, "·")
+                name = self._c(j.name, BOLD)
+                lines.append(f"║   {icon} {name} ({j.type})")
+
+                # Show schema if available
+                if j.output_schema:
+                    if self.verbosity >= 2:
+                        cols = ", ".join(f"{c.name}: {c.type}" for c in j.output_schema.columns)
+                    else:
+                        cols = f"{len(j.output_schema.columns)} columns"
+                    confidence = (
+                        f" ({j.schema_confidence})" if j.schema_confidence != "none" else ""
+                    )
+                    lines.append(f"║     schema{confidence}: [{cols}]")
+
+                # Show the joint's own SQL (not execution SQL, which is the fused SQL)
+                # For fused groups, show the individual joint SQL to understand composition
+                if j.sql:
+                    lines.append(f"║     sql (original): {self._highlight_sql(j.sql)}")
+                if j.sql_translated and j.sql_translated != j.sql:
+                    lines.append(f"║     sql (translated): {self._highlight_sql(j.sql_translated)}")
+                if j.sql_resolved and j.sql_resolved != j.sql_translated:
+                    lines.append(f"║     sql (resolved): {self._highlight_sql(j.sql_resolved)}")
+
+                # Per-joint pushdown details
+                self._render_pushdown_details(lines, fg, jname, indent="║ ")
+
+                # Arrow between joints
+                if i < len(fg.joints) - 1:
+                    lines.append("║   ↓")
+
+        # Footer
         lines.append("╚" + "═" * 40 + "╝")
 
     def _render_joint_line(
@@ -322,6 +410,9 @@ class AssemblyFormatter:
         sql_block = self._sql_variants_indented(j, indent)
         if sql_block:
             lines.append(sql_block)
+
+        # Execution SQL (after variants, verbosity >= 1)
+        self._render_execution_sql(lines, j, indent)
 
         # Schema (gated by confidence)
         self._append_schema(lines, j, indent=f"{indent}    ")
@@ -417,9 +508,7 @@ class AssemblyFormatter:
         assertion_count = sum(
             1 for j in compiled.joints for chk in j.checks if chk.phase == "assertion"
         )
-        audit_count = sum(
-            1 for j in compiled.joints for chk in j.checks if chk.phase == "audit"
-        )
+        audit_count = sum(1 for j in compiled.joints for chk in j.checks if chk.phase == "audit")
         lines.append(
             f"  Quality checks: {assertion_count + audit_count}"
             f" (assertions: {assertion_count}, audits: {audit_count})"
@@ -435,9 +524,7 @@ class AssemblyFormatter:
         lines.append(f"  Optimizations: {applied} applied, {not_applied} not applicable")
 
         status = (
-            self._c(SYM_CHECK + " valid", GREEN)
-            if compiled.success
-            else self._c("invalid", "red")
+            self._c(SYM_CHECK + " valid", GREEN) if compiled.success else self._c("invalid", "red")
         )
         lines.append(f"  Validation: {status}")
 
@@ -504,6 +591,215 @@ class AssemblyFormatter:
             for label, sql in variants:
                 parts.append(f"{indent}    sql ({label}): {self._highlight_sql(sql)}")
         return "\n".join(parts)
+
+    def _render_execution_sql(self, lines: list[str], joint: CompiledJoint, indent: str) -> None:
+        """Render the execution SQL section for a joint.
+
+        Displays the actual SQL that will be executed on the engine after all
+        optimizations and transformations. Only shown at verbosity >= 1.
+
+        Args:
+            lines: List to append output lines to
+            joint: The compiled joint to render execution SQL for
+            indent: Base indentation string
+        """
+        if self.verbosity < 1:
+            return
+
+        if joint.execution_sql is None:
+            return
+
+        lines.append(f"{indent}    sql (executed): {self._highlight_sql(joint.execution_sql)}")
+
+    def _render_pushdown_details(
+        self,
+        lines: list[str],
+        group: FusedGroup,
+        joint_name: str,
+        indent: str,
+    ) -> None:
+        """Render detailed pushdown information for a joint within a fused group.
+
+        Shows:
+        - Pushed predicates
+        - Residual predicates
+        - Pushed projections
+        - Pushed limits
+        - Pushed casts
+
+        Only shown at verbosity >= 1 when pushdown metadata exists.
+
+        Args:
+            lines: List to append output lines to
+            group: The fused group containing the joint
+            joint_name: Name of the joint to render pushdown for
+            indent: Base indentation string
+        """
+        if self.verbosity < 1:
+            return
+
+        # Check if this joint has any pushdown information
+        has_pushdown = (
+            joint_name in group.per_joint_predicates
+            or joint_name in group.per_joint_projections
+            or joint_name in group.per_joint_limits
+            or (group.pushdown and group.pushdown.casts.pushed)
+            or (group.residual and group.residual.predicates)
+        )
+
+        if not has_pushdown:
+            return
+
+        lines.append(f"{indent}    Pushdown Details:")
+
+        # Pushed predicates
+        if joint_name in group.per_joint_predicates:
+            pushed = group.per_joint_predicates[joint_name]
+            if pushed:
+                lines.append(f"{indent}      Pushed predicates:")
+                for pred in pushed:
+                    lines.append(f"{indent}        • {pred.expression}")
+
+        # Residual predicates
+        if group.residual and group.residual.predicates:
+            lines.append(f"{indent}      Residual predicates:")
+            for pred in group.residual.predicates:
+                lines.append(f"{indent}        • {pred.expression}")
+
+        # Pushed projections
+        if joint_name in group.per_joint_projections:
+            cols = group.per_joint_projections[joint_name]
+            if cols:
+                cols_str = ", ".join(cols)
+                lines.append(f"{indent}      Pushed projections: {cols_str}")
+
+        # Pushed limits
+        if joint_name in group.per_joint_limits:
+            limit = group.per_joint_limits[joint_name]
+            lines.append(f"{indent}      Pushed limit: {limit}")
+
+        # Pushed casts
+        if group.pushdown and group.pushdown.casts.pushed:
+            lines.append(f"{indent}      Pushed casts:")
+            for cast in group.pushdown.casts.pushed:
+                lines.append(f"{indent}        • {cast.column}: {cast.from_type} → {cast.to_type}")
+
+    def _render_cross_group_optimizations(
+        self,
+        lines: list[str],
+        compiled: CompiledAssembly,
+    ) -> None:
+        """Render cross-group optimization details.
+
+        Shows optimizations that cross group boundaries:
+        - Predicate pushdown from downstream to upstream groups
+        - Projection pushdown across groups
+        - Limit pushdown across groups
+
+        Only shown at verbosity >= 1 when cross-group optimizations exist.
+
+        Args:
+            lines: List to append output lines to
+            compiled: The compiled assembly to analyze
+        """
+        if self.verbosity < 1:
+            return
+
+        # Build joint → group mapping
+        joint_to_group: dict[str, FusedGroup] = {}
+        for group in compiled.fused_groups:
+            for joint_name in group.joints:
+                joint_to_group[joint_name] = group
+
+        # Collect cross-group optimizations
+        predicate_pushdowns: list[
+            tuple[str, str, list[str]]
+        ] = []  # (from_group, to_group, predicates)
+        projection_pushdowns: list[
+            tuple[str, str, list[str]]
+        ] = []  # (from_group, to_group, columns)
+        limit_pushdowns: list[tuple[str, str, int]] = []  # (from_group, to_group, limit)
+
+        # Analyze each group for cross-group optimizations
+        for group in compiled.fused_groups:
+            # Check predicates pushed to this group
+            if group.per_joint_predicates:
+                for joint_name, predicates in group.per_joint_predicates.items():
+                    if not predicates:
+                        continue
+
+                    # Find which downstream group(s) pushed these predicates
+                    # by looking for joints that depend on this joint
+                    for downstream_joint in compiled.joints:
+                        if joint_name in downstream_joint.upstream:
+                            downstream_group = joint_to_group.get(downstream_joint.name)
+                            if downstream_group and downstream_group.id != group.id:
+                                # This is a cross-group pushdown
+                                pred_exprs = [p.expression for p in predicates]
+                                predicate_pushdowns.append(
+                                    (downstream_group.id, group.id, pred_exprs)
+                                )
+                                break  # Only record once per target joint
+
+            # Check projections pushed to this group
+            if group.per_joint_projections:
+                for joint_name, columns in group.per_joint_projections.items():
+                    if not columns:
+                        continue
+
+                    # Find which downstream group(s) pushed these projections
+                    for downstream_joint in compiled.joints:
+                        if joint_name in downstream_joint.upstream:
+                            downstream_group = joint_to_group.get(downstream_joint.name)
+                            if downstream_group and downstream_group.id != group.id:
+                                # This is a cross-group pushdown
+                                projection_pushdowns.append(
+                                    (downstream_group.id, group.id, columns)
+                                )
+                                break  # Only record once per target joint
+
+            # Check limits pushed to this group
+            if group.per_joint_limits:
+                for joint_name, limit in group.per_joint_limits.items():
+                    # Find which downstream group(s) pushed this limit
+                    for downstream_joint in compiled.joints:
+                        if joint_name in downstream_joint.upstream:
+                            downstream_group = joint_to_group.get(downstream_joint.name)
+                            if downstream_group and downstream_group.id != group.id:
+                                # This is a cross-group pushdown
+                                limit_pushdowns.append((downstream_group.id, group.id, limit))
+                                break  # Only record once per target joint
+
+        # If no cross-group optimizations, omit the section
+        if not predicate_pushdowns and not projection_pushdowns and not limit_pushdowns:
+            return
+
+        # Render the section (with blank line before)
+        lines.append("")
+        lines.append(self._c("─── Cross-Group Optimizations ───", BOLD))
+
+        # Predicate pushdown
+        if predicate_pushdowns:
+            lines.append("  Predicate Pushdown:")
+            for from_group, to_group, pred_exprs in predicate_pushdowns:
+                pred_str = ", ".join(pred_exprs)
+                arrow = self._c("→", YELLOW)
+                lines.append(f"    {from_group} {arrow} {to_group}: {pred_str}")
+
+        # Projection pushdown
+        if projection_pushdowns:
+            lines.append("  Projection Pushdown:")
+            for from_group, to_group, columns in projection_pushdowns:
+                cols_str = ", ".join(columns)
+                arrow = self._c("→", YELLOW)
+                lines.append(f"    {from_group} {arrow} {to_group}: {cols_str}")
+
+        # Limit pushdown
+        if limit_pushdowns:
+            lines.append("  Limit Pushdown:")
+            for from_group, to_group, limit in limit_pushdowns:
+                arrow = self._c("→", YELLOW)
+                lines.append(f"    {from_group} {arrow} {to_group}: LIMIT {limit}")
 
     def _highlight_sql(self, sql: str) -> str:
         if not self.color:

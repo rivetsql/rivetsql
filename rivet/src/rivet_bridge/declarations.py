@@ -47,11 +47,13 @@ class DeclarationGenerator:
             else:
                 content = self._generate_yaml(joint)
 
-            files.append(FileOutput(
-                relative_path=f"{directory}/{name}.{ext}",
-                content=content,
-                joint_name=name,
-            ))
+            files.append(
+                FileOutput(
+                    relative_path=f"{directory}/{name}.{ext}",
+                    content=content,
+                    joint_name=name,
+                )
+            )
 
             # Quality check files
             if joint.assertions:
@@ -117,7 +119,7 @@ class DeclarationGenerator:
         elif joint.sql is not None:
             # Try to decompose SQL for source/sink
             if joint.joint_type in ("source", "sink") and self._decomposer.can_decompose(joint.sql):
-                columns, filter_str, _table = self._decomposer.decompose(joint.sql)
+                columns, filter_str, _table, limit_val = self._decomposer.decompose(joint.sql)
                 if columns is not None:
                     lines.append("columns:")
                     for col in columns:
@@ -128,6 +130,8 @@ class DeclarationGenerator:
                             lines.append(f"    expression: {col.expression}")
                 if filter_str is not None:
                     lines.append(f"filter: {filter_str}")
+                if limit_val is not None:
+                    lines.append(f"limit: {limit_val}")
             else:
                 lines.append(f"sql: {joint.sql}")
 
@@ -167,7 +171,9 @@ class DeclarationGenerator:
             lines.append(f"-- rivet:fusion_strategy: {joint.fusion_strategy_override}")
 
         if joint.materialization_strategy_override is not None:
-            lines.append(f"-- rivet:materialization_strategy: {joint.materialization_strategy_override}")
+            lines.append(
+                f"-- rivet:materialization_strategy: {joint.materialization_strategy_override}"
+            )
 
         if joint.function is not None:
             lines.append(f"-- rivet:function: {joint.function}")

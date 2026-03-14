@@ -208,6 +208,45 @@ The same fusion-breaking conditions apply to each upstream independently — if 
 
 During compilation, Rivet optionally introspects source schemas from catalogs. This improves SQL validation and column lineage tracking, but introspection failures never block compilation.
 
+### Sink Schema Inference
+
+After all upstream joints are compiled, Rivet automatically infers output schemas for sink joints based on their upstream data flow. This provides visibility into what data structure is being written and enables schema validation at write time.
+
+**Single upstream:** When a sink has exactly one upstream joint, the sink inherits that upstream's output schema directly.
+
+**Multiple upstreams:** When a sink has multiple upstream joints:
+
+- If all upstream schemas are identical (same columns, types, nullability, and order), the sink uses that shared schema
+- If upstream schemas differ or any upstream has no schema, the sink's output schema is set to None and a warning is emitted
+
+**Schema confidence:** Sinks inherit schema confidence from their upstream joints:
+
+- `introspected` — upstream data came from catalog introspection
+- `inferred` — upstream schema was inferred from SQL analysis
+- `partial` — schema merging failed due to conflicts
+- `none` — no schema information available
+
+Schema confidence follows the ranking: introspected > inferred > partial > none. When multiple upstreams have different confidence levels, the sink inherits the highest confidence present.
+
+**Example output:**
+
+```
+✓ Compiled 3 joints in 0.12s
+
+Execution order:
+  1. raw_orders (source, duckdb, introspected schema: id: int64, amount: float64)
+  2. revenue_sink (sink, duckdb, introspected schema: id: int64, amount: float64)
+
+Schema confidence: introspected
+```
+
+When schemas conflict:
+
+```
+⚠ Warning: Sink 'combined_sink' has conflicting upstream schemas from joints: 'source1', 'source2'.
+Schema inference failed. Sink output_schema set to None.
+```
+
 ---
 
 ## The CompiledAssembly

@@ -7,10 +7,12 @@ consumed by the Executor. All models are immutable frozen dataclasses.
 from __future__ import annotations
 
 import importlib
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from dataclasses import dataclass, field, replace
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from rivet_core.assembly import Assembly
@@ -28,7 +30,7 @@ from rivet_core.optimizer import (
     pushdown_pass,
 )
 from rivet_core.plugins import CatalogPlugin, PluginRegistry, ReferenceResolver
-from rivet_core.sql_parser import LogicalPlan, SQLParser
+from rivet_core.sql_parser import LogicalPlan, Projection, SQLParser
 
 # ---------------------------------------------------------------------------
 # Data models (task 12.1)
@@ -102,6 +104,44 @@ class CompiledAdapter:
 
 @dataclass(frozen=True)
 class CompiledJoint:
+    """A compiled joint with all metadata resolved.
+
+    Attributes:
+        name: Joint name
+        type: Joint type ("source", "sql", "sink", "python")
+        catalog: Catalog name if applicable
+        catalog_type: Type of catalog plugin
+        engine: Engine name for execution
+        engine_resolution: How the engine was resolved
+        adapter: Adapter name if applicable
+        sql: Original user-written SQL
+        sql_translated: SQL after dialect translation
+        sql_resolved: SQL with catalog-qualified references
+        sql_dialect: Dialect of the original SQL
+        engine_dialect: Target engine's SQL dialect
+        upstream: List of upstream joint names
+        eager: Whether joint should be eagerly materialized
+        table: Target table name for sinks
+        write_strategy: Write strategy for sinks
+        function: Python function name for python joints
+        source_file: Path to source file for python joints
+        logical_plan: Logical plan for the joint
+        output_schema: Output schema if known
+        column_lineage: Column lineage information
+        optimizations: List of applied optimizations
+        checks: List of compiled checks
+        fused_group_id: ID of the fused group this joint belongs to
+        tags: User-defined tags
+        description: User-defined description
+        fusion_strategy_override: Override for fusion strategy
+        materialization_strategy_override: Override for materialization strategy
+        source_stats: Statistics about the source data
+        schema_confidence: Confidence level of schema inference
+        execution_sql: Final SQL that will be executed on the engine after all
+            optimizations and transformations. None for non-SQL joints or when
+            SQL resolution is not applicable.
+    """
+
     name: str
     type: str  # "source", "sql", "sink", "python"
     catalog: str | None
@@ -132,6 +172,7 @@ class CompiledJoint:
     materialization_strategy_override: str | None
     source_stats: SourceStats | None = None
     schema_confidence: str = "none"
+    execution_sql: str | None = None
 
 
 @dataclass(frozen=True)
@@ -202,17 +243,33 @@ def _resolve_engine(
     return "", "", ""
 
 
-def _verify_callable(function_path: str) -> bool:
-    """Check if a colon-separated function path (module:func) is importable."""
+def _verify_callable(function_path: str, project_root: Path | None = None) -> bool:
+    """Check if a colon-separated function path (module:func) is importable.
+
+    When *project_root* is provided it is temporarily prepended to
+    ``sys.path`` so that project-local modules (e.g. ``joints/``) are
+    importable without the user having to set ``PYTHONPATH``.
+    """
     parts = function_path.rsplit(":", 1)
     if len(parts) != 2:
         return False
     module_path, func_name = parts
+    root_str = str(project_root) if project_root else None
+    added = False
     try:
+        if root_str and root_str not in sys.path:
+            sys.path.insert(0, root_str)
+            added = True
         mod = importlib.import_module(module_path)
         return callable(getattr(mod, func_name, None))
     except Exception:
         return False
+    finally:
+        if added and root_str:
+            try:
+                sys.path.remove(root_str)
+            except ValueError:
+                pass
 
 
 def _do_introspect(
@@ -236,8 +293,7 @@ def _do_introspect(
         obj_schema = catalog_plugin.get_schema(catalog, table_name)
         schema = Schema(
             columns=[
-                Column(name=c.name, type=c.type, nullable=c.nullable)
-                for c in obj_schema.columns
+                Column(name=c.name, type=c.type, nullable=c.nullable) for c in obj_schema.columns
             ]
         )
     except NotImplementedError:
@@ -253,9 +309,7 @@ def _do_introspect(
                 row_count=meta.row_count,
                 size_bytes=meta.size_bytes,
                 last_modified=meta.last_modified,
-                partition_count=(
-                    len(meta.partitioning.partitions) if meta.partitioning else None
-                ),
+                partition_count=(len(meta.partitioning.partitions) if meta.partitioning else None),
             )
     except NotImplementedError:
         pass
@@ -377,9 +431,7 @@ def _compile_sql_joint(
         if inferred_schema:
             output_schema = inferred_schema
 
-        column_lineage = parser.extract_lineage(
-            ast, joint_upstream_schemas, joint_name=joint.name
-        )
+        column_lineage = parser.extract_lineage(ast, joint_upstream_schemas, joint_name=joint.name)
 
         target_dialect = sql_dialect or engine_dialect or "duckdb"
         if sql_dialect and target_dialect != sql_dialect:
@@ -403,9 +455,10 @@ def _compile_sql_joint(
 def _compile_python_joint(
     joint: Joint,
     errors: list[RivetError],
+    project_root: Path | None = None,
 ) -> list[ColumnLineage]:
     """Validate and produce lineage for a PythonJoint."""
-    if joint.function and not _verify_callable(joint.function):
+    if joint.function and not _verify_callable(joint.function, project_root):
         errors.append(
             RivetError(
                 code="RVT-753",
@@ -454,6 +507,230 @@ def _compile_checks(
     return checks
 
 
+def _warn_unresolved_column_refs(
+    joint_name: str,
+    logical_plan: LogicalPlan,
+    output_schema: Schema | None,
+    warnings: list[str],
+) -> None:
+    """Emit warnings for column references not found in the introspected catalog schema."""
+    if output_schema is None:
+        return
+
+    known_columns = {col.name.lower() for col in output_schema.columns}
+
+    # Warn about filter references to unknown columns
+    for pred in logical_plan.predicates:
+        for col_ref in pred.columns:
+            col_name = col_ref.rsplit(".", 1)[-1].lower()
+            if col_name not in known_columns:
+                warnings.append(
+                    f"Source joint '{joint_name}' filter references column "
+                    f"'{col_ref}' not found in catalog schema."
+                )
+
+    # Warn about column expression references to unknown columns
+    for proj in logical_plan.projections:
+        for col_ref in proj.source_columns:
+            col_name = col_ref.rsplit(".", 1)[-1].lower()
+            if col_name not in known_columns:
+                alias_label = proj.alias or proj.expression
+                warnings.append(
+                    f"Source joint '{joint_name}' column '{alias_label}' "
+                    f"expression references '{col_ref}' not found in catalog schema."
+                )
+
+
+def _validate_source_inline_transforms(
+    joint_name: str,
+    logical_plan: LogicalPlan | None,
+    output_schema: Schema | None,
+    errors: list[RivetError],
+    warnings: list[str],
+    sql: str | None = None,
+) -> Schema | None:
+    """Validate source inline transforms and compute transformed output schema.
+
+    Checks:
+    1. Single-table constraint (no joins, CTEs, subqueries) → RVT-760, RVT-761, RVT-762
+    2. Column/filter reference resolution against introspected schema (warnings)
+    3. Transformed output schema computation from LogicalPlan projections
+
+    Returns the transformed output schema, or the original if no transforms apply.
+    """
+    if logical_plan is None:
+        return output_schema
+
+    # --- Single-table constraint checks ---
+
+    # RVT-760: Reject JOINs (also catches comma-separated FROM which parses as implicit join)
+    if logical_plan.joins:
+        errors.append(
+            RivetError(
+                code="RVT-760",
+                message=(
+                    f"Source joint '{joint_name}' violates single-table constraint: "
+                    f"JOINs are not allowed in source SQL."
+                ),
+                context={"joint": joint_name},
+                remediation="Remove JOINs from the source SQL. Source joints must reference a single table.",
+            )
+        )
+
+    # RVT-761 / RVT-762: Detect CTEs and subqueries via sqlglot AST.
+    # The LogicalPlan's source_tables don't reliably surface these, so we
+    # parse the SQL directly when available.
+    if sql:
+        try:
+            import sqlglot
+            from sqlglot import exp as sg_exp
+
+            parsed = sqlglot.parse_one(sql)
+
+            # RVT-761: Reject CTEs (WITH clause)
+            if parsed.find(sg_exp.With):
+                errors.append(
+                    RivetError(
+                        code="RVT-761",
+                        message=(
+                            f"Source joint '{joint_name}' violates single-table constraint: "
+                            f"CTEs are not allowed in source SQL."
+                        ),
+                        context={"joint": joint_name},
+                        remediation="Remove CTEs from the source SQL. Source joints must reference a single table.",
+                    )
+                )
+
+            # RVT-762: Reject subqueries
+            if parsed.find(sg_exp.Subquery):
+                errors.append(
+                    RivetError(
+                        code="RVT-762",
+                        message=(
+                            f"Source joint '{joint_name}' violates single-table constraint: "
+                            f"subqueries are not allowed in source SQL."
+                        ),
+                        context={"joint": joint_name},
+                        remediation="Remove subqueries from the source SQL. Use simple WHERE conditions only.",
+                    )
+                )
+        except Exception:
+            pass  # Best-effort: if SQL can't be re-parsed, skip these checks
+
+    # --- Column reference warnings (only when introspected schema is available) ---
+
+    _warn_unresolved_column_refs(joint_name, logical_plan, output_schema, warnings)
+
+    # --- Compute transformed output schema ---
+
+    transformed_schema = _compute_source_transform_schema(
+        joint_name, logical_plan.projections, output_schema, warnings
+    )
+    return transformed_schema if transformed_schema is not None else output_schema
+
+
+def _compute_source_transform_schema(
+    joint_name: str,
+    projections: list[Projection],
+    catalog_schema: Schema | None,
+    warnings: list[str],
+) -> Schema | None:
+    """Compute the output schema for a source joint with inline transform projections.
+
+    For SELECT * (no explicit projections), returns None (use catalog schema as-is).
+    For explicit projections, builds a schema from the projected columns using the
+    catalog schema for type information.
+    """
+    from rivet_core.models import Column
+
+    if not projections:
+        return None
+
+    # Check for SELECT * (single Star projection)
+    if len(projections) == 1 and projections[0].expression == "*":
+        return None
+
+    if catalog_schema is None:
+        # No introspected schema — can't compute types, but can compute column names
+        columns: list[Column] = []
+        for proj in projections:
+            col_name = proj.alias if proj.alias else proj.expression
+            columns.append(Column(name=col_name, type="large_binary", nullable=True))
+            warnings.append(
+                f"Source joint '{joint_name}' column '{col_name}': "
+                f"cannot infer output type for expression '{proj.expression}' "
+                f"(no catalog schema available)."
+            )
+        return Schema(columns=columns)
+
+    # Build lookup from catalog schema
+    catalog_col_map = {col.name.lower(): col for col in catalog_schema.columns}
+
+    columns = []
+    for proj in projections:
+        col_name = proj.alias if proj.alias else proj.expression
+        col_type = _infer_projection_type(proj, catalog_col_map, joint_name, warnings)
+        columns.append(Column(name=col_name, type=col_type, nullable=True))
+
+    return Schema(columns=columns)
+
+
+def _infer_projection_type(
+    proj: Projection,
+    catalog_col_map: dict[str, Any],
+    joint_name: str,
+    warnings: list[str],
+) -> str:
+    """Infer the output type of a single projection expression.
+
+    Returns the Arrow type string. Falls back to 'large_binary' with a warning
+    when the type cannot be determined.
+    """
+    expr = proj.expression
+    alias = proj.alias
+
+    # Simple column reference (no alias, or alias with expression = column name)
+    if not proj.alias and len(proj.source_columns) == 1:
+        col_name = proj.source_columns[0].rsplit(".", 1)[-1].lower()
+        cat_col = catalog_col_map.get(col_name)
+        if cat_col is not None:
+            return str(cat_col.type)
+    elif (
+        proj.alias
+        and len(proj.source_columns) == 1
+        and proj.expression.lower() == proj.source_columns[0].rsplit(".", 1)[-1].lower()
+    ):
+        # Simple rename: alias for a single column reference
+        col_name = proj.source_columns[0].rsplit(".", 1)[-1].lower()
+        cat_col = catalog_col_map.get(col_name)
+        if cat_col is not None:
+            return str(cat_col.type)
+
+    # CAST expression: try to extract target type from the expression string
+    expr_upper = expr.strip().upper()
+    if expr_upper.startswith("CAST("):
+        # Parse "CAST(x AS TYPE)" to extract TYPE
+        try:
+            import sqlglot
+            from sqlglot import exp as sg_exp
+
+            parsed = sqlglot.parse_one(expr)
+            if isinstance(parsed, sg_exp.Cast):
+                from rivet_core.sql_parser import SQLParser
+
+                return SQLParser._normalize_sqlglot_type(parsed.to)
+        except Exception:
+            pass
+
+    # Cannot determine type — emit warning
+    col_label = alias or expr
+    warnings.append(
+        f"Source joint '{joint_name}' column '{col_label}': "
+        f"cannot infer output type for expression '{expr}'."
+    )
+    return "large_binary"
+
+
 def _compile_joint(
     joint: Joint,
     catalog_map: dict[str, Catalog],
@@ -467,6 +744,7 @@ def _compile_joint(
     introspect: bool = True,
     introspect_timeout: float = 5.0,
     adapter_cache: dict[tuple[str, str], str | None] | None = None,
+    project_root: Path | None = None,
 ) -> CompiledJoint:
     """Compile a single joint: resolve engine, adapter, parse SQL, validate."""
     catalog = catalog_map.get(joint.catalog) if joint.catalog else None
@@ -474,9 +752,7 @@ def _compile_joint(
     catalog_plugin = registry.get_catalog_plugin(catalog_type) if catalog_type else None
 
     # Engine resolution
-    engine_name, engine_type, resolution = _resolve_engine(
-        joint, engine_map, default_engine
-    )
+    engine_name, engine_type, resolution = _resolve_engine(joint, engine_map, default_engine)
     if not engine_name:
         errors.append(
             RivetError(
@@ -498,7 +774,12 @@ def _compile_joint(
 
     # Adapter lookup
     adapter_name = _resolve_adapter(
-        engine_type, catalog_type, engine_name, joint.name, registry, errors,
+        engine_type,
+        catalog_type,
+        engine_name,
+        joint.name,
+        registry,
+        errors,
         adapter_cache=adapter_cache,
     )
 
@@ -507,7 +788,10 @@ def _compile_joint(
     source_stats = None
     if joint.joint_type == "source" and introspect:
         output_schema, source_stats = _introspect_source(
-            joint, catalog, catalog_plugin, warnings,
+            joint,
+            catalog,
+            catalog_plugin,
+            warnings,
             timeout_seconds=introspect_timeout,
         )
 
@@ -518,8 +802,10 @@ def _compile_joint(
     engine_dialect: str | None = None
 
     if joint.joint_type == "sql" and joint.sql:
-        logical_plan, column_lineage, sql_translated, engine_dialect, sql_schema = _compile_sql_joint(
-            joint, engine_type, registry, parser, upstream_schemas, errors, warnings
+        logical_plan, column_lineage, sql_translated, engine_dialect, sql_schema = (
+            _compile_sql_joint(
+                joint, engine_type, registry, parser, upstream_schemas, errors, warnings
+            )
         )
         if sql_schema:
             output_schema = sql_schema
@@ -534,9 +820,20 @@ def _compile_joint(
         except Exception:
             pass  # Best-effort: source SQL parsing failure is non-fatal
 
+    # Validate source inline transforms and compute transformed output schema.
+    if joint.joint_type == "source":
+        output_schema = _validate_source_inline_transforms(
+            joint.name,
+            logical_plan,
+            output_schema,
+            errors,
+            warnings,
+            sql=joint.sql,
+        )
+
     # PythonJoint handling
     if joint.joint_type == "python":
-        column_lineage = _compile_python_joint(joint, errors)
+        column_lineage = _compile_python_joint(joint, errors, project_root)
 
     # Checks
     checks = _compile_checks(joint, errors)
@@ -585,7 +882,8 @@ def _build_compiled_catalogs(
     used = {cj.catalog for cj in compiled_joints if cj.catalog}
     return [
         CompiledCatalog(name=c.name, type=c.type, options=dict(c.options))
-        for c in catalogs if c.name in used
+        for c in catalogs
+        if c.name in used
     ]
 
 
@@ -601,7 +899,9 @@ def _build_compiled_engines(
         if e.name in used:
             plugin = registry.get_engine_plugin(e.engine_type)
             native = list(plugin.supported_catalog_types.keys()) if plugin else []
-            result.append(CompiledEngine(name=e.name, engine_type=e.engine_type, native_catalog_types=native))
+            result.append(
+                CompiledEngine(name=e.name, engine_type=e.engine_type, native_catalog_types=native)
+            )
     return result
 
 
@@ -621,11 +921,13 @@ def _build_compiled_adapters(
         e_type = eng.engine_type if eng else et
         adapter = registry.get_adapter(e_type, ct)
         if adapter:
-            result.append(CompiledAdapter(
-                engine_type=adapter.target_engine_type,
-                catalog_type=adapter.catalog_type,
-                source=adapter.source,
-            ))
+            result.append(
+                CompiledAdapter(
+                    engine_type=adapter.target_engine_type,
+                    catalog_type=adapter.catalog_type,
+                    source=adapter.source,
+                )
+            )
     return result
 
 
@@ -697,20 +999,14 @@ def _resolve_strategy(
     return result
 
 
-def _discover_resolver(
-    compiled_joints: list[CompiledJoint],
-    engine_map: dict[str, ComputeEngine],
+def _get_resolver_for_engine_type(
+    engine_type: str,
     registry: PluginRegistry,
 ) -> ReferenceResolver | None:
-    """Find the first available reference resolver from engine plugins."""
-    for cj in compiled_joints:
-        eng = engine_map.get(cj.engine)
-        if eng:
-            plugin = registry.get_engine_plugin(eng.engine_type)
-            if plugin:
-                r = plugin.get_reference_resolver()
-                if r is not None:
-                    return r
+    """Return the reference resolver for a specific engine type, or None."""
+    plugin = registry.get_engine_plugin(engine_type)
+    if plugin:
+        return plugin.get_reference_resolver()
     return None
 
 
@@ -724,14 +1020,28 @@ def _resolve_references(
     resolve_references: ReferenceResolver | None,
     warnings: list[str],
 ) -> list[FusedGroup]:
-    """Resolve SQL references in fused groups."""
-    resolver = resolve_references or _discover_resolver(compiled_joints, engine_map, registry)
+    """Resolve SQL references in fused groups.
 
-    if resolver is None:
-        return fused_groups
+    Each group is resolved using the reference resolver from its own engine
+    plugin.  An explicitly provided *resolve_references* overrides auto-
+    discovery and is applied to all groups (for backward compatibility with
+    tests and single-engine projects).
 
+    In multi-engine plans, this prevents a resolver from one engine type
+    (e.g. postgres) from rewriting SQL in groups belonging to a different
+    engine type (e.g. duckdb).
+    """
     result = list(fused_groups)
     for idx, group in enumerate(result):
+        # Per-group resolver: use the explicit override if provided,
+        # otherwise look up the resolver for this group's engine type.
+        resolver = resolve_references or _get_resolver_for_engine_type(
+            group.engine_type,
+            registry,
+        )
+        if resolver is None:
+            continue
+
         any_resolved = False
         for jn in group.joints:
             cj = cj_map[jn]
@@ -740,10 +1050,16 @@ def _resolve_references(
             input_sql = cj.sql_translated or cj.sql
             assert input_sql is not None
             cat = catalog_map.get(cj.catalog) if cj.catalog else None
-            compiled_cat = CompiledCatalog(name=cat.name, type=cat.type, options=dict(cat.options)) if cat else None
+            compiled_cat = (
+                CompiledCatalog(name=cat.name, type=cat.type, options=dict(cat.options))
+                if cat
+                else None
+            )
             try:
                 resolved = resolver.resolve_references(
-                    input_sql, cj, compiled_cat,
+                    input_sql,
+                    cj,
+                    compiled_cat,
                     compiled_joints=cj_map,
                     catalog_map=catalog_map,
                     fused_group_joints=list(group.joints),
@@ -777,6 +1093,7 @@ def _resolve_references(
                 )
     return result
 
+
 def _build_downstream_map(cj_map: dict[str, CompiledJoint]) -> dict[str, list[str]]:
     """Build a downstream dependency map in O(V+E).
 
@@ -789,7 +1106,6 @@ def _build_downstream_map(cj_map: dict[str, CompiledJoint]) -> dict[str, list[st
             if up in downstream:
                 downstream[up].append(cj.name)
     return downstream
-
 
 
 def _determine_materializations(
@@ -820,7 +1136,9 @@ def _determine_materializations(
                 detail = f"Joint '{cj.name}' has assertions"
             elif len(downstream_map.get(cj.name, [])) > 1:
                 trigger = "multi_consumer"
-                detail = f"Joint '{cj.name}' has {len(downstream_map[cj.name])} downstream consumers"
+                detail = (
+                    f"Joint '{cj.name}' has {len(downstream_map[cj.name])} downstream consumers"
+                )
             else:
                 eng_from = engine_map.get(cj.engine)
                 eng_to = engine_map.get(ds.engine)
@@ -832,13 +1150,18 @@ def _determine_materializations(
                     detail = f"Joints '{cj.name}' and '{ds_name}' are in different fused groups"
 
             if trigger:
-                mat_strategy = cj.materialization_strategy_override or default_materialization_strategy
+                mat_strategy = (
+                    cj.materialization_strategy_override or default_materialization_strategy
+                )
                 if mat_strategy not in VALID_MATERIALIZATION:
                     mat_strategy = default_materialization_strategy
                 materializations.append(
                     Materialization(
-                        from_joint=cj.name, to_joint=ds_name,
-                        trigger=trigger, detail=detail, strategy=mat_strategy,
+                        from_joint=cj.name,
+                        to_joint=ds_name,
+                        trigger=trigger,
+                        detail=detail,
+                        strategy=mat_strategy,
                     )
                 )
     return materializations
@@ -891,9 +1214,12 @@ def _detect_engine_boundaries(
             strategy = type(adapter).__qualname__
         boundaries.append(
             EngineBoundary(
-                producer_group_id=prod_gid, consumer_group_id=cons_gid,
-                producer_engine_type=prod_et, consumer_engine_type=cons_et,
-                boundary_joints=joints, adapter_strategy=strategy,
+                producer_group_id=prod_gid,
+                consumer_group_id=cons_gid,
+                producer_engine_type=prod_et,
+                consumer_engine_type=cons_et,
+                boundary_joints=joints,
+                adapter_strategy=strategy,
             )
         )
     return boundaries
@@ -919,31 +1245,160 @@ def _assign_schema_confidence(
             if cj.output_schema is None:
                 # Check if some upstream had schemas (partial) or none at all
                 upstream_have_schema = any(
-                    joint_map[u].output_schema is not None
-                    for u in cj.upstream if u in joint_map
+                    joint_map[u].output_schema is not None for u in cj.upstream if u in joint_map
                 )
                 confidence_map[cj.name] = "partial" if upstream_have_schema else "none"
             else:
                 all_upstream_have_schema = all(
-                    joint_map[u].output_schema is not None
-                    for u in cj.upstream if u in joint_map
+                    joint_map[u].output_schema is not None for u in cj.upstream if u in joint_map
                 )
                 if all_upstream_have_schema:
                     confidence_map[cj.name] = "inferred"
                 else:
                     confidence_map[cj.name] = "partial"
         elif cj.type == "sink":
-            # Inherit best confidence from upstream
-            upstream_confidences = [
-                confidence_map.get(u, "none") for u in cj.upstream
-            ]
-            rank = {"introspected": 3, "inferred": 2, "partial": 1, "none": 0}
-            best = max(upstream_confidences, key=lambda c: rank.get(c, 0)) if upstream_confidences else "none"
-            confidence_map[cj.name] = best
+            # Handle case where sink has no schema
+            if cj.output_schema is None:
+                # Check if schema merging failed due to conflicts
+                upstream_schemas = [
+                    joint_map[u].output_schema for u in cj.upstream if u in joint_map
+                ]
+                non_none_schemas = [s for s in upstream_schemas if s is not None]
+
+                if len(non_none_schemas) > 1:
+                    # Multiple schemas exist but sink has None - merging failed, assign "partial"
+                    confidence_map[cj.name] = "partial"
+                elif len(non_none_schemas) == 1 and len(upstream_schemas) > 1:
+                    # One upstream has schema, others have None - assign "partial"
+                    confidence_map[cj.name] = "partial"
+                else:
+                    # All upstreams have None or no upstreams - assign "none"
+                    confidence_map[cj.name] = "none"
+            else:
+                # Sink has a schema - inherit best confidence from upstream
+                upstream_confidences = [confidence_map.get(u, "none") for u in cj.upstream]
+                rank = {"introspected": 3, "inferred": 2, "partial": 1, "none": 0}
+                best = (
+                    max(upstream_confidences, key=lambda c: rank.get(c, 0))
+                    if upstream_confidences
+                    else "none"
+                )
+                confidence_map[cj.name] = best
         else:
             confidence_map[cj.name] = "none"
 
-    return [replace(cj, schema_confidence=confidence_map.get(cj.name, "none")) for cj in compiled_joints]
+    return [
+        replace(cj, schema_confidence=confidence_map.get(cj.name, "none")) for cj in compiled_joints
+    ]
+
+
+def _infer_sink_schemas(
+    compiled_joints: list[CompiledJoint],
+    warnings: list[str],
+) -> list[CompiledJoint]:
+    """Infer output schemas for sink joints based on upstream schemas.
+
+    For each sink:
+    - Single upstream: copy upstream schema
+    - Multiple upstreams with identical schemas: use that schema
+    - Multiple upstreams with differing schemas: set to None, emit warning
+    - Any upstream with None schema: set to None
+
+    Args:
+        compiled_joints: List of compiled joints to process
+        warnings: List to append warning messages to
+
+    Returns:
+        Updated list of CompiledJoints with sink schemas populated
+    """
+    # Build joint_map for O(1) lookups
+    joint_map: dict[str, CompiledJoint] = {cj.name: cj for cj in compiled_joints}
+
+    result: list[CompiledJoint] = []
+
+    for cj in compiled_joints:
+        if cj.type != "sink":
+            result.append(cj)
+            continue
+
+        # Collect upstream schemas
+        upstream_schemas: list[Schema | None] = []
+        for upstream_name in cj.upstream:
+            if upstream_name in joint_map:
+                upstream_schemas.append(joint_map[upstream_name].output_schema)
+
+        # Determine sink schema based on upstream schemas
+        inferred_schema: Schema | None = None
+
+        if not upstream_schemas:
+            # No upstream joints (shouldn't happen for valid sinks, but handle gracefully)
+            inferred_schema = None
+        elif len(upstream_schemas) == 1:
+            # Single upstream: copy schema (even if None)
+            inferred_schema = upstream_schemas[0]
+        else:
+            # Multiple upstreams: merge if identical, None if conflicting
+            if any(s is None for s in upstream_schemas):
+                # Any upstream has no schema
+                inferred_schema = None
+            elif _schemas_identical(upstream_schemas):
+                # All schemas are identical
+                inferred_schema = upstream_schemas[0]
+            else:
+                # Schemas differ - emit warning
+                inferred_schema = None
+                upstream_names = ", ".join(f"'{u}'" for u in cj.upstream)
+                warnings.append(
+                    f"Sink '{cj.name}' has conflicting upstream schemas from joints: {upstream_names}. "
+                    f"Schema inference failed. Sink output_schema set to None."
+                )
+
+        # Update the compiled joint with inferred schema
+        result.append(replace(cj, output_schema=inferred_schema))
+
+    return result
+
+
+def _schemas_identical(schemas: list[Schema | None]) -> bool:
+    """Check if all schemas in the list are identical.
+
+    Returns False if any schema is None or if schemas differ in columns,
+    types, nullability, or order.
+
+    Args:
+        schemas: List of Schema objects to compare
+
+    Returns:
+        True if all schemas are non-None and identical, False otherwise
+    """
+    if not schemas:
+        return True
+
+    # If any schema is None, they're not identical
+    if any(s is None for s in schemas):
+        return False
+
+    # All schemas are non-None at this point
+    first_schema = schemas[0]
+    assert first_schema is not None  # Type narrowing
+
+    for schema in schemas[1:]:
+        assert schema is not None  # Type narrowing
+
+        # Check if column count differs
+        if len(first_schema.columns) != len(schema.columns):
+            return False
+
+        # Check each column (order matters)
+        for col1, col2 in zip(first_schema.columns, schema.columns):
+            if col1.name != col2.name:
+                return False
+            if col1.type != col2.type:
+                return False
+            if col1.nullable != col2.nullable:
+                return False
+
+    return True
 
 
 def _prune_dag(
@@ -960,9 +1415,7 @@ def _prune_dag(
     Returns the pruned Assembly on success, or a failed CompiledAssembly on error.
     """
     try:
-        return assembly.subgraph(
-            target_sink=target_sink, tags=tags, tag_mode=tag_mode
-        )
+        return assembly.subgraph(target_sink=target_sink, tags=tags, tag_mode=tag_mode)
     except Exception as e:
         errors.append(
             RivetError(
@@ -973,10 +1426,17 @@ def _prune_dag(
             )
         )
         return CompiledAssembly(
-            success=False, profile_name=profile_name,
-            catalogs=[], engines=[], adapters=[], joints=[],
-            fused_groups=[], materializations=[], execution_order=[],
-            errors=errors, warnings=warnings,
+            success=False,
+            profile_name=profile_name,
+            catalogs=[],
+            engines=[],
+            adapters=[],
+            joints=[],
+            fused_groups=[],
+            materializations=[],
+            execution_order=[],
+            errors=errors,
+            warnings=warnings,
         )
 
 
@@ -992,6 +1452,7 @@ def _compile_all_joints(
     introspect_timeout: float,
     catalogs: list[Catalog],
     engines: list[ComputeEngine],
+    project_root: Path | None = None,
 ) -> tuple[
     list[str],
     list[CompiledJoint],
@@ -999,7 +1460,10 @@ def _compile_all_joints(
     list[CompiledCatalog],
     list[CompiledEngine],
     list[CompiledAdapter],
-    int, int, int, int,
+    int,
+    int,
+    int,
+    int,
 ]:
     """Steps 2–3b: Topological ordering, per-joint compilation, schema confidence."""
     topo_order = pruned.topological_order()
@@ -1029,9 +1493,7 @@ def _compile_all_joints(
             catalog_type = catalog.type if catalog else None
             catalog_plugin = registry.get_catalog_plugin(catalog_type) if catalog_type else None
             if catalog and catalog_plugin:
-                future = pool.submit(
-                    _do_introspect, joint, catalog, catalog_plugin, warnings
-                )
+                future = pool.submit(_do_introspect, joint, catalog, catalog_plugin, warnings)
                 introspection_futures[jn] = future
 
     # ── Compile joints (introspection disabled inline; results attached after) ──
@@ -1050,18 +1512,25 @@ def _compile_all_joints(
 
             # Compile without inline introspection — we handle it from the pool
             cj = _compile_joint(
-                joint, catalog_map, engine_map, registry,
-                default_engine, parser, upstream_schemas, errors, warnings,
-                introspect=False, introspect_timeout=introspect_timeout,
+                joint,
+                catalog_map,
+                engine_map,
+                registry,
+                default_engine,
+                parser,
+                upstream_schemas,
+                errors,
+                warnings,
+                introspect=False,
+                introspect_timeout=introspect_timeout,
                 adapter_cache=adapter_cache,
+                project_root=project_root,
             )
 
             # Attach introspection results from the shared pool
             if is_source and introspect and jn in introspection_futures:
                 try:
-                    schema, stats = introspection_futures[jn].result(
-                        timeout=introspect_timeout
-                    )
+                    schema, stats = introspection_futures[jn].result(timeout=introspect_timeout)
                     if schema is not None or stats is not None:
                         cj = replace(
                             cj,
@@ -1070,13 +1539,31 @@ def _compile_all_joints(
                         )
                 except TimeoutError:
                     warnings.append(
-                        f"Introspection timed out for source '{jn}' "
-                        f"after {introspect_timeout}s"
+                        f"Introspection timed out for source '{jn}' after {introspect_timeout}s"
                     )
                 except Exception as exc:
-                    warnings.append(
-                        f"Introspection failed for source '{jn}': {exc}"
+                    warnings.append(f"Introspection failed for source '{jn}': {exc}")
+
+                # Re-run source inline transform validation with introspected schema
+                # to compute the transformed output schema and emit column warnings.
+                # Single-table constraint errors were already emitted by _compile_joint.
+                if cj.output_schema is not None and cj.logical_plan is not None:
+                    # Emit column reference warnings now that we have the catalog schema
+                    _warn_unresolved_column_refs(
+                        cj.name,
+                        cj.logical_plan,
+                        cj.output_schema,
+                        warnings,
                     )
+                    # Compute transformed schema from projections
+                    transformed = _compute_source_transform_schema(
+                        cj.name,
+                        cj.logical_plan.projections,
+                        cj.output_schema,
+                        warnings,
+                    )
+                    if transformed is not None:
+                        cj = replace(cj, output_schema=transformed)
 
             if is_source and introspect:
                 if cj.output_schema is not None:
@@ -1092,6 +1579,9 @@ def _compile_all_joints(
         if pool is not None:
             pool.shutdown(wait=False)
 
+    # Infer sink schemas from upstream joints
+    compiled_joints = _infer_sink_schemas(compiled_joints, warnings)
+
     compiled_joints = _assign_schema_confidence(compiled_joints, introspected_sources)
     cj_map: dict[str, CompiledJoint] = {cj.name: cj for cj in compiled_joints}
 
@@ -1100,10 +1590,16 @@ def _compile_all_joints(
     compiled_adapters = _build_compiled_adapters(compiled_joints, engine_map, registry)
 
     return (
-        topo_order, compiled_joints, cj_map,
-        compiled_catalogs, compiled_engines, compiled_adapters,
-        introspection_attempted, introspection_succeeded,
-        introspection_failed, introspection_skipped,
+        topo_order,
+        compiled_joints,
+        cj_map,
+        compiled_catalogs,
+        compiled_engines,
+        compiled_adapters,
+        introspection_attempted,
+        introspection_succeeded,
+        introspection_failed,
+        introspection_skipped,
     )
 
 
@@ -1126,9 +1622,15 @@ def _run_optimizer_passes(
         et = eng.engine_type if eng else ""
         fusion_joints.append(
             FusionJoint(
-                name=cj.name, joint_type=cj.type, upstream=cj.upstream,
-                engine=cj.engine, engine_type=et, adapter=cj.adapter,
-                eager=cj.eager, has_assertions=bool(cj.checks), sql=cj.sql,
+                name=cj.name,
+                joint_type=cj.type,
+                upstream=cj.upstream,
+                engine=cj.engine,
+                engine_type=et,
+                adapter=cj.adapter,
+                eager=cj.eager,
+                has_assertions=bool(cj.checks),
+                sql=cj.sql,
             )
         )
 
@@ -1143,9 +1645,7 @@ def _run_optimizer_passes(
     logical_plans: dict[str, LogicalPlan | None] = {
         cj.name: cj.logical_plan for cj in compiled_joints
     }
-    catalog_types_map: dict[str, str | None] = {
-        cj.name: cj.catalog_type for cj in compiled_joints
-    }
+    catalog_types_map: dict[str, str | None] = {cj.name: cj.catalog_type for cj in compiled_joints}
     cap_map: dict[str, list[str]] = {}
     for cj in compiled_joints:
         eng = engine_map.get(cj.engine)
@@ -1161,7 +1661,10 @@ def _run_optimizer_passes(
 
     # Cross-group predicate pushdown
     fused_groups, xgroup_results = cross_group_pushdown_pass(
-        fused_groups, cj_map, cap_map, catalog_types_map,
+        fused_groups,
+        cj_map,
+        cap_map,
+        catalog_types_map,
     )
     # Attach cross-group optimization results to the relevant compiled joints
     for result in xgroup_results:
@@ -1172,16 +1675,20 @@ def _run_optimizer_passes(
         # or "exit joint '" in the detail.
         for jn, cj in cj_map.items():
             if f"'{jn}'" in result.detail:
-                cj_map[jn] = replace(
-                    cj, optimizations=[*cj.optimizations, result]
-                )
+                cj_map[jn] = replace(cj, optimizations=[*cj.optimizations, result])
                 break
 
     # Strategy + reference resolution
     fused_groups = _resolve_strategy(fused_groups, cj_map, default_fusion_strategy, errors)
     fused_groups = _resolve_references(
-        fused_groups, cj_map, compiled_joints, engine_map, catalog_map,
-        registry, resolve_references_fn, warnings,
+        fused_groups,
+        cj_map,
+        compiled_joints,
+        engine_map,
+        catalog_map,
+        registry,
+        resolve_references_fn,
+        warnings,
     )
 
     return fused_groups, joint_to_group
@@ -1198,10 +1705,17 @@ def _determine_materializations_and_boundaries(
 ) -> tuple[list[Materialization], list[EngineBoundary], list[FusedGroup]]:
     """Steps 8–9b: Materializations, engine boundaries, group mat-strategy."""
     materializations = _determine_materializations(
-        cj_map, joint_to_group, engine_map, default_materialization_strategy,
+        cj_map,
+        joint_to_group,
+        engine_map,
+        default_materialization_strategy,
     )
     engine_boundaries = _detect_engine_boundaries(
-        fused_groups, cj_map, joint_to_group, registry, warnings,
+        fused_groups,
+        cj_map,
+        joint_to_group,
+        registry,
+        warnings,
     )
 
     # Resolve materialization_strategy_name per group
@@ -1221,7 +1735,8 @@ def _determine_materializations_and_boundaries(
         if resolved_mat_name != group.materialization_strategy_name:
             fused_groups = [
                 replace(group, materialization_strategy_name=resolved_mat_name)
-                if g.id == group.id else g
+                if g.id == group.id
+                else g
                 for g in fused_groups
             ]
 
@@ -1248,8 +1763,48 @@ def _finalize_assembly(
     introspection_skipped: int,
 ) -> CompiledAssembly:
     """Step 10: Build final joint list, execution order, and CompiledAssembly."""
+    from rivet_core.sql_resolver import resolve_execution_sql
+
+    # Populate execution_sql for each joint based on its fused group
+
+    # Build set of groups that have materialized inputs (cross engine boundary)
+    groups_with_materialized_inputs: set[str] = set()
+    for boundary in engine_boundaries:
+        groups_with_materialized_inputs.add(boundary.consumer_group_id)
+
+    # Resolve execution SQL for each group and populate joints
+    group_execution_sql: dict[str, str | None] = {}
+    for group in fused_groups:
+        # Determine adapter-read sources in this group
+        adapter_read_sources = {
+            jn
+            for jn in group.joints
+            if cj_map.get(jn) and cj_map[jn].type == "source" and cj_map[jn].adapter is not None
+        }
+
+        # Check if this group has materialized inputs
+        has_materialized_inputs = group.id in groups_with_materialized_inputs
+
+        # Resolve execution SQL for this group
+        execution_sql = resolve_execution_sql(
+            group,
+            cj_map,
+            adapter_read_sources,
+            has_materialized_inputs=has_materialized_inputs,
+        )
+        group_execution_sql[group.id] = execution_sql
+
+    # Build final joints with fused_group_id and execution_sql
     final_joints = [
-        replace(cj_map[jn], fused_group_id=joint_to_group.get(jn))
+        replace(
+            cj_map[jn],
+            fused_group_id=joint_to_group.get(jn),
+            execution_sql=(
+                group_execution_sql.get(gid)
+                if (gid := joint_to_group.get(jn)) is not None
+                else None
+            ),
+        )
         for jn in topo_order
     ]
 
@@ -1288,6 +1843,7 @@ def _finalize_assembly(
         ),
         parallel_execution_plan=parallel_execution_plan,
     )
+
 
 def _compute_parallel_execution_plan(
     fused_groups: list[FusedGroup],
@@ -1351,11 +1907,13 @@ def _compute_parallel_execution_plan(
             engine_name = group_by_id[gid].engine
             engines.setdefault(engine_name, []).append(gid)
 
-        waves.append(ExecutionWave(
-            wave_number=wave_number,
-            groups=ready,
-            engines=engines,
-        ))
+        waves.append(
+            ExecutionWave(
+                wave_number=wave_number,
+                groups=ready,
+                engines=engines,
+            )
+        )
 
         # Remove ready groups and decrement downstream in-degrees
         for gid in ready:
@@ -1364,8 +1922,6 @@ def _compute_parallel_execution_plan(
                 in_degree[ds_id] -= 1
 
     return waves
-
-
 
 
 def compile(
@@ -1383,6 +1939,7 @@ def compile(
     default_engine: str | None = None,
     introspect: bool = True,
     introspect_timeout: float = 5.0,
+    project_root: Path | None = None,
 ) -> CompiledAssembly:
     """Compile an Assembly into an immutable CompiledAssembly.
 
@@ -1419,33 +1976,69 @@ def compile(
 
     # ── Steps 2–3b: Per-joint compilation ─────────────────────────────
     (
-        topo_order, compiled_joints, cj_map,
-        compiled_catalogs, compiled_engines, compiled_adapters,
-        introspection_attempted, introspection_succeeded,
-        introspection_failed, introspection_skipped,
+        topo_order,
+        compiled_joints,
+        cj_map,
+        compiled_catalogs,
+        compiled_engines,
+        compiled_adapters,
+        introspection_attempted,
+        introspection_succeeded,
+        introspection_failed,
+        introspection_skipped,
     ) = _compile_all_joints(
-        pruned, catalog_map, engine_map, registry, default_engine,
-        errors, warnings, introspect, introspect_timeout, catalogs, engines,
+        pruned,
+        catalog_map,
+        engine_map,
+        registry,
+        default_engine,
+        errors,
+        warnings,
+        introspect,
+        introspect_timeout,
+        catalogs,
+        engines,
+        project_root=project_root,
     )
 
     # ── Steps 4–7: Optimizer passes ───────────────────────────────────
     fused_groups, joint_to_group = _run_optimizer_passes(
-        compiled_joints, cj_map, engine_map, registry, catalog_map,
-        default_fusion_strategy, resolve_references, errors, warnings,
+        compiled_joints,
+        cj_map,
+        engine_map,
+        registry,
+        catalog_map,
+        default_fusion_strategy,
+        resolve_references,
+        errors,
+        warnings,
     )
 
     # ── Steps 8–9b: Materializations and boundaries ──────────────────
     materializations, engine_boundaries, fused_groups = _determine_materializations_and_boundaries(
-        cj_map, joint_to_group, engine_map, registry,
-        default_materialization_strategy, fused_groups, warnings,
+        cj_map,
+        joint_to_group,
+        engine_map,
+        registry,
+        default_materialization_strategy,
+        fused_groups,
+        warnings,
     )
 
     # ── Step 10: Finalize ─────────────────────────────────────────────
     return _finalize_assembly(
-        cj_map, topo_order, joint_to_group, profile_name,
-        compiled_catalogs, compiled_engines, compiled_adapters,
-        fused_groups, materializations, engine_boundaries,
-        errors, warnings,
+        cj_map,
+        topo_order,
+        joint_to_group,
+        profile_name,
+        compiled_catalogs,
+        compiled_engines,
+        compiled_adapters,
+        fused_groups,
+        materializations,
+        engine_boundaries,
+        errors,
+        warnings,
         compile_duration_ms=int((time.monotonic() - _t0) * 1000),
         introspection_attempted=introspection_attempted,
         introspection_succeeded=introspection_succeeded,

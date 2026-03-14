@@ -197,6 +197,45 @@ def _can_fuse(
     return True
 
 
+def _extract_ctes_from_sql(sql: str) -> tuple[list[tuple[str, str]], str]:
+    """Extract CTEs from SQL that contains WITH clauses.
+
+    Returns:
+        (ctes, main_query) where ctes is a list of (name, body) tuples
+        and main_query is the final SELECT without the WITH clause.
+    """
+    import sqlglot
+    import sqlglot.expressions as exp
+
+    try:
+        parsed = sqlglot.parse_one(sql, read="duckdb")
+    except Exception:
+        # If parsing fails, return empty CTEs and original SQL
+        return ([], sql)
+
+    ctes: list[tuple[str, str]] = []
+
+    # Extract CTEs if present
+    if isinstance(parsed, exp.Select) and parsed.ctes:
+        for cte in parsed.ctes:
+            if isinstance(cte, exp.CTE):
+                cte_name = cte.alias_or_name
+                # Get the CTE body SQL
+                cte_body = cte.this.sql(dialect="duckdb")
+                ctes.append((cte_name, cte_body))
+
+        # Build new SELECT without WITH clause by copying all args except 'with_'
+        new_select = exp.Select()
+        for key, value in parsed.args.items():
+            if key != "with_":
+                new_select.set(key, value)
+        main_query = new_select.sql(dialect="duckdb")
+    else:
+        main_query = sql
+
+    return (ctes, main_query)
+
+
 def _compose_cte(
     group_joints: list[str],
     joint_sql: dict[str, str | None],
@@ -204,6 +243,7 @@ def _compose_cte(
     """Compose CTE SQL for a fused group.
 
     Chain upstream joints as WITH clauses; the last joint's SQL is the final SELECT.
+    Extracts and merges CTEs from joints that already contain WITH clauses.
     """
     sqls: list[tuple[str, str]] = []
     for name in group_joints:
@@ -214,26 +254,49 @@ def _compose_cte(
     if not sqls:
         return None
 
-    # Single joint — no CTE needed
+    # Single joint — no CTE needed, but still extract CTEs if present
     if len(sqls) == 1:
         _, final = sqls[0]
+        inner_ctes, main_query = _extract_ctes_from_sql(final)
+        if inner_ctes:
+            # Reconstruct WITH clause with extracted CTEs
+            cte_parts = [f"{name} AS (\n    {body}\n)" for name, body in inner_ctes]
+            fused = "WITH " + ",\n".join(cte_parts) + "\n" + main_query
+            return FusionResult(
+                fused_sql=fused,
+                statements=[f"{n} AS (\n    {b}\n)" for n, b in inner_ctes],
+                final_select=main_query,
+            )
         return FusionResult(
             fused_sql=final,
             statements=[],
             final_select=final,
         )
 
-    cte_parts: list[str] = []
-    for name, sql in sqls[:-1]:
-        cte_parts.append(f"{name} AS (\n    {sql}\n)")
+    # Multiple joints — extract CTEs from each and merge them
+    all_ctes: list[tuple[str, str]] = []
 
+    # Process all joints except the last
+    for name, sql in sqls[:-1]:
+        inner_ctes, main_query = _extract_ctes_from_sql(sql)
+        # Add inner CTEs first (they may be referenced by this joint)
+        all_ctes.extend(inner_ctes)
+        # Add this joint as a CTE
+        all_ctes.append((name, main_query))
+
+    # Process the final joint
     _, final_sql = sqls[-1]
-    fused = "WITH " + ",\n".join(cte_parts) + "\n" + final_sql
+    final_inner_ctes, final_main_query = _extract_ctes_from_sql(final_sql)
+    all_ctes.extend(final_inner_ctes)
+
+    # Build the fused SQL
+    cte_parts = [f"{name} AS (\n    {body}\n)" for name, body in all_ctes]
+    fused = "WITH " + ",\n".join(cte_parts) + "\n" + final_main_query
 
     return FusionResult(
         fused_sql=fused,
-        statements=[f"{n} AS (\n    {s}\n)" for n, s in sqls[:-1]],
-        final_select=final_sql,
+        statements=[f"{n} AS (\n    {b}\n)" for n, b in all_ctes],
+        final_select=final_main_query,
     )
 
 
