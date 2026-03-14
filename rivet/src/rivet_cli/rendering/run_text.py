@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from rivet_cli.rendering.colors import (
     BOLD,
     CYAN,
@@ -274,8 +276,11 @@ def _render_stats_summary(
 
 
 def _render_fused_sql(
-    lines: list[str], compiled: CompiledAssembly, group_map: dict, color: bool
-) -> None:  # type: ignore[type-arg]
+    lines: list[str],
+    compiled: CompiledAssembly,
+    group_map: dict[str, Any],
+    color: bool,
+) -> None:
     for fg in compiled.fused_groups:
         if fg.fused_sql:
             lines.append(f"  Fused SQL [{colorize(fg.id, BOLD, color)}]: {fg.fused_sql}")

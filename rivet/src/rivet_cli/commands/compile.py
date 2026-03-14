@@ -107,13 +107,13 @@ def run_compile(
     )
 
     if not compiled.success:
-        for e in compiled.errors:  # type: ignore[assignment]
+        for ce in compiled.errors:
             print(
                 format_upstream_error(
-                    e.code,  # type: ignore[attr-defined]
-                    e.message,  # type: ignore[attr-defined]
-                    e.remediation,  # type: ignore[attr-defined]
-                    globals.color,  # type: ignore[attr-defined]
+                    ce.code,
+                    ce.message,
+                    ce.remediation,
+                    globals.color,
                 ),
                 file=sys.stderr,
             )

@@ -78,9 +78,12 @@ class SQLDecomposer:
 
         # Extract table name
         table = parsed.find(exp.Table)
+        if table is None:
+            msg = f"No table found in SQL: {sql}"
+            raise ValueError(msg)
         table_name = (
             table.name if table.args.get("db") is None else f"{table.args['db'].name}.{table.name}"
-        )  # type: ignore[union-attr]
+        )
 
         # Extract columns
         columns: list[ColumnDecl] | None = None
