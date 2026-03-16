@@ -195,8 +195,10 @@ class SQLParser:
                     remediation="Check the SQL syntax.",
                 )
             )
-        self._validate_select(ast, sql, dialect)
-        return ast
+        # sqlglot >=30 returns Expr; cast to Expression for compat with both versions
+        expr: exp.Expression = ast  # type: ignore[assignment]
+        self._validate_select(expr, sql, dialect)
+        return expr
 
     def _validate_select(self, ast: exp.Expression, sql: str, dialect: str | None) -> None:
         """Validate that the AST is a single read-only SELECT (CTEs allowed)."""
@@ -350,7 +352,9 @@ class SQLParser:
     def _flatten_and(node: exp.Expression) -> list[exp.Expression]:
         """Flatten nested AND expressions into a list of conjuncts."""
         if isinstance(node, exp.And):
-            return SQLParser._flatten_and(node.left) + SQLParser._flatten_and(node.right)
+            left: exp.Expression = node.left  # type: ignore[assignment]
+            right: exp.Expression = node.right  # type: ignore[assignment]
+            return SQLParser._flatten_and(left) + SQLParser._flatten_and(right)
         return [node]
 
     @staticmethod
