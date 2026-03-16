@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import logging
 import sys
-from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pyarrow as pa
@@ -156,16 +155,6 @@ class TestSparkToArrow:
 # ---------------------------------------------------------------------------
 
 
-def _patch_from_arrow_schema() -> Any:
-    """Patch the deferred ``from pyspark.sql.pandas.types import from_arrow_schema``.
-
-    Since pyspark may not be installed, we inject a mock module into
-    ``sys.modules`` so the deferred import inside ``_to_spark_pandas`` succeeds.
-    """
-    mock_module = MagicMock()
-    return patch.dict(sys.modules, {"pyspark.sql.pandas.types": mock_module})
-
-
 class TestArrowToSpark:
     def test_native_path_calls_createDataFrame_with_table(self) -> None:
         session = _make_session(native=True)
@@ -187,8 +176,10 @@ class TestArrowToSpark:
         table = pa.table({"x": pa.array([1, 2], type=pa.int64())})
         expected_df = MagicMock()
 
-        with _patch_from_arrow_schema():
-            session.createDataFrame.return_value = expected_df
+        with patch(
+            "rivet_pyspark.arrow_converter._to_spark_pandas",
+            return_value=expected_df,
+        ):
             result = arrow_to_spark(table, session)
 
         assert result is expected_df
@@ -203,13 +194,15 @@ class TestArrowToSpark:
         session.createDataFrame.side_effect = [
             probe_df,
             RuntimeError("native boom"),
-            expected_df,
         ]
         clear_cache()
 
         with (
             caplog.at_level(logging.WARNING, logger="rivet_pyspark.arrow_converter"),
-            _patch_from_arrow_schema(),
+            patch(
+                "rivet_pyspark.arrow_converter._to_spark_pandas",
+                return_value=expected_df,
+            ),
         ):
             result = arrow_to_spark(table, session)
 

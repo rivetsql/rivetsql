@@ -175,17 +175,17 @@ def test_property4_arrow_to_spark_path_selection(has_native: bool, native_raises
             session.createDataFrame.side_effect = [
                 probe_return,
                 RuntimeError("boom"),
-                pandas_df,
             ]
         else:
             session.createDataFrame.side_effect = [probe_return, native_df]
     else:
-        # Non-native: probe call returns probe_return, then pandas path
-        session.createDataFrame.side_effect = [probe_return, pandas_df]
+        session.createDataFrame.side_effect = [probe_return]
 
-    # Patch the deferred pyspark import for the pandas fallback path
-    mock_pyspark_module = MagicMock()
-    with patch.dict(sys.modules, {"pyspark.sql.pandas.types": mock_pyspark_module}):
+    # Patch _to_spark_pandas to avoid needing pandas installed
+    with patch(
+        "rivet_pyspark.arrow_converter._to_spark_pandas",
+        return_value=pandas_df,
+    ):
         result = arrow_to_spark(table, session)
 
     if has_native and not native_raises:
@@ -240,6 +240,7 @@ def test_property5_schema_round_trip_equivalence(schema: pa.Schema) -> None:
 
     Validates: Requirements 5.1, 5.2, 3.3
     """
+    pytest.importorskip("pandas")
     clear_cache()
 
     # Build a mock session that does NOT support native Arrow (forces pandas path)
