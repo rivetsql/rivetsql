@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 import pyarrow as pa
 
 if TYPE_CHECKING:
+    from rivet_core.compiler import CompiledAssembly
     from rivet_core.interactive.types import QueryResult
 
 # Exit codes (inline — same boundary rule as __init__.py).
@@ -28,9 +29,10 @@ def run_execute(
     engine: str | None,
     format: str,
     max_rows: int,
+    compile_only: bool = False,
 ) -> int:
     """Execute a SQL query non-interactively and print the result."""
-    if format not in _VALID_FORMATS:
+    if not compile_only and format not in _VALID_FORMATS:
         print(
             f"error: unsupported format '{format}'. Choose from: {', '.join(_VALID_FORMATS)}.",
             file=sys.stderr,
@@ -71,6 +73,20 @@ def run_execute(
             session.stop()
             return _EXIT_USAGE_ERROR
 
+    # --- Compile-only mode ---
+    if compile_only:
+        try:
+            compiled = session._build_and_compile_transient(sql, engine_override=engine)
+        except Exception as exc:  # noqa: BLE001
+            print(f"error: compilation failed: {exc}", file=sys.stderr)
+            session.stop()
+            return _EXIT_GENERAL_ERROR
+        finally:
+            session.stop()
+
+        _print_compilation(compiled)
+        return _EXIT_SUCCESS
+
     # --- Execute ---
     try:
         result = session.execute_query(sql)
@@ -89,6 +105,7 @@ def run_execute(
 # ---------------------------------------------------------------------------
 # Formatters
 # ---------------------------------------------------------------------------
+
 
 def _print_result(result: QueryResult, fmt: str) -> None:
     if fmt == "json":
@@ -118,9 +135,7 @@ def _print_csv(result: QueryResult) -> None:
     writer.writerow(result.column_names)
     table = result.table
     for i in range(table.num_rows):
-        writer.writerow(
-            _arrow_scalar_to_python(table.column(col)[i]) for col in table.column_names
-        )
+        writer.writerow(_arrow_scalar_to_python(table.column(col)[i]) for col in table.column_names)
 
 
 def _print_table(result: QueryResult) -> None:
@@ -152,8 +167,7 @@ def _print_table(result: QueryResult) -> None:
     # Rows
     for row_idx in range(table.num_rows):
         row = " | ".join(
-            str_cols[col_idx][row_idx].ljust(widths[col_idx])
-            for col_idx in range(len(columns))
+            str_cols[col_idx][row_idx].ljust(widths[col_idx]) for col_idx in range(len(columns))
         )
         print(row)
 
@@ -180,3 +194,57 @@ def _format_cell(scalar: pa.Scalar) -> str:
     if val is None:
         return "NULL"
     return str(val)
+
+
+def _print_compilation(compiled: CompiledAssembly) -> None:
+    """Print the compiled transient pipeline as JSON."""
+    from rivet_core.sql_resolver import resolve_execution_sql  # noqa: PLC0415
+
+    cj_map = {cj.name: cj for cj in compiled.joints}
+
+    joints_out = []
+    for cj in compiled.joints:
+        joints_out.append(
+            {
+                "name": cj.name,
+                "type": cj.type,
+                "catalog": cj.catalog,
+                "engine": cj.engine,
+                "table": cj.table,
+                "upstream": cj.upstream,
+                "sql": cj.sql,
+                "sql_translated": cj.sql_translated,
+                "sql_resolved": cj.sql_resolved,
+            }
+        )
+
+    groups_out = []
+    for group in compiled.fused_groups:
+        execution_sql = resolve_execution_sql(
+            group,
+            cj_map,
+            adapter_read_sources=set(),
+        )
+        groups_out.append(
+            {
+                "id": group.id,
+                "joints": group.joints,
+                "engine": group.engine,
+                "engine_type": group.engine_type,
+                "fusion_strategy": group.fusion_strategy,
+                "fused_sql": group.fused_sql,
+                "resolved_sql": group.resolved_sql,
+                "execution_sql": execution_sql,
+            }
+        )
+
+    output = {
+        "success": compiled.success,
+        "errors": [{"code": e.code, "message": e.message} for e in compiled.errors],
+        "warnings": compiled.warnings,
+        "joints": joints_out,
+        "fused_groups": groups_out,
+        "execution_order": compiled.execution_order,
+    }
+    json.dump(output, sys.stdout, indent=2, default=str)
+    sys.stdout.write("\n")

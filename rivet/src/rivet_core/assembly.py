@@ -79,6 +79,15 @@ class Assembly:
                         remediation="Add at least one upstream reference to the sink joint.",
                     )
                 )
+            if joint.joint_type == "checkpoint" and not joint.upstream:
+                raise AssemblyError(
+                    RivetError(
+                        code="RVT-304",
+                        message=f"Checkpoint joint '{joint.name}' must have at least one upstream joint.",
+                        context={"joint": joint.name},
+                        remediation="Add at least one upstream reference to the checkpoint joint.",
+                    )
+                )
 
         # Cycle detection via DFS
         self._detect_cycles()
@@ -205,7 +214,9 @@ class Assembly:
             return self
 
         assert selected is not None
-        filtered_joints = [self.joints[name] for name in self.topological_order() if name in selected]
+        filtered_joints = [
+            self.joints[name] for name in self.topological_order() if name in selected
+        ]
         return Assembly(filtered_joints)
 
     def _upstream_closure(self, seeds: set[str]) -> set[str]:

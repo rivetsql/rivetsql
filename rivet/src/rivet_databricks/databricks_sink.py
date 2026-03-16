@@ -20,8 +20,16 @@ if TYPE_CHECKING:
 _logger = logging.getLogger(__name__)
 
 SUPPORTED_STRATEGIES = frozenset(
-    {"append", "replace", "truncate_insert", "merge", "delete_insert",
-     "incremental_append", "scd2", "partition"}
+    {
+        "append",
+        "replace",
+        "truncate_insert",
+        "merge",
+        "delete_insert",
+        "incremental_append",
+        "scd2",
+        "partition",
+    }
 )
 
 _MERGE_KEY_REQUIRED_STRATEGIES = frozenset({"merge", "delete_insert", "scd2"})
@@ -29,8 +37,14 @@ _MERGE_KEY_REQUIRED_STRATEGIES = frozenset({"merge", "delete_insert", "scd2"})
 _VALID_FORMATS = frozenset({"delta", "parquet"})
 
 _KNOWN_SINK_OPTIONS = {
-    "table", "write_strategy", "merge_key", "partition_by", "format",
-    "create_table", "optimize_after_write", "liquid_clustering",
+    "table",
+    "write_strategy",
+    "merge_key",
+    "partition_by",
+    "format",
+    "create_table",
+    "optimize_after_write",
+    "liquid_clustering",
 }
 
 
@@ -163,6 +177,7 @@ def _validate_sink_options(options: dict[str, Any]) -> None:
 
 # ── SQL generation helpers ────────────────────────────────────────────
 
+
 def _quote(name: str) -> str:
     """Quote an identifier with backticks for Databricks SQL."""
     return f"`{name}`"
@@ -182,14 +197,29 @@ def _arrow_type_to_databricks(arrow_type: pyarrow.DataType) -> str:
     """Map a PyArrow DataType to a Databricks SQL type string."""
     t = str(arrow_type)
     mapping: dict[str, str] = {
-        "int8": "TINYINT", "int16": "SMALLINT", "int32": "INT", "int64": "BIGINT",
-        "uint8": "SMALLINT", "uint16": "INT", "uint32": "BIGINT", "uint64": "BIGINT",
-        "float16": "FLOAT", "float32": "FLOAT", "float": "FLOAT",
-        "float64": "DOUBLE", "double": "DOUBLE",
-        "bool": "BOOLEAN", "string": "STRING", "utf8": "STRING",
-        "large_string": "STRING", "large_utf8": "STRING",
-        "binary": "BINARY", "large_binary": "BINARY",
-        "date32": "DATE", "date32[day]": "DATE", "date64": "DATE",
+        "int8": "TINYINT",
+        "int16": "SMALLINT",
+        "int32": "INT",
+        "int64": "BIGINT",
+        "uint8": "SMALLINT",
+        "uint16": "INT",
+        "uint32": "BIGINT",
+        "uint64": "BIGINT",
+        "float16": "FLOAT",
+        "float32": "FLOAT",
+        "float": "FLOAT",
+        "float64": "DOUBLE",
+        "double": "DOUBLE",
+        "bool": "BOOLEAN",
+        "string": "STRING",
+        "utf8": "STRING",
+        "large_string": "STRING",
+        "large_utf8": "STRING",
+        "binary": "BINARY",
+        "large_binary": "BINARY",
+        "date32": "DATE",
+        "date32[day]": "DATE",
+        "date64": "DATE",
         "null": "VOID",
     }
     if t in mapping:
@@ -209,10 +239,7 @@ def _create_table_sql(
     liquid_clustering: list[str] | None,
 ) -> str:
     """Generate CREATE TABLE IF NOT EXISTS SQL."""
-    cols = ", ".join(
-        f"{_quote(f.name)} {_arrow_type_to_databricks(f.type)}"
-        for f in schema
-    )
+    cols = ", ".join(f"{_quote(f.name)} {_arrow_type_to_databricks(f.type)}" for f in schema)
     sql = f"CREATE TABLE IF NOT EXISTS {table} ({cols}) USING {fmt.upper()}"
     if partition_by:
         sql += f" PARTITIONED BY ({_col_list(partition_by)})"
@@ -303,15 +330,22 @@ def _generate_write_sql(
 
     if strategy == "scd2":
         keys = merge_key or []
-        non_keys = [c for c in columns if c not in keys
-                    and c not in ("valid_from", "valid_to", "is_current")]
+        non_keys = [
+            c
+            for c in columns
+            if c not in keys and c not in ("valid_from", "valid_to", "is_current")
+        ]
         on_clause = " AND ".join(f"t.{_quote(k)} = s.{_quote(k)}" for k in keys)
-        change_cond = " OR ".join(
-            f"t.{_quote(c)} IS DISTINCT FROM s.{_quote(c)}" for c in non_keys
-        ) if non_keys else "FALSE"
+        change_cond = (
+            " OR ".join(f"t.{_quote(c)} IS DISTINCT FROM s.{_quote(c)}" for c in non_keys)
+            if non_keys
+            else "FALSE"
+        )
         data_cols = [c for c in columns if c not in ("valid_from", "valid_to", "is_current")]
         insert_cols = _col_list(data_cols + ["valid_from", "valid_to", "is_current"])
-        insert_vals = ", ".join(f"s.{_quote(c)}" for c in data_cols) + ", current_timestamp(), NULL, TRUE"
+        insert_vals = (
+            ", ".join(f"s.{_quote(c)}" for c in data_cols) + ", current_timestamp(), NULL, TRUE"
+        )
         return [
             (
                 f"MERGE INTO {table} AS t USING {staging} AS s ON {on_clause} AND t.`is_current` = TRUE"
@@ -363,12 +397,16 @@ class DatabricksSink(SinkPlugin):
         liquid_clustering: list[str] | None = sink_options.get("liquid_clustering")
 
         # Resolve full table name
-        if table_name.count(".") < 2:
+        dot_count = table_name.count(".")
+        if dot_count >= 2:
+            full_table = table_name
+        elif dot_count == 1:
+            cat_name = catalog.options.get("catalog", "")
+            full_table = f"{cat_name}.{table_name}"
+        else:
             cat_name = catalog.options.get("catalog", "")
             schema_name = catalog.options.get("schema", "default")
             full_table = f"{cat_name}.{schema_name}.{table_name}"
-        else:
-            full_table = table_name
 
         # Get Arrow data and build statement API
         arrow_table = material.to_arrow()
@@ -409,7 +447,11 @@ class DatabricksSink(SinkPlugin):
             # Create table if needed
             if create_table:
                 create_sql = _create_table_sql(
-                    full_table, arrow_table.schema, fmt, partition_by, liquid_clustering,
+                    full_table,
+                    arrow_table.schema,
+                    fmt,
+                    partition_by,
+                    liquid_clustering,
                 )
                 api.execute(create_sql, catalog=catalog_name, schema=schema_name)
 
@@ -417,13 +459,18 @@ class DatabricksSink(SinkPlugin):
             staging = _staging_table_name(table_name)
             if arrow_table.num_rows > 0:
                 values_sql = _build_values_sql(arrow_table)
-                col_defs = ", ".join(
-                    f"{_quote(f.name)} {_arrow_type_to_databricks(f.type)}"
+                # Databricks/Spark does not allow type definitions in CREATE VIEW
+                # column lists. Use column names only and cast in the SELECT.
+                col_names = ", ".join(_quote(f.name) for f in arrow_table.schema)
+                cast_exprs = ", ".join(
+                    f"CAST({_quote(f.name)} AS {_arrow_type_to_databricks(f.type)}) AS {_quote(f.name)}"
                     for f in arrow_table.schema
                 )
                 stage_sql = (
-                    f"CREATE OR REPLACE TEMPORARY VIEW {staging} ({col_defs})"
-                    f" AS SELECT * FROM VALUES {values_sql}"
+                    f"CREATE OR REPLACE TEMPORARY VIEW {staging} AS"
+                    f" SELECT {cast_exprs} FROM"
+                    f" (SELECT * FROM VALUES {values_sql}"
+                    f" AS _t({col_names}))"
                 )
                 api.execute(stage_sql, catalog=catalog_name, schema=schema_name)
             else:
@@ -433,14 +480,17 @@ class DatabricksSink(SinkPlugin):
                     for f in arrow_table.schema
                 )
                 stage_sql = (
-                    f"CREATE OR REPLACE TEMPORARY VIEW {staging}"
-                    f" AS SELECT {col_defs} WHERE FALSE"
+                    f"CREATE OR REPLACE TEMPORARY VIEW {staging} AS SELECT {col_defs} WHERE FALSE"
                 )
                 api.execute(stage_sql, catalog=catalog_name, schema=schema_name)
 
             # Execute write strategy
             stmts = _generate_write_sql(
-                full_table, staging, effective_strategy, columns, merge_key,
+                full_table,
+                staging,
+                effective_strategy,
+                columns,
+                merge_key,
             )
             for stmt in stmts:
                 api.execute(stmt, catalog=catalog_name, schema=schema_name)
@@ -451,7 +501,8 @@ class DatabricksSink(SinkPlugin):
 
             _logger.info(
                 "Databricks sink wrote to '%s' with strategy '%s'.",
-                full_table, effective_strategy,
+                full_table,
+                effective_strategy,
             )
         finally:
             api.close()

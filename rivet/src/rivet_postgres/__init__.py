@@ -27,6 +27,11 @@ def PostgresPlugin(registry: PluginRegistry) -> None:
     registry.register_sink(PostgresSink())
     registry.register_cross_joint_adapter(PostgresCrossJointAdapter())
 
+    # Postgres→Postgres local adapter for native SQL write
+    from rivet_postgres.adapters.postgres_local import PostgresLocalAdapter
+
+    registry.register_adapter(PostgresLocalAdapter())
+
     # Adapters depend on optional packages — register best-effort
     try:
         from rivet_postgres.adapters.duckdb import PostgresDuckDBAdapter

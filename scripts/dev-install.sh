@@ -14,8 +14,8 @@ if [[ "${1:-}" != "--plugins-only" ]]; then
 fi
 
 for plugin in aws databricks duckdb polars postgres pyspark rest; do
-  echo "▸ Installing rivet-${plugin} (local)…"
-  pip install "$RIVET/src/rivet_${plugin}" --quiet --force-reinstall --no-deps
+  echo "▸ Installing rivet-${plugin} (editable)…"
+  pip install -e "$RIVET/src/rivet_${plugin}" --quiet --no-deps
 done
 
 echo ""

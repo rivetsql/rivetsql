@@ -80,8 +80,11 @@ class QueryPlanner:
         for sj in result.source_joints:
             if engine_override:
                 sj = Joint(
-                    name=sj.name, joint_type=sj.joint_type,
-                    catalog=sj.catalog, table=sj.table, engine=engine_override,
+                    name=sj.name,
+                    joint_type=sj.joint_type,
+                    catalog=sj.catalog,
+                    table=sj.table,
+                    engine=engine_override,
                 )
             included_joints[sj.name] = sj
 
@@ -96,10 +99,10 @@ class QueryPlanner:
                     continue
                 raw = raw_joints.get(jn)
                 if raw:
-                    included_joints[jn] = raw
+                    j = raw
                 else:
                     cj = compiled_map[jn]
-                    included_joints[jn] = Joint(
+                    j = Joint(
                         name=cj.name,
                         joint_type=cj.type,
                         catalog=cj.catalog,
@@ -111,24 +114,47 @@ class QueryPlanner:
                         source_file=cj.source_file,
                         dialect=cj.sql_dialect,
                     )
+                # Apply engine override to reconstructed joints (same
+                # as step 3 does for source joints from preprocess_sql).
+                if engine_override and j.engine != engine_override:
+                    j = Joint(
+                        name=j.name,
+                        joint_type=j.joint_type,
+                        catalog=j.catalog,
+                        upstream=list(j.upstream),
+                        sql=j.sql,
+                        table=j.table,
+                        engine=engine_override,
+                        path=j.path,
+                        source_file=j.source_file,
+                        dialect=j.dialect,
+                    )
+                included_joints[jn] = j
             if not resolution.cached:
-                needs_execution.extend(
-                    jn for jn in closure
-                    if jn not in cached_joints
-                )
+                needs_execution.extend(jn for jn in closure if jn not in cached_joints)
+            if not resolution.cached:
+                needs_execution.extend(jn for jn in closure if jn not in cached_joints)
 
         # 5. Build __query joint with rewritten SQL
         upstream_names: list[str] = []
         seen_upstream: set[str] = set()
         for _ref_str, resolution in result.resolved_refs.items():
             if resolution.kind == "joint" and resolution.joint_name:
-                name = resolution.joint_name
+                name: str | None = resolution.joint_name
             else:
                 # Find the source joint name for this ref
-                name = next(  # type: ignore[assignment]
-                    (sj.name for sj in result.source_joints
-                     if sj.catalog == resolution.catalog and
-                     sj.table == (f"{resolution.schema}.{resolution.table}" if resolution.schema else resolution.table)),
+                name = next(
+                    (
+                        sj.name
+                        for sj in result.source_joints
+                        if sj.catalog == resolution.catalog
+                        and sj.table
+                        == (
+                            f"{resolution.schema}.{resolution.table}"
+                            if resolution.schema
+                            else resolution.table
+                        )
+                    ),
                     None,
                 )
             if name and name in included_joints and name not in seen_upstream:
@@ -163,9 +189,7 @@ class QueryPlanner:
 
         return transient_assembly, unique_needs
 
-    def _upstream_closure(
-        self, joint_name: str, assembly: CompiledAssembly
-    ) -> list[str]:
+    def _upstream_closure(self, joint_name: str, assembly: CompiledAssembly) -> list[str]:
         """Return joint_name and all transitive upstream deps in topological order."""
         joint_map = {j.name: j for j in assembly.joints}
         if joint_name not in joint_map:
@@ -205,48 +229,77 @@ class QueryPlanner:
             name = parts[0]
             if name in joint_names:
                 return ResolvedReference(
-                    kind="joint", joint_name=name, catalog=None,
-                    schema=None, table=None, cached=name in cached_joints,
+                    kind="joint",
+                    joint_name=name,
+                    catalog=None,
+                    schema=None,
+                    table=None,
+                    cached=name in cached_joints,
                 )
             if catalog_context is not None:
                 return ResolvedReference(
-                    kind="catalog_table", joint_name=None, catalog=catalog_context,
-                    schema=None, table=name, cached=False,
+                    kind="catalog_table",
+                    joint_name=None,
+                    catalog=catalog_context,
+                    schema=None,
+                    table=name,
+                    cached=False,
                 )
             if catalog_explorer is not None:
                 return QueryPlanner._fuzzy_resolve(name, catalog_explorer)
             return ResolvedReference(
-                kind="catalog_table", joint_name=None, catalog=None,
-                schema=None, table=name, cached=False,
+                kind="catalog_table",
+                joint_name=None,
+                catalog=None,
+                schema=None,
+                table=name,
+                cached=False,
             )
 
         if len(parts) == 2:
             first, second = parts
             if first in catalog_names:
                 return ResolvedReference(
-                    kind="catalog_table", joint_name=None, catalog=first,
-                    schema=None, table=second, cached=False,
+                    kind="catalog_table",
+                    joint_name=None,
+                    catalog=first,
+                    schema=None,
+                    table=second,
+                    cached=False,
                 )
             return ResolvedReference(
-                kind="catalog_table", joint_name=None, catalog=catalog_context,
-                schema=first, table=second, cached=False,
+                kind="catalog_table",
+                joint_name=None,
+                catalog=catalog_context,
+                schema=first,
+                table=second,
+                cached=False,
             )
 
         if len(parts) == 3:
             return ResolvedReference(
-                kind="catalog_table", joint_name=None, catalog=parts[0],
-                schema=parts[1], table=parts[2], cached=False,
+                kind="catalog_table",
+                joint_name=None,
+                catalog=parts[0],
+                schema=parts[1],
+                table=parts[2],
+                cached=False,
             )
 
         # 4+ parts: last 3 as catalog.schema.table
         return ResolvedReference(
-            kind="catalog_table", joint_name=None, catalog=parts[-3],
-            schema=parts[-2], table=parts[-1], cached=False,
+            kind="catalog_table",
+            joint_name=None,
+            catalog=parts[-3],
+            schema=parts[-2],
+            table=parts[-1],
+            cached=False,
         )
 
     @staticmethod
     def _fuzzy_resolve(
-        name: str, explorer: CatalogExplorer,
+        name: str,
+        explorer: CatalogExplorer,
     ) -> ResolvedReference:
         """Search cached catalog metadata for a table matching *name*."""
         candidates: list[tuple[str, str, str]] = []
@@ -259,20 +312,20 @@ class QueryPlanner:
         if len(candidates) == 1:
             cat, sch, tbl = candidates[0]
             return ResolvedReference(
-                kind="catalog_table", joint_name=None, catalog=cat,
-                schema=sch or None, table=tbl, cached=False,
+                kind="catalog_table",
+                joint_name=None,
+                catalog=cat,
+                schema=sch or None,
+                table=tbl,
+                cached=False,
             )
 
         if len(candidates) > 1:
             fqns = [f"{c}.{s}.{t}" for c, s, t in candidates]
-            raise ValueError(
-                f"Ambiguous reference '{name}': matches {', '.join(fqns)}"
-            )
+            raise ValueError(f"Ambiguous reference '{name}': matches {', '.join(fqns)}")
 
         connected = sorted(
-            cat_name
-            for cat_name, (ok, _) in explorer._connection_status.items()
-            if ok
+            cat_name for cat_name, (ok, _) in explorer._connection_status.items() if ok
         )
         raise ValueError(
             f"Cannot resolve '{name}': no matching table found in cached metadata. "

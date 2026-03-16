@@ -48,6 +48,12 @@ def DatabricksPlugin(registry: PluginRegistry) -> None:
     except ImportError:
         pass
     try:
+        from rivet_databricks.adapters.databricks import DatabricksAdapter
+
+        registry.register_adapter(DatabricksAdapter())
+    except ImportError:
+        pass
+    try:
         from rivet_databricks.adapters.duckdb import DatabricksDuckDBAdapter
 
         registry.register_adapter(DatabricksDuckDBAdapter())

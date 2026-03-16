@@ -98,6 +98,42 @@ Incapable adapters are logged as `not_applicable`:
 
 ---
 
+## Sink and Checkpoint Joints
+
+Sink and checkpoint joints with SQL now participate in cross-group pushdown alongside sql-type and source-type joints. When a sink or checkpoint joint has SQL — either written directly or generated from YAML `columns`/`filter`/`limit` fields — the compiler parses it into a LogicalPlan and extracts column lineage, enabling the same predicate, projection, and limit pushdown that already works for sql-type consumer joints.
+
+This means a sink or checkpoint joint like:
+
+```sql
+-- sink or checkpoint joint writing to a warehouse
+SELECT order_id, customer_name
+FROM   source_orders
+WHERE  status = 'shipped'
+LIMIT  1000
+```
+
+triggers three pushdowns to the upstream `source_orders` adapter:
+
+- **Predicate**: `status = 'shipped'` is pushed so the adapter filters at the storage level
+- **Projection**: only `order_id`, `customer_name`, and `status` are read (status is needed for the predicate)
+- **Limit**: `1000` is pushed so the adapter caps the number of rows fetched
+
+YAML-declared sink or checkpoint transforms benefit automatically because the bridge generates SQL from `columns`, `filter`, and `limit` fields before compilation. A sink or checkpoint with:
+
+```yaml
+columns:
+  - order_id
+  - customer_name
+filter: "status = 'shipped'"
+limit: 1000
+```
+
+produces the same pushdown as the explicit SQL above.
+
+All the same eligibility rules apply — predicates must trace through direct/renamed lineage to a single source, the adapter must support `predicate_pushdown`, and limits are blocked by aggregations, joins, or DISTINCT.
+
+---
+
 ## Limitations
 
 - **Expression-based join conditions** — `ON UPPER(a.col) = b.col` does not trigger join-equality propagation. Only simple column-reference equalities are eligible.

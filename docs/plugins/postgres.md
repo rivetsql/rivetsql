@@ -113,9 +113,12 @@ All seven: `append`, `replace`, `truncate_insert`, `merge`, `delete_insert`, `in
 
 | Adapter | Requires | Description |
 |---------|----------|-------------|
+| `PostgresLocalAdapter` | — | Native SQL read/write for Postgres engine → Postgres catalog |
 | `PostgresDuckDBAdapter` | `duckdb` | Read Postgres from DuckDB via `postgres_scanner` |
 | `PostgresPySparkAdapter` | `pyspark` | Read/write Postgres from PySpark via JDBC |
 | `PostgresCrossJointAdapter` | — | Cross-engine joins between Postgres and other engines |
+
+The `PostgresLocalAdapter` supports native SQL write for `replace`, `append`, and `truncate_insert` strategies — the fused SQL is embedded directly into the write DDL, eliminating the Arrow round-trip. See [Native SQL Write Optimization](../guides/write-strategies.md#native-sql-write-optimization) for details.
 
 ---
 

@@ -15,7 +15,7 @@ import time
 import traceback
 from collections import deque
 from collections.abc import Coroutine
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -51,6 +51,7 @@ from rivet_core.optimizer import (
 from rivet_core.plugins import (
     ComputeEnginePlugin,
     CrossJointContext,
+    NativeSqlWriteContext,
     PluginRegistry,
     UpstreamResolution,
 )
@@ -58,6 +59,7 @@ from rivet_core.sql_resolver import resolve_execution_sql
 from rivet_core.stats import RunStats, StatsCollector
 from rivet_core.strategies import (
     ArrowMaterialization,
+    DeferredRef,
     MaterializationContext,
     MaterializationStrategy,
     MaterializedRef,
@@ -472,12 +474,28 @@ def _merge_cross_group_limits(
 
 @dataclass(frozen=True)
 class CheckExecutionResult:
+    """Result of executing a single quality check (assertion or audit).
+
+    Attributes:
+        type: The check type (e.g. ``"not_null"``, ``"unique"``).
+        severity: ``"error"`` or ``"warning"``.
+        passed: Whether the check passed.
+        message: Human-readable result description.
+        phase: ``"assertion"`` (pre-write) or ``"audit"`` (post-write).
+        read_back_rows: Row count from read-back audits, if applicable.
+        execution_method: How the check was executed — ``"arrow"`` for
+            Python-side Arrow table checks, ``"engine_native"`` for
+            SQL dispatched to the engine plugin via
+            ``execute_assertion_sql``.
+    """
+
     type: str
     severity: str
     passed: bool
     message: str
     phase: str  # "assertion" or "audit"
     read_back_rows: int | None = None
+    execution_method: str = "arrow"
 
 
 @dataclass(frozen=True)
@@ -494,6 +512,7 @@ class JointExecutionResult:
     check_results: list[CheckExecutionResult]
     plugin_metrics: PluginMetrics | None
     error: RivetError | None
+    write_path: str | None = None  # "native_sql" | "arrow_fallback" | None
 
 
 @dataclass(frozen=True)
@@ -1343,6 +1362,111 @@ _CHECK_HANDLERS: dict[str, Any] = {
     "freshness": _check_freshness,
 }
 
+# ---------------------------------------------------------------------------
+# Check SQL generation for engine-native assertion execution
+# ---------------------------------------------------------------------------
+
+_SQL_TRANSLATABLE_CHECKS: frozenset[str] = frozenset(
+    {"not_null", "unique", "row_count", "accepted_values", "expression"}
+)
+
+
+def _is_sql_translatable(check: CompiledCheck) -> bool:
+    """Return True if the check type can be translated to SQL for engine-native execution."""
+    return check.type in _SQL_TRANSLATABLE_CHECKS
+
+
+def _generate_check_sql(check: CompiledCheck, table_ref: str) -> list[str]:
+    """Generate SQL for a compiled check against the given table reference.
+
+    Returns a list of SQL strings. Most check types produce a single SQL string,
+    but multi-column ``not_null`` and ``unique`` checks produce one SQL per column.
+
+    Each SQL is a SELECT that produces a single-row result with a ``result_value``
+    column containing the metric needed to evaluate pass/fail.
+
+    Raises ``ValueError`` for missing required config fields or unsupported types.
+    """
+    cfg = check.config
+    check_type = check.type
+
+    if check_type == "not_null":
+        columns = _get_check_columns(cfg)
+        if not columns:
+            raise ValueError("not_null check requires 'column' or 'columns' in config")
+        return [
+            f"SELECT COUNT(*) AS result_value FROM {table_ref} WHERE {col} IS NULL"
+            for col in columns
+        ]
+
+    if check_type == "unique":
+        columns = _get_check_columns(cfg)
+        if not columns:
+            raise ValueError("unique check requires 'column' or 'columns' in config")
+        return [
+            f"SELECT COUNT(*) - COUNT(DISTINCT {col}) AS result_value FROM {table_ref} WHERE {col} IS NOT NULL"
+            for col in columns
+        ]
+
+    if check_type == "row_count":
+        return [f"SELECT COUNT(*) AS result_value FROM {table_ref}"]
+
+    if check_type == "accepted_values":
+        col = cfg.get("column", "")
+        values = cfg.get("values", [])
+        if not col:
+            raise ValueError("accepted_values check requires 'column' in config")
+        if not values:
+            raise ValueError("accepted_values check requires 'values' in config")
+        quoted = ", ".join(f"'{v}'" for v in values)
+        return [
+            f"SELECT COUNT(*) AS result_value FROM {table_ref} WHERE {col} IS NOT NULL AND {col} NOT IN ({quoted})"
+        ]
+
+    if check_type == "expression":
+        expr = cfg.get("expression", "")
+        if not expr:
+            raise ValueError("expression check requires 'expression' in config")
+        return [f"SELECT COUNT(*) AS result_value FROM {table_ref} WHERE NOT ({expr})"]
+
+    raise ValueError(f"Cannot generate SQL for check type: {check_type!r}")
+
+
+def _interpret_check_sql_result(
+    check: CompiledCheck,
+    result_table: pyarrow.Table,
+) -> CheckExecutionResult:
+    """Interpret the result of a check SQL query into a CheckExecutionResult.
+
+    The ``result_table`` is expected to have a single row with a ``result_value``
+    column produced by ``_generate_check_sql``.
+    """
+    result_value: int = result_table.column("result_value")[0].as_py()
+    check_type = check.type
+    cfg = check.config
+
+    if check_type == "row_count":
+        min_count = cfg.get("min", 0)
+        max_count = cfg.get("max")
+        passed = result_value >= min_count and (max_count is None or result_value <= max_count)
+        message = (
+            f"row_count: {result_value} rows (min={min_count}, max={max_count}): "
+            f"{'passed' if passed else 'failed'}"
+        )
+    else:
+        # not_null, unique, accepted_values, expression: result_value == 0 means passed
+        passed = result_value == 0
+        message = f"{check_type}: {'passed' if passed else f'{result_value} failing row(s)'}"
+
+    return CheckExecutionResult(
+        type=check.type,
+        severity=check.severity,
+        passed=passed,
+        message=message,
+        phase=check.phase,
+        execution_method="engine_native",
+    )
+
 
 def _execute_check(check: CompiledCheck, table: pyarrow.Table) -> CheckExecutionResult:
     """Execute a single compiled check against a pyarrow.Table."""
@@ -1531,6 +1655,15 @@ class _nullcontext:
         pass
 
 
+def _resolve_fused_sql(group: FusedGroup) -> str | None:
+    """Extract the best available fused SQL from a group."""
+    if group.fusion_result:
+        sql = group.fusion_result.resolved_fused_sql or group.fusion_result.fused_sql
+        if sql:
+            return sql
+    return group.resolved_sql or group.fused_sql
+
+
 class Executor:
     """Executes a CompiledAssembly deterministically.
 
@@ -1645,8 +1778,16 @@ class Executor:
         group: FusedGroup,
         joint_map: dict[str, CompiledJoint],
         result_ref: MaterializedRef,
+        plugin: ComputeEnginePlugin | None = None,
+        engine_instance: ComputeEngine | None = None,
+        input_tables: dict[str, pyarrow.Table] | None = None,
     ) -> tuple[dict[str, list[CheckExecutionResult]], bool, int, int]:
         """Run assertion-phase checks for all joints in a group.
+
+        When *plugin* supports native assertions and a check is SQL-translatable,
+        the check is executed engine-natively via ``_generate_check_sql`` +
+        ``plugin.execute_assertion_sql``.  On failure the method falls back to
+        Arrow-based ``_execute_check``.
 
         Returns (check_results_by_joint, has_error, error_count, warning_count).
         """
@@ -1656,6 +1797,10 @@ class Executor:
         check_warnings = 0
         assertion_table: pyarrow.Table | None = None
 
+        native_supported = (
+            plugin is not None and engine_instance is not None and plugin.supports_native_assertions
+        )
+
         for jn in group.joints:
             cj = joint_map.get(jn)
             if not cj or not cj.checks:
@@ -1663,10 +1808,50 @@ class Executor:
             assertion_checks = [c for c in cj.checks if c.phase == "assertion"]
             if not assertion_checks:
                 continue
-            if assertion_table is None:
-                assertion_table = result_ref.to_arrow()
+
             for chk in assertion_checks:
-                cr = _execute_check(chk, assertion_table)
+                cr: CheckExecutionResult | None = None
+
+                # Try engine-native path
+                if native_supported and _is_sql_translatable(chk):
+                    try:
+                        sqls = _generate_check_sql(chk, jn)
+                        all_passed = True
+                        last_cr: CheckExecutionResult | None = None
+                        for sql in sqls:
+                            assert plugin is not None  # for type narrowing
+                            assert engine_instance is not None
+                            result = plugin.execute_assertion_sql(
+                                engine_instance, sql, input_tables or {}
+                            )
+                            last_cr = _interpret_check_sql_result(chk, result)
+                            if not last_cr.passed:
+                                all_passed = False
+                                break
+                        # For multi-column checks, if all passed use the last result,
+                        # otherwise use the failing result
+                        if last_cr is not None:
+                            if all_passed:
+                                cr = last_cr
+                            else:
+                                cr = last_cr
+                    except Exception:
+                        import logging
+
+                        logging.getLogger("rivet_core.executor").warning(
+                            "Engine-native assertion failed for check '%s' on joint '%s'; "
+                            "falling back to Arrow-based execution",
+                            chk.type,
+                            jn,
+                        )
+                        cr = None  # fall through to Arrow path
+
+                # Arrow fallback
+                if cr is None:
+                    if assertion_table is None:
+                        assertion_table = result_ref.to_arrow()
+                    cr = _execute_check(chk, assertion_table)
+
                 all_check_results[jn].append(cr)
                 if not cr.passed:
                     if cr.severity == "error":
@@ -1685,15 +1870,21 @@ class Executor:
         catalog_map: dict[str, CompiledCatalog],
         assertion_error: bool,
         joint_results: list[JointExecutionResult],
+        skip_write: bool = False,
     ) -> tuple[int, int]:
-        """Execute sink writes and audit checks. Returns (error_count, warning_count)."""
+        """Execute sink writes and audit checks. Returns (error_count, warning_count).
+
+        When *skip_write* is True the sink write step is skipped (the data was
+        already persisted by the native SQL write path) but audit checks still run.
+        """
         check_failures = 0
         check_warnings = 0
         for jn in group.joints:
             cj = joint_map.get(jn)
             if not cj or cj.type != "sink" or assertion_error:
                 continue
-            await self._dispatch_sink_write(cj, result_ref, catalog_map)
+            if not skip_write:
+                await self._dispatch_sink_write(cj, result_ref, catalog_map)
             audit_checks = [c for c in cj.checks if c.phase == "audit"]
             if not audit_checks:
                 continue
@@ -1726,6 +1917,177 @@ class Executor:
                         check_warnings += 1
         return check_failures, check_warnings
 
+    async def _try_native_sql_write(
+        self,
+        group: FusedGroup,
+        exit_cj: CompiledJoint,
+        catalog_map: dict[str, CompiledCatalog],
+        materials: dict[str, MaterializedRef],
+    ) -> bool:
+        """Attempt native SQL write for the exit joint.
+
+        When the group has fused SQL (e.g. from an upstream transform or
+        explicit sink SQL), that SQL is used directly.  When fused SQL is
+        unavailable — typically because the sink is in its own group with
+        no SQL — the method constructs ``SELECT * FROM {upstream}`` from
+        the single upstream materialized table.  If there are multiple
+        upstreams and no fused SQL, native write is skipped (the sink
+        needs explicit SQL to combine them).
+
+        Returns True if native SQL write was dispatched successfully,
+        False if the method fell back (caller should use the Arrow path).
+        """
+        import logging
+
+        log = logging.getLogger("rivet_core.executor")
+
+        # 1. Guard: non-empty residuals present → fallback
+        if group.residual is not None and (
+            group.residual.predicates or group.residual.limit is not None or group.residual.casts
+        ):
+            log.debug("native_sql_write skipped for '%s': residual plan present", exit_cj.name)
+            return False
+
+        # 2. Guard: no catalog → fallback
+        if not exit_cj.catalog:
+            return False
+        cc = catalog_map.get(exit_cj.catalog)
+        if not cc:
+            return False
+
+        # 3. Lookup adapter
+        if not self._registry:
+            return False
+        adapter = self._registry.get_adapter(group.engine_type, cc.type)
+        if adapter is None:
+            log.debug(
+                "native_sql_write skipped for '%s': no adapter for (%s, %s)",
+                exit_cj.name,
+                group.engine_type,
+                cc.type,
+            )
+            return False
+
+        # 4. Check native SQL write support for the strategy
+        write_strategy = exit_cj.write_strategy or "replace"
+        if not adapter.supports_native_sql_write(write_strategy):
+            log.debug(
+                "native_sql_write skipped for '%s': adapter does not support strategy '%s'",
+                exit_cj.name,
+                write_strategy,
+            )
+            return False
+
+        # 5. Resolve fused SQL
+        sql = _resolve_fused_sql(group)
+        if not sql:
+            # No fused SQL — try to construct from the exit joint's direct
+            # upstream.  ``materials`` may contain entries from earlier waves
+            # that are not relevant to this sink, so we filter to only the
+            # upstream joints declared by the exit joint.
+            upstream_names = [u for u in exit_cj.upstream if u in materials]
+            if len(upstream_names) == 1:
+                upstream_name = upstream_names[0]
+                sql = f"SELECT * FROM {upstream_name}"
+                log.debug(
+                    "native_sql_write for '%s': constructed SQL from upstream '%s'",
+                    exit_cj.name,
+                    upstream_name,
+                )
+            else:
+                # Multiple upstreams require explicit SQL to combine them
+                log.debug(
+                    "native_sql_write skipped for '%s': no fused SQL and %d upstream(s)",
+                    exit_cj.name,
+                    len(upstream_names),
+                    len(materials),
+                )
+                return False
+
+        # 6. Build input tables (all upstream materialized Arrow tables)
+        # Skip DeferredRef entries with no cached table — the engine wrote
+        # directly to the catalog and there is no Arrow table to pass.
+        input_tables: dict[str, pyarrow.Table] = {
+            k: v.to_arrow()
+            for k, v in materials.items()
+            if not (isinstance(v, DeferredRef) and v._cached_table is None)
+        }
+
+        # 7. Build context and dispatch
+        cat = Catalog(name=cc.name, type=cc.type, options=cc.options)
+        target_table = exit_cj.table or exit_cj.name
+        joint = Joint(
+            name=exit_cj.name,
+            joint_type=exit_cj.type,
+            catalog=exit_cj.catalog,
+            table=target_table,
+        )
+        engine_instance = self._registry.get_compute_engine(group.engine)
+
+        ctx = NativeSqlWriteContext(
+            fused_sql=sql,
+            target_table=target_table,
+            write_strategy=write_strategy,
+            input_tables=input_tables,
+            engine=engine_instance,
+            catalog=cat,
+            joint=joint,
+        )
+        await asyncio.to_thread(adapter.write_dispatch, engine_instance, cat, joint, ctx)
+        log.debug("native_sql_write succeeded for '%s' (strategy=%s)", exit_cj.name, write_strategy)
+        return True
+
+    async def _checkpoint_read_back(
+        self,
+        cj: CompiledJoint,
+        catalog_map: dict[str, CompiledCatalog],
+        engine_type: str | None = None,
+        engine_name: str | None = None,
+        result_table: pyarrow.Table | None = None,
+    ) -> MaterializedRef:
+        """Return a DeferredRef for checkpoint read-back. No data is read eagerly.
+
+        When *result_table* is provided (Arrow fallback write path), the
+        DeferredRef carries it as a pre-computed cached table so that
+        ``.to_arrow()`` returns it without re-reading from the catalog.
+
+        When *result_table* is ``None`` (native SQL write path), the DeferredRef
+        has no cached table — ``.to_arrow()`` reads from the catalog on first access.
+
+        *engine_type* and *engine_name* are kept for signature compatibility
+        but are no longer used — adapter resolution happens in
+        ``_read_sources_into`` at downstream execution time.
+        """
+        if not self._registry or not cj.catalog:
+            raise ExecutionError(
+                RivetError(
+                    code="RVT-501",
+                    message=f"Checkpoint joint '{cj.name}' has no catalog configured.",
+                    context={"joint": cj.name},
+                    remediation="Ensure the checkpoint joint has a valid catalog.",
+                )
+            )
+
+        cc = catalog_map.get(cj.catalog)
+        if not cc:
+            raise ExecutionError(
+                RivetError(
+                    code="RVT-501",
+                    message=f"Checkpoint joint '{cj.name}': catalog '{cj.catalog}' not found.",
+                    context={"joint": cj.name, "catalog": cj.catalog},
+                    remediation="Check that the catalog is defined in your project configuration.",
+                )
+            )
+
+        return DeferredRef(
+            catalog_name=cc.name,
+            catalog_type=cc.type,
+            table_name=cj.table or cj.name,
+            catalog_options=cc.options,
+            registry=self._registry,
+            cached_table=result_table,
+        )
+
     async def _execute_group_success(
         self,
         group: FusedGroup,
@@ -1751,19 +2113,93 @@ class Executor:
             if cj:
                 needed_keys.update(cj.upstream)
 
-        # Pass all materials, not just needed_keys, because fused SQL may reference
-        # tables from previous waves that aren't in the upstream list (e.g., when
-        # referenced inside CTEs or subqueries after an assertion boundary).
-        arrow_materials: dict[str, pyarrow.Table] = {k: v.to_arrow() for k, v in materials.items()}
-        result_ref, adapter_residual = await self._execute_fused_group(
-            group,
-            arrow_materials,
-            joint_map,
-            catalog_map,
-            ref_materials=materials,
-            stats_collector=stats_collector,
-        )
-        engine_ms = (time.monotonic() - engine_start) * 1000
+        # Determine exit joint early for native SQL write check
+        exit_joint = group.exit_joints[-1] if group.exit_joints else group.joints[-1]
+        exit_cj = joint_map.get(exit_joint)
+        write_path: str | None = None
+
+        # Try native SQL write for sink/checkpoint exit joints
+        native_write_used = False
+        if exit_cj and exit_cj.type in ("sink", "checkpoint") and self._registry:
+            try:
+                native_write_used = await self._try_native_sql_write(
+                    group,
+                    exit_cj,
+                    catalog_map,
+                    materials,
+                )
+            except Exception:
+                # Native SQL write failed — fall back to Arrow path instead
+                # of propagating the error.  This handles cross-catalog
+                # scenarios where the fused SQL references tables that only
+                # exist in the engine connection (e.g. filesystem→DuckDB).
+                import logging
+
+                logging.getLogger("rivet_core.executor").warning(
+                    "native_sql_write failed for '%s'; falling back to Arrow path",
+                    exit_cj.name if exit_cj else "unknown",
+                    exc_info=True,
+                )
+                native_write_used = False
+
+        if native_write_used:
+            write_path = "native_sql"
+            engine_ms = (time.monotonic() - engine_start) * 1000
+
+            # For checkpoints: read-back is still needed
+            if exit_cj and exit_cj.type == "checkpoint":
+                result_ref = await self._checkpoint_read_back(
+                    exit_cj,
+                    catalog_map,
+                    engine_type=group.engine_type,
+                    engine_name=group.engine,
+                    result_table=None,
+                )
+            else:
+                # Sink: create a minimal empty ref for stats/audits
+                result_ref = _ArrowMaterializedRef(pyarrow.table({}))
+
+            adapter_residual = None
+            # Skip DeferredRef entries with no cached table — these were
+            # written via native SQL and can only be read by the engine
+            # natively (calling .to_arrow() would trigger a SourcePlugin
+            # read that fails for deferred-execution backends like Databricks).
+            # Also skip DeferredRef entries that are checkpoint sources for
+            # this group — they will be resolved by _read_sources_into.
+            _cp_sources = group.checkpoint_sources or {}
+            arrow_materials: dict[str, pyarrow.Table] = {
+                k: v.to_arrow()
+                for k, v in materials.items()
+                if not (
+                    isinstance(v, DeferredRef) and (v._cached_table is None or k in _cp_sources)
+                )
+            }
+        else:
+            if exit_cj and exit_cj.type in ("sink", "checkpoint"):
+                write_path = "arrow_fallback"
+
+            # Pass all materials, not just needed_keys, because fused SQL may reference
+            # tables from previous waves that aren't in the upstream list (e.g., when
+            # referenced inside CTEs or subqueries after an assertion boundary).
+            # Skip DeferredRef entries with no cached table (native SQL write path)
+            # and checkpoint sources (resolved lazily by _read_sources_into).
+            _cp_sources = group.checkpoint_sources or {}
+            arrow_materials = {
+                k: v.to_arrow()
+                for k, v in materials.items()
+                if not (
+                    isinstance(v, DeferredRef) and (v._cached_table is None or k in _cp_sources)
+                )
+            }
+            result_ref, adapter_residual = await self._execute_fused_group(
+                group,
+                arrow_materials,
+                joint_map,
+                catalog_map,
+                ref_materials=materials,
+                stats_collector=stats_collector,
+            )
+            engine_ms = (time.monotonic() - engine_start) * 1000
 
         # Collect engine metrics via plugin.collect_metrics
         if stats_collector is not None:
@@ -1804,19 +2240,19 @@ class Executor:
                     stats_collector.record_engine_metrics(group.id, PluginMetrics())
 
         residual_start = time.monotonic()
-        merged_residual = (
-            _merge_residuals(group.residual, adapter_residual)
-            if adapter_residual
-            else group.residual
-        )
-        if merged_residual is not None:
-            result_table = result_ref.to_arrow()
-            result_table = _apply_residuals(result_table, merged_residual)
-            result_ref = self._materialize_result(result_table, group)
+        if not native_write_used:
+            merged_residual = (
+                _merge_residuals(group.residual, adapter_residual)
+                if adapter_residual
+                else group.residual
+            )
+            if merged_residual is not None:
+                result_table = result_ref.to_arrow()
+                result_table = _apply_residuals(result_table, merged_residual)
+                result_ref = self._materialize_result(result_table, group)
         residual_ms = (time.monotonic() - residual_start) * 1000
 
         mat_start = time.monotonic()
-        exit_joint = group.exit_joints[-1] if group.exit_joints else group.joints[-1]
         materialized = False
         mat_trigger: str | None = None
         mat_stats: MaterializationStats | None = None
@@ -1830,7 +2266,20 @@ class Executor:
         total_materializations = 0
         if materialized:
             total_materializations = 1
-            mat_stats = _compute_materialization_stats(result_ref.to_arrow())
+            if not (isinstance(result_ref, DeferredRef) and result_ref._cached_table is None):
+                mat_stats = _compute_materialization_stats(result_ref.to_arrow())
+
+        # Checkpoint dispatch: if the exit joint is a checkpoint and native write
+        # was NOT used, execute write-then-read via the Arrow fallback path.
+        # (When native write was used, checkpoint read-back was already done above.)
+        if not native_write_used and exit_cj and exit_cj.type == "checkpoint":
+            result_ref = await self._execute_checkpoint(
+                exit_cj,
+                result_ref,
+                catalog_map,
+                engine_type=group.engine_type,
+                engine_name=group.engine,
+            )
 
         for jn in group.joints:
             materials[jn] = result_ref
@@ -1838,6 +2287,26 @@ class Executor:
         materialize_ms = (time.monotonic() - mat_start) * 1000
 
         check_start = time.monotonic()
+        # Look up engine plugin for native assertion dispatch
+        assertion_plugin = (
+            self._registry.get_engine_plugin(group.engine_type) if self._registry else None
+        )
+        assertion_engine: ComputeEngine | None = None
+        if assertion_plugin is not None and assertion_plugin.supports_native_assertions:
+            assertion_engine = (
+                self._registry.get_compute_engine(group.engine) if self._registry else None
+            )
+
+        # Build input tables for assertion SQL: upstream materials plus the
+        # group's own result registered under each joint name so that
+        # _generate_check_sql can reference the joint by name.
+        assertion_input_tables = dict(arrow_materials)
+        if assertion_engine is not None:
+            if not (isinstance(result_ref, DeferredRef) and result_ref._cached_table is None):
+                result_arrow = result_ref.to_arrow()
+                for jn in group.joints:
+                    assertion_input_tables[jn] = result_arrow
+
         (
             all_check_results,
             assertion_error,
@@ -1847,6 +2316,9 @@ class Executor:
             group,
             joint_map,
             result_ref,
+            plugin=assertion_plugin,
+            engine_instance=assertion_engine,
+            input_tables=assertion_input_tables,
         )
         check_ms = (time.monotonic() - check_start) * 1000
 
@@ -1869,18 +2341,28 @@ class Executor:
             check_ms=check_ms,
         )
 
-        rows_out = result_ref.row_count
+        # For native-SQL-written checkpoints the DeferredRef has no cached
+        # table — accessing .row_count would trigger a catalog read that may
+        # not be supported (e.g. Databricks).  Use None/0 instead.
+        _is_deferred_no_cache = (
+            isinstance(result_ref, DeferredRef) and result_ref._cached_table is None
+        )
+        rows_out = 0 if _is_deferred_no_cache else result_ref.row_count
         rows_in = 0
         for jn in group.entry_joints or group.joints:
             cj = joint_map.get(jn)
             if cj:
                 for up in cj.upstream:
-                    if up in materials:
-                        rows_in += materials[up].row_count
+                    up_ref = materials.get(up)
+                    if up_ref is not None:
+                        if isinstance(up_ref, DeferredRef) and up_ref._cached_table is None:
+                            continue
+                        rows_in += up_ref.row_count
         group_success = not assertion_error
 
         for jn in group.joints:
             jn_mat = materialized and jn == exit_joint
+            jn_write_path = write_path if jn == exit_joint else None
             joint_results.append(
                 JointExecutionResult(
                     name=jn,
@@ -1895,6 +2377,7 @@ class Executor:
                     check_results=all_check_results.get(jn, []),
                     plugin_metrics=None,
                     error=None,
+                    write_path=jn_write_path,
                 )
             )
 
@@ -1948,6 +2431,7 @@ class Executor:
             catalog_map,
             assertion_error,
             joint_results,
+            skip_write=native_write_used,
         )
         check_failures += af
         check_warnings += aw
@@ -2301,7 +2785,9 @@ class Executor:
             if group is None:
                 continue
             arrow_materials: dict[str, pyarrow.Table] = {
-                k: v.to_arrow() for k, v in materials.items()
+                k: v.to_arrow()
+                for k, v in materials.items()
+                if not (isinstance(v, DeferredRef) and v._cached_table is None)
             }
             result_ref, adapter_residual = await self._execute_fused_group(
                 group, arrow_materials, joint_map, catalog_map, ref_materials=materials
@@ -2356,7 +2842,9 @@ class Executor:
 
             step_start = time.monotonic()
             arrow_materials: dict[str, pyarrow.Table] = {
-                k: v.to_arrow() for k, v in materials.items()
+                k: v.to_arrow()
+                for k, v in materials.items()
+                if not (isinstance(v, DeferredRef) and v._cached_table is None)
             }
 
             engine_start = time.monotonic()
@@ -2560,7 +3048,13 @@ class Executor:
 
         # Single dispatch path: resolve upstream, build input_tables, call execute_sql
         result_table, adapter_residual = await self._execute_via_plugin(
-            group, materials, joint_map, catalog_map, plugin, stats_collector=stats_collector
+            group,
+            materials,
+            joint_map,
+            catalog_map,
+            plugin,
+            stats_collector=stats_collector,
+            ref_materials=ref_materials,
         )
         return self._materialize_result(result_table, group), adapter_residual
 
@@ -2613,6 +3107,7 @@ class Executor:
         catalog_map: dict[str, CompiledCatalog] | None,
         plugin: ComputeEnginePlugin,
         stats_collector: StatsCollector | None = None,
+        ref_materials: dict[str, MaterializedRef] | None = None,
     ) -> tuple[pyarrow.Table, ResidualPlan | None]:
         """Execute via plugin's execute_sql with cross-joint adapter resolution.
 
@@ -2693,6 +3188,7 @@ class Executor:
             catalog_map,
             stats_collector=stats_collector,
             skip_fused_sources=skip_source_reads,
+            ref_materials=ref_materials,
         )
 
         adapter_read_sources = {
@@ -3031,6 +3527,7 @@ class Executor:
         catalog_map: dict[str, CompiledCatalog] | None,
         stats_collector: StatsCollector | None = None,
         skip_fused_sources: bool = False,
+        ref_materials: dict[str, MaterializedRef] | None = None,
     ) -> ResidualPlan | None:
         """Read source joints from their catalogs into input_tables dict.
 
@@ -3041,6 +3538,11 @@ class Executor:
         the fused SQL already contains fully-qualified table references
         (rewritten by a reference resolver) and does not depend on
         input_tables for these sources.
+
+        When *ref_materials* is provided, checkpoint upstream refs that are
+        ``DeferredRef`` instances are resolved through the same adapter /
+        source-plugin / fallback path used for source joints, using the
+        pre-resolved ``group.checkpoint_sources`` metadata.
         """
         merged_adapter_residual: ResidualPlan | None = None
         if not self._registry or not catalog_map:
@@ -3154,6 +3656,83 @@ class Executor:
                     _apply_source_inline_residuals(tbl, cj),
                     cj,
                 )
+        # --- Checkpoint upstream resolution ---
+        # Resolve DeferredRef entries from upstream checkpoints using the same
+        # adapter/fallback pattern as source joints.
+        # When skip_fused_sources is True, the reference resolver has already
+        # rewritten the SQL to include fully-qualified checkpoint table names,
+        # so the engine reads them natively — skip adapter/fallback reads.
+        if ref_materials and group.checkpoint_sources and not skip_fused_sources:
+            from rivet_core.models import Catalog, Joint
+
+            for cp_name, cp_info in group.checkpoint_sources.items():
+                if cp_name in input_tables:
+                    continue  # already resolved
+                ref = ref_materials.get(cp_name)
+                if not isinstance(ref, DeferredRef):
+                    continue  # _ArrowMaterializedRef or already materialized
+
+                cp_cj = joint_map.get(cp_name)
+                if not cp_cj:
+                    # Fallback: materialize via .to_arrow()
+                    input_tables[cp_name] = ref.to_arrow()
+                    continue
+
+                cc = catalog_map.get(cp_info.catalog) if catalog_map else None
+                if not cc:
+                    # Fallback: materialize via .to_arrow()
+                    input_tables[cp_name] = ref.to_arrow()
+                    continue
+
+                cat = Catalog(name=cc.name, type=cc.type, options=cc.options)
+                joint = Joint(
+                    name=cp_name,
+                    joint_type="source",
+                    catalog=cp_info.catalog,
+                    table=cp_info.table,
+                )
+
+                if cp_info.adapter:
+                    # Build a synthetic CompiledJoint for _read_source_via_adapter
+                    # using the downstream group's engine and pre-resolved adapter.
+                    synthetic_cj = replace(
+                        cp_cj,
+                        adapter=cp_info.adapter,
+                        engine=group.engine,
+                        catalog_type=cp_info.catalog_type,
+                    )
+                    try:
+                        found, tbl, residual = await self._read_source_via_adapter(
+                            cp_name, synthetic_cj, cat, joint, group
+                        )
+                        if found and tbl is not None:
+                            input_tables[cp_name] = tbl
+                            if residual is not None:
+                                merged_adapter_residual = _merge_residuals(
+                                    merged_adapter_residual, residual
+                                )
+                            continue
+                    except Exception:
+                        pass  # Fall through to source plugin fallback
+
+                # Source plugin fallback
+                try:
+                    source = (
+                        self._registry._sources.get(cp_info.catalog_type)
+                        if self._registry
+                        else None
+                    )
+                    if source:
+                        mat = await asyncio.to_thread(source.read, cat, joint, None)
+                        if mat.materialized_ref is not None:
+                            input_tables[cp_name] = mat.to_arrow()
+                            continue
+                except Exception:
+                    pass  # Fall through to .to_arrow() fallback
+
+                # Last resort: DeferredRef.to_arrow()
+                input_tables[cp_name] = ref.to_arrow()
+
         return merged_adapter_residual
 
     async def _execute_python_joint(
@@ -3321,7 +3900,68 @@ class Executor:
                 materialized_ref=ref,
                 state="materialized",
             )
-            joint = Joint(name=cj.name, joint_type="sink", catalog=cj.catalog, table=cj.table)
+            joint = Joint(name=cj.name, joint_type=cj.type, catalog=cj.catalog, table=cj.table)
             await asyncio.to_thread(sink.write, cat, joint, mat, cj.write_strategy or "replace")
         except Exception:
-            pass  # Write failures handled by audit phase
+            if cj.type == "checkpoint":
+                raise  # Checkpoint writes must succeed; read-back depends on it
+            import logging
+
+            logging.getLogger("rivet_core.executor").warning(
+                "Sink write failed for '%s'; continuing (audit phase may report).",
+                cj.name,
+                exc_info=True,
+            )
+
+    async def _execute_checkpoint(
+        self,
+        cj: CompiledJoint,
+        result_ref: MaterializedRef,
+        catalog_map: dict[str, CompiledCatalog],
+        engine_type: str | None = None,
+        engine_name: str | None = None,
+    ) -> MaterializedRef:
+        """Execute checkpoint write-then-read: persist data, read it back.
+
+        Delegates the write step to _dispatch_sink_write (shared with sink joints),
+        then reads the written data back via adapter or SourcePlugin and returns
+        it as a new MaterializedRef for downstream joints.
+
+        When *engine_type* and *engine_name* are provided, the read-back
+        attempts to use the adapter first (required for Databricks and similar
+        backends where the raw SourcePlugin returns a deferred ref).
+
+        Raises ExecutionError on write failure or read-back failure.
+        Write errors propagate immediately for checkpoints (unlike sinks).
+        """
+        import logging
+
+        log = logging.getLogger("rivet_core.executor")
+
+        # Step 1: Write via shared sink write path (catalog resolution, SinkPlugin
+        # dispatch, schema validation — identical to sink joints).
+        await self._dispatch_sink_write(cj, result_ref, catalog_map)
+
+        write_strategy = cj.write_strategy or "replace"
+
+        # Step 2: Read watermark state for incremental_append
+        if write_strategy == "incremental_append":
+            # TODO: No concrete WatermarkBackend implementation exists yet.
+            # When a file-based backend is added, import and use it here.
+            log.debug(
+                "Watermark backend not yet implemented for checkpoint '%s'; "
+                "proceeding without watermark.",
+                cj.name,
+            )
+
+        # Step 3: Advance watermark state for incremental_append
+        # TODO: Implement when a concrete WatermarkBackend is available.
+
+        # Step 4: Read back — pass the Arrow table so DeferredRef caches it
+        return await self._checkpoint_read_back(
+            cj,
+            catalog_map,
+            engine_type=engine_type,
+            engine_name=engine_name,
+            result_table=result_ref.to_arrow(),
+        )

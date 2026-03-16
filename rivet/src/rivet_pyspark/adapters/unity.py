@@ -11,6 +11,7 @@ from rivet_core.optimizer import AdapterPushdownResult, PushdownPlan
 from rivet_core.plugins import ComputeEngineAdapter
 from rivet_pyspark.adapters._detection import _has_delta_jars
 from rivet_pyspark.adapters.pushdown import _apply_pyspark_pushdown
+from rivet_pyspark.arrow_converter import arrow_to_spark
 from rivet_pyspark.engine import SparkDataFrameMaterializedRef
 
 _logger = logging.getLogger(__name__)
@@ -151,7 +152,9 @@ class UnityPySparkAdapter(ComputeEngineAdapter):
             )
         return plugin
 
-    def read_dispatch(self, engine: Any, catalog: Any, joint: Any, pushdown: PushdownPlan | None = None) -> AdapterPushdownResult:
+    def read_dispatch(
+        self, engine: Any, catalog: Any, joint: Any, pushdown: PushdownPlan | None = None
+    ) -> AdapterPushdownResult:
         session = engine.get_session()
 
         if not _has_delta_jars(session):
@@ -229,7 +232,7 @@ class UnityPySparkAdapter(ComputeEngineAdapter):
 
         df, residual = _apply_pyspark_pushdown(df, pushdown)
 
-        ref = SparkDataFrameMaterializedRef(df)
+        ref = SparkDataFrameMaterializedRef(df, session)
         material = Material(
             name=joint.name,
             catalog=getattr(catalog, "name", "unity"),
@@ -303,7 +306,7 @@ class UnityPySparkAdapter(ComputeEngineAdapter):
         mode = _delta_write_mode(strategy)
 
         arrow_table = material.materialized_ref.to_arrow()
-        df = session.createDataFrame(arrow_table.to_pandas())
+        df = arrow_to_spark(arrow_table, session)
 
         try:
             partition_by = getattr(joint, "partition_by", None)

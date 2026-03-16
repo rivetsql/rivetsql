@@ -119,6 +119,13 @@ def run_compile(
             )
         return GENERAL_ERROR
 
+    # Print compilation warnings (e.g. checkpoint with no downstream)
+    for cw in compiled.warnings:
+        print(
+            format_cli_warning(cw, None, globals.color),
+            file=sys.stderr,
+        )
+
     # 6. Check tag filter matched something
     if tags and not compiled.joints:
         err = CLIError(

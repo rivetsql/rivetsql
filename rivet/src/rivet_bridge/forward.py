@@ -63,7 +63,11 @@ def build_assembly(
         has_yaml_transforms = (
             decl.columns is not None or decl.filter is not None or decl.limit is not None
         )
-        if decl.joint_type in ("source", "sink") and has_yaml_transforms and decl.sql is None:
+        if (
+            decl.joint_type in ("source", "sink", "checkpoint")
+            and has_yaml_transforms
+            and decl.sql is None
+        ):
             sql, sql_errors = sql_gen.generate(decl, joint_names)
             all_errors.extend(sql_errors)
             if sql and not sql_errors:

@@ -16,8 +16,16 @@ if TYPE_CHECKING:
 _logger = logging.getLogger(__name__)
 
 SUPPORTED_STRATEGIES = frozenset(
-    {"append", "replace", "merge", "truncate_insert", "delete_insert",
-     "incremental_append", "scd2", "partition"}
+    {
+        "append",
+        "replace",
+        "merge",
+        "truncate_insert",
+        "delete_insert",
+        "incremental_append",
+        "scd2",
+        "partition",
+    }
 )
 
 _MERGE_KEY_REQUIRED_STRATEGIES = frozenset({"merge", "delete_insert", "scd2"})
@@ -25,7 +33,12 @@ _MERGE_KEY_REQUIRED_STRATEGIES = frozenset({"merge", "delete_insert", "scd2"})
 _VALID_FORMATS = frozenset({"delta", "parquet", "csv", "json"})
 
 _KNOWN_SINK_OPTIONS = {
-    "table", "write_strategy", "merge_key", "partition_by", "format", "create_table",
+    "table",
+    "write_strategy",
+    "merge_key",
+    "partition_by",
+    "format",
+    "create_table",
 }
 
 
@@ -167,7 +180,11 @@ def _arrow_type_to_unity(arrow_type: pyarrow.DataType) -> str:
     if type_str.startswith("timestamp"):
         return "TIMESTAMP"
     if type_str.startswith("decimal"):
-        return f"DECIMAL{type_str[len('decimal128'):]}" if "decimal128" in type_str else f"DECIMAL{type_str[len('decimal'):]}"
+        return (
+            f"DECIMAL{type_str[len('decimal128') :]}"
+            if "decimal128" in type_str
+            else f"DECIMAL{type_str[len('decimal') :]}"
+        )
     if type_str.startswith("duration"):
         return "INTERVAL"
     return "STRING"
@@ -292,12 +309,16 @@ class UnitySink(SinkPlugin):
 
         if sink_options.get("create_table", True):
             table_name = sink_options["table"]
-            if table_name.count(".") < 2:
+            dot_count = table_name.count(".")
+            if dot_count >= 2:
+                full_name = table_name
+            elif dot_count == 1:
+                cat_name = catalog.options.get("catalog_name", "")
+                full_name = f"{cat_name}.{table_name}"
+            else:
                 cat_name = catalog.options.get("catalog_name", "")
                 schema_name = catalog.options.get("schema", "default")
                 full_name = f"{cat_name}.{schema_name}.{table_name}"
-            else:
-                full_name = table_name
             _ensure_table_exists(catalog, full_name, material, sink_options)
 
         raise ExecutionError(

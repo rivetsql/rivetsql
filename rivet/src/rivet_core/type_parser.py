@@ -33,6 +33,7 @@ def parse_type(
     and converts them to Arrow type representations. It handles:
     - Primitive types (mapped via primitive_mapping)
     - Arrays: array<T> or type[] (PostgreSQL)
+    - Maps: map<K,V>
     - Structs: struct<field:type,...>
     - Nested complex types
 
@@ -105,6 +106,19 @@ def parse_type(
             return "large_utf8"
         content = normalized[6:-1].strip()  # Extract content between array< and >
         return _parse_array(content, primitive_mapping, warn_on_unknown, _depth)
+
+    # Detect map syntax: map<K,V>
+    if normalized_lower.startswith("map<"):
+        if not normalized.endswith(">"):
+            if warn_on_unknown:
+                warnings.warn(
+                    f"Malformed map type (unmatched brackets): '{native_type}'; "
+                    f"defaulting to large_utf8.",
+                    stacklevel=2,
+                )
+            return "large_utf8"
+        content = normalized[4:-1].strip()  # Extract content between map< and >
+        return _parse_map(content, primitive_mapping, warn_on_unknown, _depth)
 
     # Detect struct syntax: struct<field:type,...> or STRUCT(field type, ...)
     if normalized_lower.startswith("struct<"):
@@ -244,6 +258,75 @@ def _parse_array(
                 stacklevel=3,
             )
         return "list<large_utf8>"
+
+
+def _parse_map(
+    content: str,
+    primitive_mapping: dict[str, str],
+    warn_on_unknown: bool,
+    depth: int,
+) -> str:
+    """Parse map<K,V> syntax recursively.
+
+    Splits the content at the top-level comma into key and value type strings,
+    then recursively parses each.
+
+    Args:
+        content: The content between map< and > (e.g., "string,array<int>")
+        primitive_mapping: Dict mapping primitive type names to Arrow types
+        warn_on_unknown: Whether to warn on unknown types
+        depth: Current recursion depth
+
+    Returns:
+        Arrow map type string (e.g., "map<large_utf8, list<int32>>")
+    """
+    if not content or not content.strip():
+        if warn_on_unknown:
+            warnings.warn(
+                "Empty map type content; defaulting to large_utf8.",
+                stacklevel=3,
+            )
+        return "large_utf8"
+
+    # Split on the first top-level comma (respecting nested brackets)
+    bracket_depth = 0
+    split_pos = -1
+    for i, char in enumerate(content):
+        if char in "<(":
+            bracket_depth += 1
+        elif char in ">)":
+            bracket_depth -= 1
+        elif char == "," and bracket_depth == 0:
+            split_pos = i
+            break
+
+    if split_pos == -1:
+        if warn_on_unknown:
+            warnings.warn(
+                f"Malformed map type (no comma separating key and value): '{content}'; "
+                f"defaulting to large_utf8.",
+                stacklevel=3,
+            )
+        return "large_utf8"
+
+    key_str = content[:split_pos].strip()
+    value_str = content[split_pos + 1 :].strip()
+
+    try:
+        key_type = parse_type(
+            key_str, primitive_mapping, warn_on_unknown=warn_on_unknown, _depth=depth + 1
+        )
+        value_type = parse_type(
+            value_str, primitive_mapping, warn_on_unknown=warn_on_unknown, _depth=depth + 1
+        )
+        return f"map<{key_type}, {value_type}>"
+    except Exception:
+        if warn_on_unknown:
+            warnings.warn(
+                f"Failed to parse map type '{content}'; defaulting to large_utf8.",
+                stacklevel=3,
+            )
+        return "large_utf8"
 
 
 def _parse_postgres_array(

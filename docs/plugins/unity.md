@@ -46,9 +46,12 @@ All seven: `append`, `replace`, `truncate_insert`, `merge`, `delete_insert`, `in
 
 | Adapter | Requires | Description |
 |---------|----------|-------------|
-| `DatabricksUnityAdapter` | — | Read/write Unity tables through Databricks |
+| `DatabricksUnityAdapter` | — | Read/write Unity tables through Databricks (supports native SQL write) |
+| `DatabricksAdapter` | — | Read/write Databricks-managed tables (supports native SQL write) |
 | `DatabricksDuckDBAdapter` | `duckdb` | Read Databricks/Unity tables from local DuckDB |
 | `DatabricksCrossJointAdapter` | — | Cross-engine joins |
+
+Both `DatabricksAdapter` and `DatabricksUnityAdapter` support native SQL write for `replace`, `append`, and `truncate_insert` strategies — the fused SQL is executed directly on the Databricks SQL Warehouse, eliminating the Arrow round-trip. See [Native SQL Write Optimization](../guides/write-strategies.md#native-sql-write-optimization) for details.
 
 ---
 
@@ -62,7 +65,7 @@ default:
       options:
         host: https://my-workspace.cloud.databricks.com
         catalog_name: main
-        schema: default
+        # schema: prod_silver  # optional — restricts explore/sources to this schema
         token: ${DATABRICKS_TOKEN}
 ```
 
@@ -72,7 +75,7 @@ default:
 |--------|----------|------|---------|-------------|
 | `host` | yes | `str` | — | Unity Catalog server URL |
 | `catalog_name` | yes | `str` | — | Catalog name |
-| `schema` | no | `str` | `None` | Default schema |
+| `schema` | no | `str` | `None` | Default schema. When set, restricts explore/REPL and source declarations to this schema only. |
 
 ### Complex Type Support
 
@@ -106,7 +109,7 @@ default:
       options:
         workspace_url: https://my-workspace.cloud.databricks.com
         catalog: main
-        schema: default
+        # schema: prod_silver  # optional — restricts explore/sources to this schema
         token: ${DATABRICKS_TOKEN}
 ```
 
@@ -116,7 +119,7 @@ default:
 |--------|----------|------|---------|-------------|
 | `workspace_url` | yes | `str` | — | Workspace URL |
 | `catalog` | yes | `str` | — | Catalog name |
-| `schema` | no | `str` | `"default"` | Default schema |
+| `schema` | no | `str` | `None` | Default schema for writes. When set, restricts explore/REPL and source declarations to this schema only. |
 | `http_path` | no | `str` | `None` | SQL warehouse HTTP path |
 
 ---

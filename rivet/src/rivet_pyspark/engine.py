@@ -12,6 +12,7 @@ _logger = logging.getLogger(__name__)
 from rivet_core.models import ComputeEngine, Material
 from rivet_core.plugins import ComputeEnginePlugin
 from rivet_core.strategies import MaterializedRef
+from rivet_pyspark.arrow_converter import arrow_to_spark, spark_to_arrow
 
 
 def fuse_joints(joints: list[Any]) -> str:
@@ -27,29 +28,33 @@ def fuse_joints(joints: list[Any]) -> str:
     return f"WITH {', '.join(ctes)} {joints[-1].sql}"
 
 
-def _pandas_df_to_arrow(pandas_df: Any) -> pyarrow.Table:
-    """Convert a pandas DataFrame to a PyArrow Table. Extracted for testability."""
-    return pyarrow.Table.from_pandas(pandas_df)
-
-
 class SparkDataFrameMaterializedRef(MaterializedRef):
-    """MaterializedRef backed by a Spark DataFrame. Materializes to Arrow on to_arrow()."""
+    """MaterializedRef backed by a Spark DataFrame.
 
-    def __init__(self, df: Any) -> None:
+    Conversion to Arrow is delegated to :func:`arrow_converter.spark_to_arrow`,
+    which uses the native ``toArrow()`` path on Spark 4.0+ and falls back to
+    pandas on Spark 3.x.  The result is cached after the first call.
+    """
+
+    def __init__(self, df: Any, session: Any) -> None:
+        """Initialise with a Spark DataFrame and its owning session.
+
+        The *session* is needed by the arrow converter for version detection
+        and for the pandas-fallback schema derivation path.
+        """
         self._df = df
+        self._session = session
         self._cached_table: pyarrow.Table | None = None
 
     def to_arrow(self) -> pyarrow.Table:
+        """Materialise the Spark DataFrame to a PyArrow Table.
+
+        Delegates to :func:`arrow_converter.spark_to_arrow` which selects the
+        native or pandas conversion path based on the session's capabilities.
+        The table is cached so repeated calls avoid re-collection.
+        """
         if self._cached_table is None:
-            # Prefer toArrow() (Spark >= 3.3), fall back to toPandas()
-            if hasattr(self._df, "toArrow"):
-                result = self._df.toArrow()
-                # Spark 4.0 / Spark Connect returns RecordBatchReader, not Table
-                if isinstance(result, pyarrow.RecordBatchReader):
-                    result = result.read_all()
-                self._cached_table = result
-            else:
-                self._cached_table = _pandas_df_to_arrow(self._df.toPandas())
+            self._cached_table = spark_to_arrow(self._df, self._session)
         return self._cached_table
 
     @property
@@ -151,13 +156,14 @@ class PySparkComputeEngine(ComputeEngine):
     def execute_fused_group(self, joints: list[Any]) -> Material:
         """Execute a fused group of SQL joints as a single Spark action using CTEs.
 
-        Builds a CTE SQL string from the group and submits it as one spark.sql() call.
-        Returns a deferred Material backed by the resulting Spark DataFrame.
+        Builds a CTE SQL string from the group, submits it as one ``spark.sql()``
+        call, and wraps the result in a :class:`SparkDataFrameMaterializedRef`
+        that converts to Arrow via the centralized arrow converter.
         """
         sql = fuse_joints(joints)
         session = self.get_session()
         df = session.sql(sql)
-        ref = SparkDataFrameMaterializedRef(df)
+        ref = SparkDataFrameMaterializedRef(df, session)
         return Material(
             name=joints[-1].name,
             catalog="",
@@ -245,25 +251,23 @@ class PySparkComputeEnginePlugin(ComputeEnginePlugin):
     ) -> pyarrow.Table:
         """Execute SQL via PySpark session.
 
-        Converts input Arrow tables to Spark DataFrames, registers them as
-        temp views, executes the SQL, and returns the result as Arrow.
+        Input Arrow tables are converted to Spark DataFrames via
+        :func:`arrow_converter.arrow_to_spark` and registered as temp views.
+        After executing the SQL, the result is collected back to Arrow via
+        :func:`arrow_converter.spark_to_arrow`.  Both directions use the
+        native path on Spark 4.0+ and the pandas fallback on 3.x.
         """
         pyspark_engine: PySparkComputeEngine = engine  # type: ignore[assignment]
         session = pyspark_engine.get_session()
-        from pyspark.sql.pandas.types import from_arrow_schema
 
         for name, table in input_tables.items():
             # Normalise RecordBatchReader → Table (Spark 4.0 compat)
             if isinstance(table, pyarrow.RecordBatchReader):
                 table = table.read_all()
-            # Convert Arrow schema to Spark schema so Spark doesn't have to
-            # infer types from the pandas DataFrame (avoids CANNOT_DETERMINE_TYPE
-            # errors for null / ambiguous columns).
-            spark_schema = from_arrow_schema(table.schema)
-            df = session.createDataFrame(table.to_pandas(), schema=spark_schema)
+            df = arrow_to_spark(table, session)
             df.createOrReplaceTempView(name)
         result_df = session.sql(sql)
-        return SparkDataFrameMaterializedRef(result_df).to_arrow()
+        return spark_to_arrow(result_df, session)
 
     def collect_metrics(self, execution_context: Any) -> Any:
         """Return PluginMetrics with query_planning, io, memory, parallelism, scan + pyspark extensions."""

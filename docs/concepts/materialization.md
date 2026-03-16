@@ -15,10 +15,9 @@ ref.to_arrow() -> pa.Table
 Downstream joints — including Python joints and assertions — always access data through this method. They never receive raw engine-specific objects.
 
 ```python
-import pyarrow as pa
-from rivet_core.strategies import MaterializedRef
+from rivet_core.models import Material
 
-def enrich_orders(raw_orders: MaterializedRef) -> pa.Table:
+def enrich_orders(raw_orders: Material) -> Material:
     table = raw_orders.to_arrow()  # always works, regardless of engine
     # ... transform ...
     return enriched
@@ -60,7 +59,7 @@ Access it only within the joint's downstream execution window.
 
 ## Materialization in Python Joints
 
-Python joints are the primary consumers of `MaterializedRef`. A handler receives a `Material` per upstream joint and must return a `pa.Table`:
+Python joints are the primary consumers of `MaterializedRef`. A handler receives a `Material` per upstream joint and returns a `Material`:
 
 ```python
 import pyarrow as pa
@@ -70,7 +69,7 @@ from rivet_core.models import Material
 def compute_metrics(
     orders: Material,
     customers: Material,
-) -> pa.Table:
+) -> Material:
     orders_tbl = orders.to_arrow()
     customers_tbl = customers.to_arrow()
     joined = orders_tbl.join(customers_tbl, keys="customer_id")
@@ -78,6 +77,20 @@ def compute_metrics(
 ```
 
 The handler signature must match the upstream joint names declared in the joint definition. Rivet resolves the mapping at compile time.
+
+---
+
+## Native SQL Write Optimization
+
+When the compute engine and the catalog share the same backend (e.g., DuckDB engine writing to a DuckDB catalog), Rivet can bypass the Arrow materialization entirely. Instead of executing the fused SQL, converting to an Arrow table, and re-registering it for the write, the executor embeds the fused SQL directly into the write DDL:
+
+```
+CREATE TABLE target AS <fused_sql>
+```
+
+This eliminates the Arrow round-trip and executes the entire read-transform-write in a single statement on the shared backend. The optimization is transparent — pipeline definitions don't change, and the executor falls back to the Arrow path automatically when the engine and catalog don't share a backend or the write strategy isn't supported natively.
+
+See [Write Strategies](../guides/write-strategies.md#native-sql-write-optimization) for details on which adapters and strategies support this optimization.
 
 ---
 

@@ -27,6 +27,11 @@ def DuckDBPlugin(registry: PluginRegistry) -> None:
     registry.register_sink(DuckDBSink())
     registry.register_sink(FilesystemSink())
 
+    # DuckDB→DuckDB local adapter for native SQL write
+    from rivet_duckdb.adapters.duckdb_local import DuckDBLocalAdapter
+
+    registry.register_adapter(DuckDBLocalAdapter())
+
     # Adapters depend on optional packages — register best-effort
     try:
         from rivet_duckdb.adapters.s3 import S3DuckDBAdapter

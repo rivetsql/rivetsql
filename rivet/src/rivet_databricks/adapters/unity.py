@@ -9,7 +9,7 @@ import pyarrow
 from rivet_core.errors import ExecutionError, plugin_error
 from rivet_core.models import Column, Material, Schema
 from rivet_core.optimizer import EMPTY_RESIDUAL, AdapterPushdownResult, ResidualPlan
-from rivet_core.plugins import ComputeEngineAdapter
+from rivet_core.plugins import ComputeEngineAdapter, NativeSqlWriteContext
 from rivet_core.strategies import MaterializedRef
 
 if TYPE_CHECKING:
@@ -176,8 +176,7 @@ class _DatabricksUnityMaterializedRef(MaterializedRef):
         table = self._materialize()
         return Schema(
             columns=[
-                Column(name=f.name, type=str(f.type), nullable=f.nullable)
-                for f in table.schema
+                Column(name=f.name, type=str(f.type), nullable=f.nullable) for f in table.schema
             ]
         )
 
@@ -203,6 +202,11 @@ class DatabricksUnityAdapter(ComputeEngineAdapter):
     source = "catalog_plugin"
     source_plugin = "rivet_databricks"
 
+    _NATIVE_WRITE_STRATEGIES = frozenset({"replace", "append", "truncate_insert"})
+
+    def supports_native_sql_write(self, write_strategy: str) -> bool:
+        return write_strategy in self._NATIVE_WRITE_STRATEGIES
+
     def read_dispatch(
         self, engine: Any, catalog: Any, joint: Any, pushdown: PushdownPlan | None = None
     ) -> AdapterPushdownResult:
@@ -225,20 +229,114 @@ class DatabricksUnityAdapter(ComputeEngineAdapter):
 
         parts = table.split(".")
         ref = _DatabricksUnityMaterializedRef(
-            sql=sql, api=api, catalog_name=parts[0], schema_name=parts[1],
+            sql=sql,
+            api=api,
+            catalog_name=parts[0],
+            schema_name=parts[1],
         )
         material = Material(
-            name=joint.name, catalog=catalog.name, materialized_ref=ref, state="deferred",
+            name=joint.name,
+            catalog=catalog.name,
+            materialized_ref=ref,
+            state="deferred",
         )
         return AdapterPushdownResult(material=material, residual=residual)
 
-    def write_dispatch(
-        self, engine: Any, catalog: Any, joint: Any, material: Any
-    ) -> Any:
+    def write_dispatch(self, engine: Any, catalog: Any, joint: Any, material: Any) -> Any:
         """Write to Unity Catalog table via Databricks Statement Execution API.
 
-        Delegates SQL generation to DatabricksSink helpers.
+        Detects NativeSqlWriteContext for native SQL write (no Arrow round-trip),
+        otherwise falls back to Arrow-based write via staging view.
         """
+        if isinstance(material, NativeSqlWriteContext):
+            return self._native_sql_write(engine, catalog, joint, material)
+        return self._arrow_write(engine, catalog, joint, material)
+
+    def _native_sql_write(
+        self, engine: Any, catalog: Any, joint: Any, ctx: NativeSqlWriteContext
+    ) -> None:
+        """Execute fused SQL directly on Databricks via Statement API."""
+        import requests
+
+        from rivet_databricks.engine import DatabricksStatementAPI
+
+        workspace_url, token, warehouse_id = _resolve_credentials(engine)
+        table = _resolve_table_name(joint, catalog)
+        parts = table.split(".")
+        catalog_name, schema_name = parts[0], parts[1]
+        strategy = ctx.write_strategy
+        sql = ctx.fused_sql
+
+        api = DatabricksStatementAPI(
+            workspace_url=workspace_url,
+            token=token,
+            warehouse_id=warehouse_id,
+        )
+        try:
+            if strategy == "replace":
+                api.execute(
+                    f"CREATE OR REPLACE TABLE {table} AS {sql}",
+                    catalog=catalog_name,
+                    schema=schema_name,
+                )
+            elif strategy == "append":
+                api.execute(
+                    f"INSERT INTO {table} {sql}",
+                    catalog=catalog_name,
+                    schema=schema_name,
+                )
+            elif strategy == "truncate_insert":
+                api.execute(
+                    f"TRUNCATE TABLE {table}",
+                    catalog=catalog_name,
+                    schema=schema_name,
+                )
+                api.execute(
+                    f"INSERT INTO {table} {sql}",
+                    catalog=catalog_name,
+                    schema=schema_name,
+                )
+        except ExecutionError:
+            raise
+        except requests.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else "unknown"
+            raise ExecutionError(
+                plugin_error(
+                    "RVT-502",
+                    f"Databricks Statement API returned HTTP {status} during native write to '{table}': {exc}",
+                    plugin_name="rivet_databricks",
+                    plugin_type="adapter",
+                    adapter="DatabricksUnityAdapter",
+                    remediation="Check target table and write strategy.",
+                )
+            ) from exc
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            raise ExecutionError(
+                plugin_error(
+                    "RVT-501",
+                    f"Databricks SQL Warehouse unreachable: {exc}",
+                    plugin_name="rivet_databricks",
+                    plugin_type="adapter",
+                    adapter="DatabricksUnityAdapter",
+                    remediation="Check network connectivity and warehouse status.",
+                )
+            ) from exc
+        except Exception as exc:
+            raise ExecutionError(
+                plugin_error(
+                    "RVT-502",
+                    f"Databricks Statement API error during native write to '{table}': {exc}",
+                    plugin_name="rivet_databricks",
+                    plugin_type="adapter",
+                    adapter="DatabricksUnityAdapter",
+                    remediation="Check target table and write strategy.",
+                )
+            ) from exc
+        finally:
+            api.close()
+
+    def _arrow_write(self, engine: Any, catalog: Any, joint: Any, material: Any) -> Any:
+        """Arrow-based write fallback via staging view."""
         workspace_url, token, warehouse_id = _resolve_credentials(engine)
         table = _resolve_table_name(joint, catalog)
 
@@ -290,8 +388,7 @@ class DatabricksUnityAdapter(ComputeEngineAdapter):
                     for f in arrow_table.schema
                 )
                 stage_sql = (
-                    f"CREATE OR REPLACE TEMPORARY VIEW {staging}"
-                    f" AS SELECT {col_defs} WHERE FALSE"
+                    f"CREATE OR REPLACE TEMPORARY VIEW {staging} AS SELECT {col_defs} WHERE FALSE"
                 )
                 api.execute(stage_sql, catalog=catalog_name, schema=schema_name)
 

@@ -24,8 +24,8 @@ class SQLGenerator:
         try:
             # Determine FROM reference
             if declaration.joint_type == "source":
-                table_ref = declaration.table or declaration.name
-            elif declaration.joint_type == "sink":
+                table_ref = "__self"
+            elif declaration.joint_type in ("sink", "checkpoint"):
                 table_ref = declaration.upstream[0] if declaration.upstream else declaration.name
             else:
                 table_ref = declaration.table or declaration.name

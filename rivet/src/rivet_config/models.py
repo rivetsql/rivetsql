@@ -39,7 +39,7 @@ YAML_JOINT_FIELDS = frozenset(
     }
 )
 
-JOINT_TYPES = frozenset({"source", "sql", "sink", "python"})
+JOINT_TYPES = frozenset({"source", "sql", "sink", "python", "checkpoint"})
 
 WRITE_STRATEGY_MODES = frozenset(
     {

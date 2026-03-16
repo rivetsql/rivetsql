@@ -5,7 +5,70 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.15] - 2026-03-16
+
+### Added
+- `DuckDBReferenceResolver` for compile-time source reference resolution — rewrites logical source names in fused SQL to DuckDB-native reader functions (`read_csv_auto`, `read_parquet`, `read_json_auto`) for filesystem sources and qualified table names for DuckDB sources, enabling native SQL write for cross-catalogue pipelines (e.g. filesystem → DuckDB) without Arrow staging fallback
+- Native SQL write optimization for same-backend sink/checkpoint writes — when the compute engine and catalog share the same backend (e.g., DuckDB→DuckDB), fused SQL is embedded directly into write DDL (`CREATE TABLE ... AS <fused_sql>`), eliminating the Arrow round-trip through `SinkPlugin.write()`
+- `DuckDBLocalAdapter` for `(duckdb, duckdb)` engine/catalog pair — supports replace, append, and truncate_insert strategies via native SQL write
+- `PostgresLocalAdapter` for `(postgres, postgres)` engine/catalog pair — supports replace, append, and truncate_insert strategies via native SQL write
+- Native SQL write support for `DatabricksAdapter` (`databricks→databricks`) and `DatabricksUnityAdapter` (`databricks→unity`) — replace, append, and truncate_insert strategies execute fused SQL directly on the Databricks SQL Warehouse
+- `NativeSqlWriteContext` dataclass and `supports_native_sql_write()` method on `ComputeEngineAdapter` for adapter opt-in to native SQL write
+- `write_path` field on `JointExecutionResult` for observability of write path (`"native_sql"` or `"arrow_fallback"`)
+- Optional `schema` filter for Databricks and Unity catalog plugins — when set, restricts explore/REPL schema listings and source declarations to the configured schema; when omitted, all schemas are visible
+- `CheckpointSourceInfo` frozen dataclass and `checkpoint_sources` field on `FusedGroup` — pre-resolved catalog and adapter metadata for checkpoint-to-downstream resolution, populated at compile time (defaults to empty dict, no impact on existing pipelines)
+- Compiler `_build_checkpoint_sources` step pre-resolves adapter metadata for checkpoint-to-downstream pairs on each `FusedGroup`, with compile-time warnings for missing adapters and inclusion in `rivet compile` adapter output
+
+### Fixed
+- Databricks sink FQN resolution: two-part table names (`schema.table`) on legacy catalogs no longer produce invalid four-part names (`catalog.default.schema.table`) — the sink now correctly prepends only the catalog, producing `catalog.schema.table`
+- Checkpoint write failures no longer fail silently — `_dispatch_sink_write` now propagates exceptions for checkpoint joints instead of swallowing them, so CREATE TABLE errors surface immediately instead of causing a misleading `TABLE_OR_VIEW_NOT_FOUND` on the subsequent read-back
+- Sink write failures are now logged with a warning instead of being silently ignored
+- Databricks Arrow fallback staging view no longer uses type definitions in `CREATE VIEW` column lists — Spark/Databricks rejects `CREATE VIEW (col BIGINT, ...)` syntax; staging views now use `SELECT CAST(...) FROM VALUES ... AS _t(col_names)` instead
+- Native SQL write guard now correctly treats empty `ResidualPlan` (no predicates, no limit, no casts) as equivalent to no residual — previously an empty residual object blocked native SQL write for all groups processed by the optimizer, forcing the slower Arrow fallback path even for same-backend writes (e.g. Databricks→Databricks checkpoints)
+- Native SQL write now gracefully falls back to Arrow path when the fused SQL references tables that only exist in the engine connection (e.g. filesystem source → DuckDB sink) — previously this caused a silent group failure; for same-backend scenarios like Databricks→Databricks where the SQL Warehouse resolves all references, native SQL write still works directly
+- Cross-group checkpoint references in downstream fused groups are now resolved via CTE injection — checkpoint CTEs with fully-qualified table names are prepended to the downstream group's fused SQL at compile time, so engines like Databricks can resolve them natively without special-casing in the reference resolver
+- Checkpoint CTE injection now scans all joints in a fused group, not just entry joints — joints with both intra-group and cross-group upstream dependencies (e.g. a joint referencing a local source AND a checkpoint from another group) were previously missed because they are not entry joints
+- Sink native SQL write now correctly filters upstream materials by the exit joint's declared upstream — previously the method checked all accumulated materials from the execution wave, causing it to see multiple entries and skip native write for sinks whose upstream was not fused with them (e.g. eager upstream or assertion barrier)
+- Executor no longer calls `.to_arrow()` on `DeferredRef` entries from unrelated groups when building Arrow input tables — previously, a checkpoint written via native SQL in one group caused `RVT-501` errors when a sibling group tried to eagerly materialize it during its own execution
+- Sink joints now use native SQL write when fused SQL is unavailable — when a sink is in its own fused group (e.g. upstream has assertions or is on a different engine), the executor constructs `SELECT * FROM {upstream}` from the materialized upstream table instead of silently falling back to the Arrow path
+
+### Changed
+- Checkpoint joints now return a `DeferredRef` instead of eagerly reading data back into an Arrow table, enabling lazy resolution by downstream groups through the same adapter and source plugin mechanism used for source joints
+
+### Added
+- Downstream joints can now resolve checkpoint references using adapters, source plugins, or Arrow fallback — enabling cross-engine checkpoint consumption where, for example, a Spark joint reads directly from a DuckDB-written checkpoint table without an Arrow round-trip
+
+### Changed
+- Source inline SQL now uses `FROM __self` instead of `FROM {joint_name}` — `__self` is a reserved alias substituted with the table FQN at compile time
+- Python joint documentation now recommends `-> Material` as the canonical return type hint across all guides, concept docs, and plugin docs
+- `rivet init` source template now uses SQL with an explicit SELECT statement by default (sql and mixed styles); yaml style uses `columns` field for explicit projection
+- All plugin `pyproject.toml` files now use `dev-mode-dirs = ["."]` so `pip install -e` works for every plugin, not just core
+- `scripts/dev-install.sh` now installs all plugins in editable mode (`-e`) for instant source change pickup during development
+
+### Added
+- `checkpoint` joint type — writes intermediate pipeline results to a catalog table and re-exposes them for downstream joints, enabling long-pipeline staging and fan-out patterns
+- Compiler support for `checkpoint` joint type: validates `catalog`/`table` fields, defaults `write_strategy` to `"replace"`, emits warning for checkpoints with no downstream consumers, and creates `checkpoint_boundary` materialization entries
+- Checkpoint joints now support SQL (inline or `.sql` file) and YAML transforms (`columns`/`filter`/`limit`) identical to sink joints — enabling cross-group predicate, projection, and limit pushdown from checkpoint SQL to upstream sources
+- `rivet repl execute --compile-only`: new flag that compiles the transient pipeline and prints the compilation result (joints, fused groups, resolved SQL) as JSON without executing the query
+- Sink SQL parsing: sink joints with SQL now have their SQL parsed into a LogicalPlan, enabling cross-group predicate, projection, and limit pushdown from sinks to upstream sources — YAML-declared sink transforms (`columns`/`filter`/`limit`) also benefit because the bridge generates SQL for them
+- `DatabricksAdapter` for `(databricks, databricks)` engine/catalog pair — enables source joints on `databricks` catalog type (both Unity namespaces and legacy `hive_metastore`) to be read/written via the Databricks Statement Execution API
+- Type parser now supports `map<K,V>` complex types, resolving unknown-type warnings for Databricks/Hive columns with map types
+
+### Fixed
+- Checkpoint read-back on Databricks (and similar deferred-execution backends) no longer fails with `RVT-501 "requires the Databricks engine to read data"` — adapter read-back errors now propagate instead of silently falling through to the SourcePlugin (which always fails for deferred-execution backends); for backends where the SourcePlugin works (e.g. DuckDB), the fallback is still used
+- Source joints with inline SQL transforms no longer produce circular CTE references — `SQLGenerator` now emits `FROM __self` and the compiler substitutes it with the table FQN at compile time
+- `rivet repl execute` no longer produces `TABLE_OR_VIEW_NOT_FOUND` when querying known source joints (e.g. `select * from d_sku`) — source joints reconstructed from compiled_map now have their inline SQL stripped so the fusionner treats them as pure sources resolved to their FQN, matching the behavior of sources created by `preprocess_sql`
+- `DatabricksReferenceResolver` no longer treats source joints with SQL (inline transforms) as CTE siblings — fixes `rivet repl execute` sending unqualified joint names to Databricks instead of fully-qualified `catalog.schema.table`, causing HTTP 404 (`RVT-503`) and `TABLE_OR_VIEW_NOT_FOUND` errors
+- `DatabricksAdapter.read_dispatch` now builds SQL using the fully-qualified three-part table name instead of the partial `joint.table` value — fixes `RVT-503` / HTTP 404 errors in `rivet repl execute` for `databricks` catalog sources
+- Databricks catalog legacy introspection (`get_schema`, `get_metadata`) now correctly parses two-part table names (`schema.table`) by using the catalog's `catalog` option instead of misinterpreting the schema as the catalog name
+- Databricks catalog plugin: SQL-based introspection fallback for legacy catalogs (e.g. `hive_metastore`) that are not exposed through the Unity Catalog REST API — opt-in via `legacy: true` and `warehouse_id` options, using `SHOW SCHEMAS`, `SHOW TABLES`, `DESCRIBE TABLE`, and `DESCRIBE TABLE EXTENDED` through the SQL Statement Execution API
+- `rivet init` now generates an `AGENTS.md` file with best-practice guidelines for AI agents working with Rivet projects
+- Arrow-native Spark 4.0 conversion support in `rivet_pyspark`: new `arrow_converter` module with automatic version detection, native `toArrow()`/`createDataFrame(pyarrow.Table)` path on Spark 4.0+, and transparent pandas fallback for Spark 3.x
+- All Spark ↔ Arrow conversion points (engine, Glue/S3/Unity adapters) now route through the centralized converter, eliminating duplicated pandas conversion code
+- `supports_native_assertions` property and `execute_assertion_sql` method on `ComputeEnginePlugin` interface for engine-native assertion execution
+- DuckDB engine plugin declares native assertion support, delegating assertion SQL to its existing `execute_sql` path
+- Compiler suppresses `assertion_boundary` materialization for joints on assertion-capable engines with SQL-translatable checks, preserving fused groups
+- `execution_method` field on `CheckExecutionResult` for observability of assertion execution path (`"arrow"` or `"engine_native"`)
 
 ## [0.1.14] - 2026-03-14
 

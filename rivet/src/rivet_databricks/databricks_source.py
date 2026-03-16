@@ -224,6 +224,49 @@ class DatabricksSource(SourcePlugin):
         _validate_source_options(source_options)
 
         table_name: str = source_options["table"]
+
+        # Enforce schema filter: if the catalog has a schema set, the source
+        # table must belong to that schema (or be unqualified, in which case
+        # the schema is applied implicitly).
+        schema_filter: str | None = catalog.options.get("schema")
+        if schema_filter:
+            parts = table_name.split(".")
+            if len(parts) == 2:
+                # schema.table — schema must match
+                if parts[0] != schema_filter:
+                    raise PluginValidationError(
+                        plugin_error(
+                            "RVT-201",
+                            (
+                                f"Source table '{table_name}' references schema '{parts[0]}', "
+                                f"but catalog '{catalog.name}' is restricted to schema '{schema_filter}'."
+                            ),
+                            plugin_name="rivet_databricks",
+                            plugin_type="source",
+                            remediation=(
+                                f"Use a table in the '{schema_filter}' schema, "
+                                f"or remove the schema restriction from the catalog config."
+                            ),
+                        )
+                    )
+            elif len(parts) >= 3:
+                # catalog.schema.table — schema must match
+                if parts[1] != schema_filter:
+                    raise PluginValidationError(
+                        plugin_error(
+                            "RVT-201",
+                            (
+                                f"Source table '{table_name}' references schema '{parts[1]}', "
+                                f"but catalog '{catalog.name}' is restricted to schema '{schema_filter}'."
+                            ),
+                            plugin_name="rivet_databricks",
+                            plugin_type="source",
+                            remediation=(
+                                f"Use a table in the '{schema_filter}' schema, "
+                                f"or remove the schema restriction from the catalog config."
+                            ),
+                        )
+                    )
         version: int | str | None = source_options.get("version")
         change_data_feed: bool = source_options.get("change_data_feed", False)
 

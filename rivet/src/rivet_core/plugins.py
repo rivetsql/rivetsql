@@ -207,8 +207,48 @@ class ComputeEnginePlugin(ABC):
     def get_reference_resolver(self) -> ReferenceResolver | None:
         return None
 
+    @property
+    def supports_native_assertions(self) -> bool:
+        """Whether this engine can execute assertion checks via SQL."""
+        return False
+
+    def execute_assertion_sql(
+        self,
+        engine: ComputeEngine,
+        sql: str,
+        input_tables: dict[str, pyarrow.Table],
+    ) -> pyarrow.Table:
+        """Execute assertion SQL and return the result.
+
+        Only called when supports_native_assertions is True.
+        The SQL is a SELECT that returns a single-row result with check metrics
+        (e.g., null counts, duplicate counts, row counts).
+
+        Raises NotImplementedError by default.
+        """
+        raise NotImplementedError
+
     def collect_metrics(self, execution_context: Any) -> PluginMetrics | None:
         return None
+
+
+@dataclass(frozen=True)
+class NativeSqlWriteContext:
+    """Context passed to write_dispatch for native SQL write.
+
+    When the executor determines that a fused group's exit joint can be written
+    via native SQL (same-backend engine↔catalog), it builds this context and
+    passes it as the ``material`` argument to ``write_dispatch()``.  The adapter
+    detects the mode via ``isinstance(material, NativeSqlWriteContext)``.
+    """
+
+    fused_sql: str
+    target_table: str
+    write_strategy: str
+    input_tables: dict[str, pyarrow.Table]
+    engine: Any
+    catalog: Any
+    joint: Any
 
 
 class ComputeEngineAdapter(ABC):
@@ -220,6 +260,15 @@ class ComputeEngineAdapter(ABC):
     source: str  # "engine_plugin" or "catalog_plugin"
     source_plugin: str | None = None  # plugin package name, e.g. "rivet_postgres"
     _registry: PluginRegistry | None = None  # set by PluginRegistry.register_adapter
+
+    def supports_native_sql_write(self, write_strategy: str) -> bool:
+        """Whether this adapter supports native SQL write for the given strategy.
+
+        Returns False by default — adapters opt in by overriding.
+        Adapters that only do Arrow-based writes (e.g., RestApiAdapter,
+        GlueDuckDBAdapter) don't override and automatically fall back.
+        """
+        return False
 
     @abstractmethod
     def read_dispatch(

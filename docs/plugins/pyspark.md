@@ -150,7 +150,7 @@ default:
     import pyarrow.compute as pc
     from rivet_core.models import Material
 
-    def transform(material: Material) -> pa.Table:
+    def transform(material: Material) -> Material:
         table = material.to_arrow()
         errors = table.filter(pc.equal(table["level"], "ERROR"))
         return errors.group_by("level").aggregate([("level", "count")])

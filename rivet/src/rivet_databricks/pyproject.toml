@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rivetsql-databricks"
-version = "0.1.14"
+version = "0.1.15"
 description = "Databricks and Unity Catalog plugin for Rivet SQL"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -31,6 +31,9 @@ Repository = "https://github.com/rivetsql/rivetsql"
 
 [project.entry-points."rivet.plugins"]
 databricks = "rivet_databricks:DatabricksPlugin"
+
+[tool.hatch.build]
+dev-mode-dirs = ["."]
 
 [tool.hatch.build.targets.wheel]
 packages = ["."]

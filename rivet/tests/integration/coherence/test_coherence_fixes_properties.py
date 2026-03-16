@@ -173,7 +173,7 @@ _file_stem_strategy = st.text(
         ),
         min_size=0,
         max_size=10,
-        unique_by=lambda t: t[0] + t[1],  # unique filenames
+        unique_by=lambda t: t[0].casefold() + t[1],  # unique filenames (case-insensitive fs)
     ),
 )
 @settings(max_examples=100)

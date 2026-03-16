@@ -21,7 +21,7 @@ _logger = logging.getLogger(__name__)
 
 _REQUIRED_OPTIONS = ["host", "catalog_name"]
 _CREDENTIAL_OPTIONS = ["token", "client_id", "client_secret", "auth_type"]
-_OPTIONAL_OPTIONS: dict[str, Any] = {"schema": "default"}
+_OPTIONAL_OPTIONS: dict[str, Any] = {"schema": None}
 _KNOWN_OPTIONS = (
     set(_REQUIRED_OPTIONS)
     | set(_CREDENTIAL_OPTIONS)
@@ -229,11 +229,15 @@ class UnityCatalogPlugin(CatalogPlugin):
 
         Uses REST endpoints: GET /catalogs, GET /schemas, GET /tables.
         Returns CatalogNode entries for catalogs, schemas, and tables.
+
+        When ``schema`` is set in catalog options, only that schema is enumerated
+        within each catalog.
         """
         from rivet_core.introspection import CatalogNode, NodeSummary
         from rivet_databricks.client import UnityCatalogClient
 
         host = catalog.options["host"]
+        schema_filter: str | None = catalog.options.get("schema")
         credential = self.resolve_credentials(catalog.options)
         client = UnityCatalogClient(host=host, credential=credential)
         nodes: list[CatalogNode] = []
@@ -241,6 +245,9 @@ class UnityCatalogPlugin(CatalogPlugin):
             catalogs = client.list_catalogs()
             for cat in catalogs:
                 cat_name = cat.get("name", "")
+                schemas = client.list_schemas(cat_name)
+                if schema_filter:
+                    schemas = [s for s in schemas if s.get("name") == schema_filter]
                 schemas = client.list_schemas(cat_name)
                 nodes.append(
                     CatalogNode(
@@ -321,11 +328,15 @@ class UnityCatalogPlugin(CatalogPlugin):
         - path=[catalog] → list_schemas(catalog)
         - path=[catalog, schema] → list_tables(catalog, schema)
         - path=[catalog, schema, table] → columns via get_schema()
+
+        When ``schema`` is set in catalog options, schema listings are filtered
+        to only that schema, and table listings for other schemas return [].
         """
         from rivet_core.introspection import CatalogNode, NodeSummary
         from rivet_databricks.client import UnityCatalogClient
 
         host = catalog.options["host"]
+        schema_filter: str | None = catalog.options.get("schema")
         credential = self.resolve_credentials(catalog.options)
         client = UnityCatalogClient(host=host, credential=credential)
         nodes: list[CatalogNode] = []
@@ -354,7 +365,10 @@ class UnityCatalogPlugin(CatalogPlugin):
             elif len(path) == 1:
                 # Level 1: list schemas in a catalog
                 cat_name = path[0]
-                for schema in client.list_schemas(cat_name):
+                schemas = client.list_schemas(cat_name)
+                if schema_filter:
+                    schemas = [s for s in schemas if s.get("name") == schema_filter]
+                for schema in schemas:
                     schema_name = schema.get("name", "")
                     nodes.append(
                         CatalogNode(
@@ -376,6 +390,8 @@ class UnityCatalogPlugin(CatalogPlugin):
             elif len(path) == 2:
                 # Level 2: list tables in a schema
                 cat_name, schema_name = path[0], path[1]
+                if schema_filter and schema_name != schema_filter:
+                    return []
                 for table in client.list_tables(cat_name, schema_name):
                     table_name = table.get("name", "")
                     nodes.append(

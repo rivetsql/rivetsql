@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rivetsql-pyspark"
-version = "0.1.14"
+version = "0.1.15"
 description = "PySpark plugin for Rivet SQL"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -30,6 +30,9 @@ Repository = "https://github.com/rivetsql/rivetsql"
 
 [project.entry-points."rivet.plugins"]
 pyspark = "rivet_pyspark:PySparkPlugin"
+
+[tool.hatch.build]
+dev-mode-dirs = ["."]
 
 [tool.hatch.build.targets.wheel]
 packages = ["."]

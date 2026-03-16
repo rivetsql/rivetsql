@@ -2,6 +2,13 @@
 
 <!-- version list -->
 
+## [0.1.15] - 2026-03-16
+
+### Fixed
+
+- Fix `DeferredRef` with no cached table triggering unsupported catalog reads during checkpoint execution stats collection (row count, materialization stats, assertion inputs)
+- Fix reference resolvers (Databricks, DuckDB, Postgres) not rewriting checkpoint upstream joint names to fully-qualified catalog table names in fused SQL, causing engines to fail when referencing checkpoint tables by joint name instead of catalog path
+
 ## v1.2.0 (2026-03-06)
 
 ### Features

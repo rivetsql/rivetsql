@@ -34,10 +34,12 @@ Python joints can be declared in three ways:
     import pyarrow as pa
     from rivet_core.models import Material
 
-    def transform(material: Material) -> pa.Table:
+    def transform(material: Material) -> Material:
         table = material.to_arrow()
         return table.append_column("enriched", pa.array([True] * len(table)))
     ```
+
+    The return type hint is `Material`, but you can return any supported type (`pa.Table`, `pd.DataFrame`, `pl.DataFrame`, etc.) — Rivet normalizes the result automatically.
 
     Auto-derived values: `name=enrich_orders`, `type=python`, `function=joints.enrich_orders:transform`.
 
@@ -57,7 +59,7 @@ Python joints can be declared in three ways:
     import pyarrow as pa
     from rivet_core.models import Material
 
-    def transform(material: Material) -> pa.Table:
+    def transform(material: Material) -> Material:
         table = material.to_arrow()
         return table.append_column("enriched", pa.array([True] * len(table)))
     ```
@@ -76,7 +78,7 @@ Python joints can be declared in three ways:
     import pyarrow as pa
     from rivet_core.models import Material
 
-    def transform(material: Material) -> pa.Table:
+    def transform(material: Material) -> Material:
         table = material.to_arrow()
         return table.append_column("enriched", pa.array([True] * len(table)))
     ```
@@ -99,7 +101,7 @@ Python joints can be declared in three ways:
     import pyarrow as pa
     from rivet_core.models import Material
 
-    def transform(material: Material) -> pa.Table:
+    def transform(material: Material) -> Material:
         table = material.to_arrow()
         return table.append_column("enriched", pa.array([True] * len(table)))
     ```
@@ -113,10 +115,9 @@ Python joints can be declared in three ways:
 When a joint has exactly one upstream dependency, Rivet passes the `Material` directly:
 
 ```python
-import pyarrow as pa
 from rivet_core.models import Material
 
-def transform(material: Material) -> pa.Table:
+def transform(material: Material) -> Material:
     table = material.to_arrow()
     # ... your logic ...
     return table
@@ -127,10 +128,9 @@ def transform(material: Material) -> pa.Table:
 When a joint has multiple upstream dependencies, Rivet passes a `dict[str, Material]` keyed by joint name:
 
 ```python
-import pyarrow as pa
 from rivet_core.models import Material
 
-def transform(inputs: dict[str, Material]) -> pa.Table:
+def transform(inputs: dict[str, Material]) -> Material:
     orders = inputs["raw_orders"].to_arrow()
     customers = inputs["raw_customers"].to_arrow()
     # ... join, merge, etc. ...
@@ -142,11 +142,10 @@ def transform(inputs: dict[str, Material]) -> pa.Table:
 Add a `context` parameter with a `RivetContext` type annotation to receive execution metadata:
 
 ```python
-import pyarrow as pa
 from rivet_core.context import RivetContext
 from rivet_core.models import Material
 
-def transform(material: Material, context: RivetContext | None = None) -> pa.Table:
+def transform(material: Material, context: RivetContext | None = None) -> Material:
     context.logger.info(f"Running {context.joint_name}")
     table = material.to_arrow()
     return table
@@ -166,10 +165,9 @@ def transform(material: Material, context: RivetContext | None = None) -> pa.Tab
 Async functions are supported. Rivet calls them with `asyncio.run()`:
 
 ```python
-import pyarrow as pa
 from rivet_core.models import Material
 
-async def transform(material: Material) -> pa.Table:
+async def transform(material: Material) -> Material:
     table = material.to_arrow()
     # await some_async_api(...)
     return table
@@ -179,17 +177,32 @@ async def transform(material: Material) -> pa.Table:
 
 ## Return Types
 
-Python joints accept multiple return types. Rivet normalizes everything internally.
+Python joints accept multiple return types. Rivet normalizes everything to a `Material` internally — use `-> Material` as the canonical return type hint regardless of what you actually return.
+
+### Material (recommended)
+
+The idiomatic return type. Use `-> Material` as the type hint and return any supported type — Rivet wraps the result automatically. For passthrough or metadata control, return the `Material` directly:
+
+```python
+from rivet_core.models import Material
+
+def transform(material: Material) -> Material:
+    if material.num_rows == 0:
+        return material  # passthrough
+    table = material.to_arrow()
+    # ... transform ...
+    return table  # Rivet wraps this in a Material
+```
 
 ### PyArrow Table
 
-The most direct return type — zero conversion overhead:
+Zero conversion overhead — the most efficient when you need to manipulate data directly:
 
 ```python
 import pyarrow as pa
 from rivet_core.models import Material
 
-def transform(material: Material) -> pa.Table:
+def transform(material: Material) -> Material:
     table = material.to_arrow()
     return table.filter(pa.compute.greater(table["amount"], 0))
 ```
@@ -202,7 +215,7 @@ Automatically converted to Arrow via `pyarrow.Table.from_pandas()`:
 import pandas as pd
 from rivet_core.models import Material
 
-def transform(material: Material) -> pd.DataFrame:
+def transform(material: Material) -> Material:
     df = material.to_arrow().to_pandas()
     df["amount_usd"] = df["amount"] * df["exchange_rate"]
     return df
@@ -216,7 +229,7 @@ Converted to Arrow via `polars.DataFrame.to_arrow()`:
 import polars as pl
 from rivet_core.models import Material
 
-def transform(material: Material) -> pl.DataFrame:
+def transform(material: Material) -> Material:
     df = material.to_polars()
     return df.with_columns(
         (pl.col("amount") * pl.col("exchange_rate")).alias("amount_usd")
@@ -234,27 +247,13 @@ Converted to Arrow via `toPandas()` → `from_pandas()`:
 from pyspark.sql import functions as F
 from rivet_core.models import Material
 
-def transform(material: Material):
+def transform(material: Material) -> Material:
     df = material.to_spark()
     return df.withColumn("amount_usd", F.col("amount") * F.col("exchange_rate"))
 ```
 
 !!! warning "Performance"
     PySpark → Arrow conversion collects data to the driver. Use this for small-to-medium results. For large datasets, consider keeping the pipeline in SQL joints on the PySpark engine.
-
-### Material
-
-Return a `Material` directly when you need full control over metadata. The `Material` must have a valid `materialized_ref`:
-
-```python
-from rivet_core.models import Material
-
-def transform(material: Material) -> Material:
-    # Pass through with no changes
-    return material
-```
-
-This is useful for conditional passthrough, caching, or wrapping results from external systems that already produce `Material` objects.
 
 ### MaterializedRef
 
@@ -272,12 +271,15 @@ def transform(material: Material) -> MaterializedRef:
 
 | Return type | Conversion | Best for |
 |-------------|-----------|----------|
-| `pyarrow.Table` | None | Default, lowest overhead |
-| `pandas.DataFrame` | `from_pandas()` | Pandas-native logic |
-| `polars.DataFrame` | `.to_arrow()` | Polars-native logic |
-| `pyspark.DataFrame` | `toPandas()` → Arrow | Spark-native logic (small results) |
-| `Material` | None | Passthrough, metadata control |
+| `Material` | None | Recommended default, passthrough, metadata control |
+| `pyarrow.Table` | Wrapped in `Material` | Direct Arrow manipulation |
+| `pandas.DataFrame` | `from_pandas()` → `Material` | Pandas-native logic |
+| `polars.DataFrame` | `.to_arrow()` → `Material` | Polars-native logic |
+| `pyspark.DataFrame` | `toPandas()` → Arrow → `Material` | Spark-native logic (small results) |
 | `MaterializedRef` | Wrapped in `Material` | Low-level control |
+
+!!! tip "Type hint convention"
+    Use `-> Material` as the return type hint for all Python joints. You can return any of the types above — Rivet normalizes the result to a `Material` automatically.
 
 ---
 
@@ -391,7 +393,7 @@ import pyarrow as pa
 import pickle
 from rivet_core.models import Material
 
-def transform(material: Material) -> pa.Table:
+def transform(material: Material) -> Material:
     table = material.to_arrow()
     df = table.to_pandas()
 
@@ -410,7 +412,7 @@ def transform(material: Material) -> pa.Table:
 import polars as pl
 from rivet_core.models import Material
 
-def transform(material: Material) -> pl.DataFrame:
+def transform(material: Material) -> Material:
     df = material.to_polars()
     return df.with_columns(
         pl.col("revenue")
@@ -430,7 +432,7 @@ import httpx
 from rivet_core.context import RivetContext
 from rivet_core.models import Material
 
-def transform(material: Material, context: RivetContext | None = None) -> pa.Table:
+def transform(material: Material, context: RivetContext | None = None) -> Material:
     table = material.to_arrow()
     addresses = table.column("address").to_pylist()
 

@@ -40,7 +40,7 @@ _float_value_st = st.floats(
 _str_value_st = st.text(
     alphabet=st.characters(
         categories=("L", "N", "Zs"),
-        exclude_characters="\x00\n\r,\"",
+        exclude_characters='\x00\n\r,"',
     ),
     min_size=1,
     max_size=30,
@@ -50,9 +50,11 @@ _str_value_st = st.text(
     # breaking the string round-trip.
     # Also exclude boolean-looking strings ("true", "false", etc.) because
     # CSV readers auto-detect them as booleans.
-    lambda s: not s.strip().replace(".", "", 1).replace("-", "", 1).replace("+", "", 1).isdigit()
-    and len(s.strip()) > 0
-    and s.strip().lower() not in ("true", "false", "yes", "no", "null", "nan", "none")
+    lambda s: (
+        not s.strip().replace(".", "", 1).replace("-", "", 1).replace("+", "", 1).isdigit()
+        and len(s.strip()) > 0
+        and s.strip().lower() not in ("true", "false", "yes", "no", "null", "nan", "none")
+    )
 )
 
 # A column strategy: pick a type and generate a list of values
@@ -69,9 +71,7 @@ def pyarrow_table_st(draw: st.DrawFn) -> pa.Table:
     num_cols = draw(st.integers(min_value=1, max_value=5))
 
     # Generate unique column names
-    col_names = draw(
-        st.lists(_col_name_st, min_size=num_cols, max_size=num_cols, unique=True)
-    )
+    col_names = draw(st.lists(_col_name_st, min_size=num_cols, max_size=num_cols, unique=True))
 
     # Pick a consistent row count for all columns
     row_count = draw(st.integers(min_value=1, max_value=10))
@@ -153,7 +153,9 @@ def test_property1_write_read_sink_round_trip(table: pa.Table) -> None:
                         f"Column {col_name!r} row {i}: {orig_val} != {rest_val}"
                     )
                 else:
-                    # String comparison
-                    assert str(rest_val) == str(orig_val), (
+                    # String comparison (case-insensitive for float-like
+                    # literals such as INF/inf/NaN that CSV may normalise)
+                    s_orig, s_rest = str(orig_val), str(rest_val)
+                    assert s_rest.lower() == s_orig.lower(), (
                         f"Column {col_name!r} row {i}: {orig_val!r} != {rest_val!r}"
                     )

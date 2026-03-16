@@ -912,8 +912,9 @@ Before (manual HTTP handling):
 
 import requests
 import pyarrow as pa
+from rivet_core.models import Material
 
-def transform() -> pa.Table:
+def transform() -> Material:
     resp = requests.get("https://api.example.com/users")
     data = resp.json()["data"]
     return pa.Table.from_pylist(data)

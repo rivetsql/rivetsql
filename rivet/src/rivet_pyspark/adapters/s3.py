@@ -10,6 +10,7 @@ from rivet_core.optimizer import AdapterPushdownResult, PushdownPlan
 from rivet_core.plugins import ComputeEngineAdapter
 from rivet_pyspark.adapters._detection import _has_delta_jars
 from rivet_pyspark.adapters.pushdown import _apply_pyspark_pushdown
+from rivet_pyspark.arrow_converter import arrow_to_spark
 from rivet_pyspark.engine import ALL_6_CAPABILITIES, SparkDataFrameMaterializedRef
 
 BASE_CAPABILITIES = [
@@ -96,7 +97,9 @@ class S3PySparkAdapter(ComputeEngineAdapter):
             caps.extend(DELTA_WRITE_CAPABILITIES)
         return caps
 
-    def read_dispatch(self, engine: Any, catalog: Any, joint: Any, pushdown: PushdownPlan | None = None) -> AdapterPushdownResult:
+    def read_dispatch(
+        self, engine: Any, catalog: Any, joint: Any, pushdown: PushdownPlan | None = None
+    ) -> AdapterPushdownResult:
         session = engine.get_session()
 
         if not _has_hadoop_aws_jars(session):
@@ -107,7 +110,7 @@ class S3PySparkAdapter(ComputeEngineAdapter):
                     plugin_name="rivet_pyspark",
                     plugin_type="adapter",
                     remediation="Add hadoop-aws JAR to Spark classpath via "
-                        "'spark.jars.packages' option, e.g. 'org.apache.hadoop:hadoop-aws:3.3.4'.",
+                    "'spark.jars.packages' option, e.g. 'org.apache.hadoop:hadoop-aws:3.3.4'.",
                 )
             )
 
@@ -155,7 +158,7 @@ class S3PySparkAdapter(ComputeEngineAdapter):
 
         df, residual = _apply_pyspark_pushdown(df, pushdown)
 
-        ref = SparkDataFrameMaterializedRef(df)
+        ref = SparkDataFrameMaterializedRef(df, session)
         material = Material(
             name=joint.name,
             catalog=catalog.name,
@@ -175,7 +178,7 @@ class S3PySparkAdapter(ComputeEngineAdapter):
                     plugin_name="rivet_pyspark",
                     plugin_type="adapter",
                     remediation="Add hadoop-aws JAR to Spark classpath via "
-                        "'spark.jars.packages' option, e.g. 'org.apache.hadoop:hadoop-aws:3.3.4'.",
+                    "'spark.jars.packages' option, e.g. 'org.apache.hadoop:hadoop-aws:3.3.4'.",
                 )
             )
 
@@ -187,7 +190,7 @@ class S3PySparkAdapter(ComputeEngineAdapter):
         strategy = getattr(joint, "write_strategy", None) or "replace"
 
         arrow_table = material.materialized_ref.to_arrow()
-        df = session.createDataFrame(arrow_table.to_pandas())
+        df = arrow_to_spark(arrow_table, session)
 
         try:
             if fmt == "delta":

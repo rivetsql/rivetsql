@@ -16,17 +16,32 @@ from rivet_config.models import (
     WriteStrategyDecl,
 )
 
-_RECOGNIZED_KEYS = frozenset({
-    "name", "type", "catalog", "table", "columns", "filter", "engine",
-    "eager", "upstream", "tags", "description", "write_strategy",
-    "function", "fusion_strategy", "materialization_strategy",
-})
+_RECOGNIZED_KEYS = frozenset(
+    {
+        "name",
+        "type",
+        "catalog",
+        "table",
+        "columns",
+        "filter",
+        "engine",
+        "eager",
+        "upstream",
+        "tags",
+        "description",
+        "write_strategy",
+        "function",
+        "fusion_strategy",
+        "materialization_strategy",
+    }
+)
 
 _QUALITY_PREFIXES = ("assert", "audit", "quality.")
 
 _TYPE_REQUIRED: dict[str, list[str]] = {
     "source": ["catalog"],
     "sink": ["catalog", "table"],
+    "checkpoint": ["catalog", "table"],
     "sql": ["sql"],
     "python": ["function"],
 }
@@ -45,25 +60,31 @@ class PythonParser:
         try:
             text = file_path.read_text()
         except OSError as exc:
-            errors.append(ConfigError(
-                source_file=file_path,
-                message=f"Failed to read Python file: {exc}",
-                remediation="Ensure the file exists and is readable UTF-8.",
-            ))
+            errors.append(
+                ConfigError(
+                    source_file=file_path,
+                    message=f"Failed to read Python file: {exc}",
+                    remediation="Ensure the file exists and is readable UTF-8.",
+                )
+            )
             return None, errors
 
         lines = text.splitlines(keepends=True)
         annotations, _, parse_errors = self._annotation_parser.parse(
-            lines, file_path, comment_prefix="python",
+            lines,
+            file_path,
+            comment_prefix="python",
         )
         errors.extend(parse_errors)
 
         if not annotations and not parse_errors:
-            errors.append(ConfigError(
-                source_file=file_path,
-                message="No rivet annotations found in Python file.",
-                remediation="Add at least '# rivet:name: <name>' at the top of the file.",
-            ))
+            errors.append(
+                ConfigError(
+                    source_file=file_path,
+                    message="No rivet annotations found in Python file.",
+                    remediation="Add at least '# rivet:name: <name>' at the top of the file.",
+                )
+            )
             return None, errors
 
         # Build field mapping from annotations.
@@ -73,12 +94,14 @@ class PythonParser:
             if any(key.startswith(p) for p in _QUALITY_PREFIXES):
                 continue
             if key not in _RECOGNIZED_KEYS:
-                errors.append(ConfigError(
-                    source_file=file_path,
-                    message=f"Unrecognized annotation key '{key}'.",
-                    remediation=f"Remove or rename. Recognized keys: {sorted(_RECOGNIZED_KEYS)}",
-                    line_number=ann.line_number,
-                ))
+                errors.append(
+                    ConfigError(
+                        source_file=file_path,
+                        message=f"Unrecognized annotation key '{key}'.",
+                        remediation=f"Remove or rename. Recognized keys: {sorted(_RECOGNIZED_KEYS)}",
+                        line_number=ann.line_number,
+                    )
+                )
                 continue
             fields[key] = ann.value
 
@@ -86,27 +109,33 @@ class PythonParser:
         joint_type = str(fields.get("type", "python"))
 
         if joint_type not in JOINT_TYPES:
-            errors.append(ConfigError(
-                source_file=file_path,
-                message=f"Invalid joint type '{joint_type}'.",
-                remediation=f"Use one of: {sorted(JOINT_TYPES)}",
-            ))
+            errors.append(
+                ConfigError(
+                    source_file=file_path,
+                    message=f"Invalid joint type '{joint_type}'.",
+                    remediation=f"Use one of: {sorted(JOINT_TYPES)}",
+                )
+            )
 
         # Validate name.
         name = str(fields.get("name", file_path.stem))
 
         if not JOINT_NAME_PATTERN.match(name):
-            errors.append(ConfigError(
-                source_file=file_path,
-                message=f"Invalid joint name '{name}'. Must match [a-z][a-z0-9_]*.",
-                remediation="Use a name starting with a lowercase letter, containing only lowercase letters, digits, and underscores.",
-            ))
+            errors.append(
+                ConfigError(
+                    source_file=file_path,
+                    message=f"Invalid joint name '{name}'. Must match [a-z][a-z0-9_]*.",
+                    remediation="Use a name starting with a lowercase letter, containing only lowercase letters, digits, and underscores.",
+                )
+            )
         if len(name) > JOINT_NAME_MAX_LENGTH:
-            errors.append(ConfigError(
-                source_file=file_path,
-                message=f"Joint name '{name}' exceeds maximum length of {JOINT_NAME_MAX_LENGTH}.",
-                remediation=f"Shorten the name to at most {JOINT_NAME_MAX_LENGTH} characters.",
-            ))
+            errors.append(
+                ConfigError(
+                    source_file=file_path,
+                    message=f"Joint name '{name}' exceeds maximum length of {JOINT_NAME_MAX_LENGTH}.",
+                    remediation=f"Shorten the name to at most {JOINT_NAME_MAX_LENGTH} characters.",
+                )
+            )
 
         # Auto-derive function for python type when not explicitly provided.
         if joint_type == "python" and "function" not in fields:
@@ -117,24 +146,31 @@ class PythonParser:
             for req in _TYPE_REQUIRED[joint_type]:
                 if req == "sql":
                     # Python joints never have SQL body.
-                    errors.append(ConfigError(
-                        source_file=file_path,
-                        message=f"Missing required SQL body for type '{joint_type}'.",
-                        remediation="Python files cannot have type 'sql'. Use type 'python' instead.",
-                    ))
+                    errors.append(
+                        ConfigError(
+                            source_file=file_path,
+                            message=f"Missing required SQL body for type '{joint_type}'.",
+                            remediation="Python files cannot have type 'sql'. Use type 'python' instead.",
+                        )
+                    )
                 elif req not in fields or fields[req] is None:
-                    errors.append(ConfigError(
-                        source_file=file_path,
-                        message=f"Missing required field '{req}' for type '{joint_type}'.",
-                        remediation=f"Add '# rivet:{req}: <value>' annotation.",
-                    ))
+                    errors.append(
+                        ConfigError(
+                            source_file=file_path,
+                            message=f"Missing required field '{req}' for type '{joint_type}'.",
+                            remediation=f"Add '# rivet:{req}: <value>' annotation.",
+                        )
+                    )
 
         if errors:
             return None, errors
 
         columns = self._parse_columns(fields.get("columns"), file_path, errors)
         write_strategy = self._parse_write_strategy(
-            fields.get("write_strategy"), joint_type, file_path, errors,
+            fields.get("write_strategy"),
+            joint_type,
+            file_path,
+            errors,
         )
 
         if errors:
@@ -158,7 +194,9 @@ class PythonParser:
             description=str(fields["description"]) if "description" in fields else None,
             source_format="python",
             fusion_strategy=str(fields["fusion_strategy"]) if "fusion_strategy" in fields else None,
-            materialization_strategy=str(fields["materialization_strategy"]) if "materialization_strategy" in fields else None,
+            materialization_strategy=str(fields["materialization_strategy"])
+            if "materialization_strategy" in fields
+            else None,
         ), errors
 
     def _derive_function(self, file_path: Path) -> str:
@@ -179,18 +217,22 @@ class PythonParser:
         if raw_columns is None:
             return None
         if not isinstance(raw_columns, list):
-            errors.append(ConfigError(
-                source_file=file_path,
-                message="'columns' annotation must be a list.",
-                remediation="Use bracket syntax: # rivet:columns: [col_a, col_b]",
-            ))
+            errors.append(
+                ConfigError(
+                    source_file=file_path,
+                    message="'columns' annotation must be a list.",
+                    remediation="Use bracket syntax: # rivet:columns: [col_a, col_b]",
+                )
+            )
             return None
         if len(raw_columns) == 0:
-            errors.append(ConfigError(
-                source_file=file_path,
-                message="'columns' must not be empty. Omit for SELECT *.",
-                remediation="Remove the empty columns annotation or add column entries.",
-            ))
+            errors.append(
+                ConfigError(
+                    source_file=file_path,
+                    message="'columns' must not be empty. Omit for SELECT *.",
+                    remediation="Remove the empty columns annotation or add column entries.",
+                )
+            )
             return None
         result: list[ColumnDecl] = []
         for entry in raw_columns:
@@ -200,11 +242,13 @@ class PythonParser:
                 col_name, expr = next(iter(entry.items()))
                 result.append(ColumnDecl(name=str(col_name), expression=str(expr)))
             else:
-                errors.append(ConfigError(
-                    source_file=file_path,
-                    message=f"Invalid column entry: {entry!r}.",
-                    remediation="Use 'column_name' or 'alias: expression' format.",
-                ))
+                errors.append(
+                    ConfigError(
+                        source_file=file_path,
+                        message=f"Invalid column entry: {entry!r}.",
+                        remediation="Use 'column_name' or 'alias: expression' format.",
+                    )
+                )
         return result
 
     def _parse_write_strategy(
@@ -219,26 +263,32 @@ class PythonParser:
                 return WriteStrategyDecl(mode="append", options={})
             return None
         if not isinstance(raw_ws, dict):
-            errors.append(ConfigError(
-                source_file=file_path,
-                message="'write_strategy' must be a mapping.",
-                remediation="Use: # rivet:write_strategy: {mode: append}",
-            ))
+            errors.append(
+                ConfigError(
+                    source_file=file_path,
+                    message="'write_strategy' must be a mapping.",
+                    remediation="Use: # rivet:write_strategy: {mode: append}",
+                )
+            )
             return None
         mode = raw_ws.get("mode")
         if mode is None:
-            errors.append(ConfigError(
-                source_file=file_path,
-                message="'write_strategy' is missing required 'mode' field.",
-                remediation=f"Add a 'mode' field. Valid modes: {sorted(WRITE_STRATEGY_MODES)}",
-            ))
+            errors.append(
+                ConfigError(
+                    source_file=file_path,
+                    message="'write_strategy' is missing required 'mode' field.",
+                    remediation=f"Add a 'mode' field. Valid modes: {sorted(WRITE_STRATEGY_MODES)}",
+                )
+            )
             return None
         if mode not in WRITE_STRATEGY_MODES:
-            errors.append(ConfigError(
-                source_file=file_path,
-                message=f"Invalid write strategy mode '{mode}'.",
-                remediation=f"Use one of: {sorted(WRITE_STRATEGY_MODES)}",
-            ))
+            errors.append(
+                ConfigError(
+                    source_file=file_path,
+                    message=f"Invalid write strategy mode '{mode}'.",
+                    remediation=f"Use one of: {sorted(WRITE_STRATEGY_MODES)}",
+                )
+            )
             return None
         options = {k: v for k, v in raw_ws.items() if k != "mode"}
         return WriteStrategyDecl(mode=mode, options=options)

@@ -138,6 +138,12 @@ A source reads data from a catalog. No upstream dependencies — it's always a D
     -- rivet:type: source
     -- rivet:catalog: local
     -- rivet:table: raw_orders.csv
+    SELECT
+        id,
+        customer_name,
+        amount,
+        created_at
+    FROM raw_orders
     ```
 
 === "YAML"
@@ -207,7 +213,7 @@ A transform joint applies SQL or Python logic to upstream data:
     import polars as pl
     from rivet_core.models import Material
 
-    def transform(material: Material) -> pl.DataFrame:
+    def transform(material: Material) -> Material:
         df = material.to_polars()
         return df.filter(pl.col("amount") > 0).select(
             "id", "customer_name", "amount", "created_at"

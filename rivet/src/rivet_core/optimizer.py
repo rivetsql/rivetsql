@@ -93,6 +93,22 @@ class AdapterPushdownResult:
 
 
 @dataclass(frozen=True)
+class CheckpointSourceInfo:
+    """Pre-resolved metadata for reading a checkpoint as a source in a downstream group.
+
+    Built at compile time by _build_checkpoint_sources. Mirrors the metadata
+    that source joints carry on CompiledJoint (catalog, catalog_type, adapter, table).
+    """
+
+    checkpoint_joint: str  # name of the checkpoint joint
+    catalog: str  # catalog name
+    catalog_type: str  # catalog type (e.g., "filesystem", "glue")
+    table: str  # table name in the catalog
+    adapter: str | None  # pre-resolved adapter for (downstream_engine_type, catalog_type)
+    # e.g., "duckdb:filesystem" or None if no adapter
+
+
+@dataclass(frozen=True)
 class FusedGroup:
     id: str
     joints: list[str]  # joint names in execution order
@@ -111,6 +127,7 @@ class FusedGroup:
     per_joint_predicates: dict[str, list[Predicate]] = field(default_factory=dict)
     per_joint_projections: dict[str, list[str]] = field(default_factory=dict)
     per_joint_limits: dict[str, int] = field(default_factory=dict)
+    checkpoint_sources: dict[str, CheckpointSourceInfo] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -131,7 +148,7 @@ class FusionJoint:
     """
 
     name: str
-    joint_type: str  # "source", "sql", "sink", "python"
+    joint_type: str  # "source", "sql", "sink", "python", "checkpoint"
     upstream: list[str]
     engine: str  # engine instance name
     engine_type: str
@@ -193,6 +210,8 @@ def _can_fuse(
     if joint.joint_type == "python":
         return False
     if upstream_joint.joint_type == "python":
+        return False
+    if upstream_joint.joint_type == "checkpoint":
         return False
     return True
 

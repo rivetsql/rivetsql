@@ -240,6 +240,10 @@ When a joint on one engine reads from a joint on a different engine, Rivet uses 
 
 The strategy is resolved at compile time and recorded in the `CompiledAssembly`. The executor never re-resolves it at runtime.
 
+### Native SQL Write
+
+When the compute engine and the sink/checkpoint catalog share the same backend (e.g., DuckDB engine writing to a DuckDB catalog), the executor can bypass the Arrow materialization for writes. The fused SQL is embedded directly into the write DDL, executing the entire read-transform-write in a single statement. This is handled by `ComputeEngineAdapter` implementations that opt into native SQL write. See [Native SQL Write Optimization](../guides/write-strategies.md#native-sql-write-optimization) for the full capability matrix.
+
 ---
 
 ## Engine Invariants

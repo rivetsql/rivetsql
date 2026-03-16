@@ -144,7 +144,10 @@ class PostgresReferenceResolver(ReferenceResolver):
                 continue
 
             up_cj = compiled_joints.get(up_name)
-            if not up_cj or getattr(up_cj, "type", None) != "source":
+            if not up_cj:
+                continue
+            up_type = getattr(up_cj, "type", None)
+            if up_type not in ("source", "checkpoint"):
                 continue
             up_catalog_name = getattr(up_cj, "catalog", None)
             if not up_catalog_name:

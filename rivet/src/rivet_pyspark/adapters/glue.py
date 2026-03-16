@@ -17,11 +17,10 @@ from rivet_core.models import Material
 from rivet_core.optimizer import AdapterPushdownResult, PushdownPlan
 from rivet_core.plugins import ComputeEngineAdapter
 from rivet_pyspark.adapters.pushdown import _apply_pyspark_pushdown
+from rivet_pyspark.arrow_converter import arrow_to_spark
 from rivet_pyspark.engine import ALL_6_CAPABILITIES, SparkDataFrameMaterializedRef
 
-GLUE_METASTORE_FACTORY = (
-    "com.amazonaws.glue.catalog.metastore.AWSGlueDataCatalogHiveClientFactory"
-)
+GLUE_METASTORE_FACTORY = "com.amazonaws.glue.catalog.metastore.AWSGlueDataCatalogHiveClientFactory"
 _GLUE_METASTORE_MAVEN = "com.amazonaws:aws-glue-datacatalog-spark-client:3.4.0"
 
 CAPABILITIES = [
@@ -99,7 +98,7 @@ def _ensure_glue_config(engine: Any, catalog_options: dict[str, Any]) -> None:
         hadoop_conf = engine._session.sparkContext._jsc.hadoopConfiguration()
         for k, v in glue_conf.items():
             if k.startswith("spark.hadoop."):
-                hadoop_conf.set(k[len("spark.hadoop."):], v)
+                hadoop_conf.set(k[len("spark.hadoop.") :], v)
             else:
                 engine._session.conf.set(k, v)
     else:
@@ -121,7 +120,9 @@ class GluePySparkAdapter(ComputeEngineAdapter):
     source = "engine_plugin"
     source_plugin = "rivet_pyspark"
 
-    def read_dispatch(self, engine: Any, catalog: Any, joint: Any, pushdown: PushdownPlan | None = None) -> AdapterPushdownResult:
+    def read_dispatch(
+        self, engine: Any, catalog: Any, joint: Any, pushdown: PushdownPlan | None = None
+    ) -> AdapterPushdownResult:
         catalog_options = catalog.options if hasattr(catalog, "options") else {}
 
         _ensure_glue_config(engine, catalog_options)
@@ -162,7 +163,7 @@ class GluePySparkAdapter(ComputeEngineAdapter):
 
         df, residual = _apply_pyspark_pushdown(df, pushdown)
 
-        ref = SparkDataFrameMaterializedRef(df)
+        ref = SparkDataFrameMaterializedRef(df, session)
         material = Material(
             name=joint.name,
             catalog=getattr(catalog, "name", "glue"),
@@ -197,7 +198,7 @@ class GluePySparkAdapter(ComputeEngineAdapter):
         strategy = getattr(joint, "write_strategy", None) or "replace"
 
         arrow_table = material.materialized_ref.to_arrow()
-        df = session.createDataFrame(arrow_table.to_pandas())
+        df = arrow_to_spark(arrow_table, session)
 
         mode = "append" if strategy in ("append", "delete_insert") else "overwrite"
 

@@ -248,3 +248,48 @@ Slowly Changing Dimension Type 2 tracks full row history with `valid_from`, `val
 | Partition-level replacement | `delete_insert` |
 | Efficient incremental loads by timestamp | `incremental_append` |
 | Full row history with open/close records | `scd2` |
+
+---
+
+## Native SQL Write Optimization
+
+When the compute engine and the catalog share the same backend, Rivet can skip the Arrow round-trip entirely. Instead of executing the fused SQL, converting the result to an Arrow table, and re-registering it for the write, the executor embeds the fused SQL directly into the write DDL:
+
+```sql
+-- replace
+CREATE TABLE target AS <fused_sql>
+
+-- append
+INSERT INTO target <fused_sql>
+
+-- truncate_insert
+DELETE FROM target; INSERT INTO target <fused_sql>
+```
+
+This executes the entire read-transform-write in a single statement on the shared backend, which is faster and uses less memory.
+
+The optimization is fully transparent — pipeline definitions don't change. The executor falls back to the standard Arrow path when any of these conditions apply:
+
+- The engine and catalog don't share a backend (e.g., DuckDB engine → filesystem sink)
+- The write strategy isn't supported natively (e.g., `merge`, `scd2`)
+- The fused group has residual post-SQL transformations that require Arrow processing
+
+### Adapter Capability Matrix
+
+| Engine → Catalog | `replace` | `append` | `truncate_insert` | `merge` | `scd2` | `delete_insert` |
+|---|:-:|:-:|:-:|:-:|:-:|:-:|
+| DuckDB → DuckDB | :material-check: | :material-check: | :material-check: | — | — | — |
+| Postgres → Postgres | :material-check: | :material-check: | :material-check: | — | — | — |
+| Databricks → Databricks | :material-check: | :material-check: | :material-check: | — | — | — |
+| Databricks → Unity | :material-check: | :material-check: | :material-check: | — | — | — |
+
+Strategies marked with — fall back to the standard Arrow write path via `SinkPlugin.write()`.
+
+### Observability
+
+Each sink and checkpoint joint records its write path in the execution results:
+
+- `write_path: "native_sql"` — the native SQL write optimization was used
+- `write_path: "arrow_fallback"` — the standard Arrow path was used
+
+This is visible in the execution stats and can be used to verify that the optimization is active for your pipeline.

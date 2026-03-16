@@ -118,7 +118,7 @@ default:
     import pyarrow as pa
     from rivet_core.models import Material
 
-    def transform(material: Material) -> pa.Table:
+    def transform(material: Material) -> Material:
         table = material.to_arrow()
         return table.group_by("event_date").aggregate([("event_date", "count")])
     ```

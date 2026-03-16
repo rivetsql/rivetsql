@@ -765,6 +765,9 @@ class SQLParser:
             resolved = _alias_map.get(table, table)
             if resolved and resolved in upstream_schemas:
                 origin_joint = resolved
+            elif not table and len(upstream_schemas) == 1:
+                # Unqualified column with a single upstream — resolve to it
+                origin_joint = next(iter(upstream_schemas))
             else:
                 origin_joint = joint_name
             key = (origin_joint, col_name)

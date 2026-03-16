@@ -110,8 +110,8 @@ def test_yaml_sql_roundtrip_columns(decl: JointDeclaration) -> None:
 
     rt_cols, rt_filter, rt_table, rt_limit = _DECOMP.decompose(sql)
 
-    # Table name preserved
-    assert rt_table == (decl.table or decl.name)
+    # Table name preserved — source joints now emit FROM __self
+    assert rt_table == "__self"
 
     # Columns preserved
     if decl.columns is None:

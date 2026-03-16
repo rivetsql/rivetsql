@@ -81,14 +81,20 @@ class DatabricksReferenceResolver(ReferenceResolver):
         if not upstream:
             return None
 
-        # Only joints that actually contribute SQL to the CTE are true CTE aliases.
-        # Source joints without SQL don't produce CTE entries, so they must still
-        # be resolved to fully-qualified table names for server-side execution.
+        # Only non-source joints that contribute SQL to the CTE are true CTE aliases.
+        # Source SQL references the backing table FQN directly after __self
+        # substitution at compile time, so source joints are never CTE
+        # participants — skip them when building the sibling set.
         cte_siblings: set[str] = set()
         if fused_group_joints and compiled_joints:
             for jn in fused_group_joints:
                 cj = compiled_joints.get(jn)
-                if cj and (getattr(cj, "sql", None) or getattr(cj, "sql_translated", None)):
+                if not cj:
+                    continue
+                cj_type = getattr(cj, "type", None)
+                if cj_type == "source":
+                    continue
+                if getattr(cj, "sql", None) or getattr(cj, "sql_translated", None):
                     cte_siblings.add(jn)
 
         result = sql
@@ -99,7 +105,10 @@ class DatabricksReferenceResolver(ReferenceResolver):
                 continue
 
             up_cj = compiled_joints.get(up_name)
-            if not up_cj or getattr(up_cj, "type", None) != "source":
+            if not up_cj:
+                continue
+            up_type = getattr(up_cj, "type", None)
+            if up_type not in ("source", "checkpoint"):
                 continue
             up_catalog_name = getattr(up_cj, "catalog", None)
             if not up_catalog_name:
@@ -160,14 +169,18 @@ class DatabricksStatementAPI:
         self._max_rows_per_chunk = max_rows_per_chunk
         self._disposition = disposition
         self._session = requests.Session()
-        self._session.headers.update({
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "User-Agent": "rivet-databricks/0.1",
-        })
+        self._session.headers.update(
+            {
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "User-Agent": "rivet-databricks/0.1",
+            }
+        )
 
-    def execute(self, sql: str, *, catalog: str | None = None, schema: str | None = None) -> pyarrow.Table:
+    def execute(
+        self, sql: str, *, catalog: str | None = None, schema: str | None = None
+    ) -> pyarrow.Table:
         """Submit SQL, poll to completion, and return results as a PyArrow Table."""
         try:
             statement_id = self._submit(sql, catalog=catalog, schema=schema)
@@ -350,7 +363,9 @@ class DatabricksStatementAPI:
             url = f"{self._base_url}{next_link}" if next_link else ""
         return tables
 
-    def _parse_jsonl_result(self, result_data: dict[str, Any], manifest: dict[str, Any]) -> pyarrow.Table:
+    def _parse_jsonl_result(
+        self, result_data: dict[str, Any], manifest: dict[str, Any]
+    ) -> pyarrow.Table:
         """Parse JSONL/JSON_ARRAY inline result into a PyArrow Table."""
         columns_meta = manifest.get("schema", {}).get("columns", [])
         col_names = [c.get("name", f"col_{i}") for i, c in enumerate(columns_meta)]

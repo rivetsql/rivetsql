@@ -49,6 +49,12 @@ def add_repl_parser(subparsers: argparse._SubParsersAction) -> argparse.Argument
     exec_p.add_argument(
         "--max-rows", type=int, default=10_000, help="Maximum rows to return (default: 10000)"
     )
+    exec_p.add_argument(
+        "--compile-only",
+        action="store_true",
+        default=False,
+        help="Compile the transient pipeline and print the compilation result without executing",
+    )
 
     return repl_p
 
@@ -135,6 +141,7 @@ def run_repl(args: argparse.Namespace) -> int:
             engine=getattr(args, "engine", None),
             format=args.format,
             max_rows=getattr(args, "max_rows", 10_000),
+            compile_only=getattr(args, "compile_only", False),
         )
 
     # --- Interactive REPL (default) ---

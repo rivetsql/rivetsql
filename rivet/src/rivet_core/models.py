@@ -56,7 +56,7 @@ class Schema:
     columns: list[Column]
 
 
-JOINT_TYPES = frozenset({"source", "sql", "sink", "python"})
+JOINT_TYPES = frozenset({"source", "sql", "sink", "python", "checkpoint"})
 
 
 @dataclass
@@ -65,12 +65,13 @@ class Joint:
 
     Immutable metadata only — no execution logic.
 
-    joint_type must be one of: "source", "sql", "sink", "python"
+    joint_type must be one of: "source", "sql", "sink", "python", "checkpoint"
     Upstream constraints are enforced by Assembly:
       - source: no upstream
       - sql: zero or more upstream
       - python: explicit upstream required
       - sink: at least one upstream
+      - checkpoint: at least one upstream
     """
 
     name: str

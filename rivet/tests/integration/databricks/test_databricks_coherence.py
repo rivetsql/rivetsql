@@ -14,16 +14,18 @@ from rivet_core.errors import ExecutionError
 from rivet_core.models import Catalog
 
 
-def _make_catalog() -> Catalog:
+def _make_catalog(*, schema: str | None = None) -> Catalog:
+    options: dict[str, object] = {
+        "workspace_url": "https://test.databricks.com",
+        "catalog": "main",
+        "token": "dapi_test_token",
+    }
+    if schema is not None:
+        options["schema"] = schema
     return Catalog(
         name="test_db",
         type="databricks",
-        options={
-            "workspace_url": "https://test.databricks.com",
-            "catalog": "main",
-            "schema": "default",
-            "token": "dapi_test_token",
-        },
+        options=options,
     )
 
 
@@ -209,3 +211,71 @@ def test_databricks_list_children_deep_path_returns_empty():
 
     nodes = plugin.list_children(catalog, path=["default", "users", "id"])
     assert nodes == []
+
+
+# ── schema filtering ─────────────────────────────────────────────────
+
+
+def test_databricks_list_children_root_filtered_by_schema():
+    """list_children([]) returns only the configured schema when schema is set."""
+    from rivet_databricks.databricks_catalog import DatabricksCatalogPlugin
+
+    plugin = DatabricksCatalogPlugin()
+    catalog = _make_catalog(schema="analytics")
+
+    client = _mock_client(
+        schemas=[
+            {"name": "default", "owner": "admin", "comment": "Default schema"},
+            {"name": "analytics", "owner": "data_team", "comment": None},
+        ]
+    )
+    with patch("rivet_databricks.client.UnityCatalogClient", return_value=client):
+        nodes = plugin.list_children(catalog, path=[])
+
+    assert len(nodes) == 1
+    assert nodes[0].name == "analytics"
+
+
+def test_databricks_list_children_rejects_wrong_schema():
+    """list_children([schema]) returns [] when schema doesn't match the filter."""
+    from rivet_databricks.databricks_catalog import DatabricksCatalogPlugin
+
+    plugin = DatabricksCatalogPlugin()
+    catalog = _make_catalog(schema="analytics")
+
+    client = _mock_client(
+        tables=[
+            {
+                "name": "users",
+                "table_type": "MANAGED",
+                "data_source_format": "DELTA",
+                "owner": "admin",
+                "comment": None,
+                "properties": {},
+                "updated_at": None,
+            }
+        ]
+    )
+    with patch("rivet_databricks.client.UnityCatalogClient", return_value=client):
+        nodes = plugin.list_children(catalog, path=["default"])
+
+    assert nodes == []
+
+
+def test_databricks_list_children_no_schema_shows_all():
+    """list_children([]) returns all schemas when schema is not set."""
+    from rivet_databricks.databricks_catalog import DatabricksCatalogPlugin
+
+    plugin = DatabricksCatalogPlugin()
+    catalog = _make_catalog()  # no schema filter
+
+    client = _mock_client(
+        schemas=[
+            {"name": "default", "owner": "admin", "comment": "Default schema"},
+            {"name": "analytics", "owner": "data_team", "comment": None},
+        ]
+    )
+    with patch("rivet_databricks.client.UnityCatalogClient", return_value=client):
+        nodes = plugin.list_children(catalog, path=[])
+
+    assert len(nodes) == 2

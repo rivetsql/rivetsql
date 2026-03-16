@@ -23,6 +23,7 @@ from rivet_config.models import (
 _TYPE_REQUIRED: dict[str, list[str]] = {
     "source": ["catalog"],
     "sink": ["catalog", "table"],
+    "checkpoint": ["catalog", "table"],
     "sql": ["sql"],
     "python": ["function"],
 }

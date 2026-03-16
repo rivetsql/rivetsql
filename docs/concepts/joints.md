@@ -65,7 +65,21 @@ filter: status = 'active' AND created_at > '2025-01-01'
 limit: 1000
 ```
 
-Column entries can be plain names (pass-through) or `alias: expression` mappings for renames, casts, and computed columns. The same transforms can be expressed in SQL form instead.
+Column entries can be plain names (pass-through) or `alias: expression` mappings for renames, casts, and computed columns. The same transforms can be expressed in SQL form using `FROM __self` to reference the backing table:
+
+```sql
+-- rivet:name: recent_orders
+-- rivet:type: source
+-- rivet:catalog: warehouse
+-- rivet:table: raw_orders
+
+SELECT order_id, customer_name, price * quantity AS revenue
+FROM __self
+WHERE status = 'active' AND created_at > '2025-01-01'
+LIMIT 1000
+```
+
+`__self` is a reserved alias that the compiler replaces with the actual table FQN at compile time.
 
 See [Source Inline Transforms](source-inline-transforms.md) for the full reference.
 
@@ -170,7 +184,7 @@ A sink joint writes the output of an upstream joint to a catalog. It is always a
 
 ## Python Joint
 
-A Python joint transforms data using a Python function. The function receives upstream `MaterializedRef` objects and must return a PyArrow `Table`. Use Python joints when SQL is insufficient — ML models, external APIs, or complex row-level logic.
+A Python joint transforms data using a Python function. The function receives upstream `MaterializedRef` objects and must return a `Material`. Use Python joints when SQL is insufficient — ML models, external APIs, or complex row-level logic.
 
 !!! warning "Fusion boundary"
     Python joints break SQL fusion. Adjacent SQL joints on either side compile into separate fused groups.
@@ -203,7 +217,7 @@ A Python joint transforms data using a Python function. The function receives up
     import pyarrow as pa
     from rivet_core.models import Material
 
-    def transform(material: Material) -> pa.Table:
+    def transform(material: Material) -> Material:
         table = material.to_arrow()
         # ... apply scoring logic ...
         return scored_table
@@ -225,10 +239,9 @@ A Python joint transforms data using a Python function. The function receives up
 The handler function signature:
 
 ```python
-import pyarrow as pa
 from rivet_core.models import Material
 
-def score_orders(material: Material) -> pa.Table:
+def score_orders(material: Material) -> Material:
     table = material.to_arrow()
     # ... apply scoring logic ...
     return scored_table
@@ -278,7 +291,7 @@ A `.py` joint file needs only a single annotation — name, type, and function a
 import pyarrow as pa
 from rivet_core.models import Material
 
-def transform(material: Material) -> pa.Table:
+def transform(material: Material) -> Material:
     table = material.to_arrow()
     return table.append_column("enriched", pa.array([True] * len(table)))
 ```

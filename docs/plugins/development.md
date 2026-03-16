@@ -240,7 +240,67 @@ class ComputeEngineAdapter(ABC):
     @abstractmethod
     def write_dispatch(self, engine: Any, catalog: Any, joint: Any, material: Any) -> Any:
         """Write materialized data to catalog through engine."""
+
+    def supports_native_sql_write(self, write_strategy: str) -> bool:
+        """Whether this adapter supports native SQL write for the given strategy.
+
+        Returns False by default — adapters opt in by overriding.
+        When True, the executor passes a NativeSqlWriteContext as the material
+        argument to write_dispatch instead of an Arrow-based Material.
+        """
+        return False
 ```
+
+#### Native SQL Write Support
+
+When the compute engine and catalog share the same backend, an adapter can opt into native SQL write by overriding `supports_native_sql_write()`. This lets the executor embed the fused SQL directly into the write DDL, eliminating the Arrow round-trip.
+
+The executor passes a `NativeSqlWriteContext` (instead of a `Material`) as the `material` argument to `write_dispatch()`. The adapter detects the mode via `isinstance`:
+
+```python
+from rivet_core.plugins import ComputeEngineAdapter, NativeSqlWriteContext
+
+_NATIVE_WRITE_STRATEGIES = frozenset({"replace", "append", "truncate_insert"})
+
+
+class MyLocalAdapter(ComputeEngineAdapter):
+    target_engine_type = "my_engine"
+    catalog_type = "my_catalog"
+    capabilities = ["read", "write", "native_sql_write"]
+    source = "engine_plugin"
+    source_plugin = "rivet_my_plugin"
+
+    def supports_native_sql_write(self, write_strategy: str) -> bool:
+        return write_strategy in _NATIVE_WRITE_STRATEGIES
+
+    def write_dispatch(self, engine, catalog, joint, material):
+        if isinstance(material, NativeSqlWriteContext):
+            # Native SQL write — embed fused SQL in DDL
+            target = material.target_table
+            sql = material.fused_sql
+            if material.write_strategy == "replace":
+                execute(f"CREATE TABLE {target} AS {sql}")
+            elif material.write_strategy == "append":
+                execute(f"INSERT INTO {target} {sql}")
+            elif material.write_strategy == "truncate_insert":
+                execute(f"DELETE FROM {target}")
+                execute(f"INSERT INTO {target} {sql}")
+            return None
+        # Arrow fallback for unsupported strategies
+        return self._arrow_write(engine, catalog, joint, material)
+```
+
+`NativeSqlWriteContext` is a frozen dataclass with these fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `fused_sql` | `str` | The fused SQL from the group (CTE chain or final SELECT) |
+| `target_table` | `str` | Target table name in the catalog |
+| `write_strategy` | `str` | Write strategy (`replace`, `append`, `truncate_insert`) |
+| `input_tables` | `dict[str, pyarrow.Table]` | Upstream materialized Arrow tables for registration |
+| `engine` | `Any` | `ComputeEngine` instance |
+| `catalog` | `Any` | `Catalog` instance |
+| `joint` | `Any` | Joint metadata |
 
 #### Implementing Pushdown in a Custom Adapter
 

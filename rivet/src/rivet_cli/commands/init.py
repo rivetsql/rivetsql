@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from rivet_cli.app import GlobalOptions
+from rivet_cli.commands.agents_md import AGENTS_MD
 from rivet_cli.errors import CLIError, format_cli_error
 from rivet_cli.exit_codes import GENERAL_ERROR, SUCCESS
 from rivet_cli.rendering.colors import BOLD, GREEN, SYM_CHECK, colorize
@@ -83,6 +84,11 @@ name: raw_orders
 type: source
 catalog: local
 table: raw_orders.csv
+columns:
+  - id
+  - customer_name
+  - amount
+  - created_at
 """
 
 _JOINT_YAML = """\
@@ -120,7 +126,12 @@ _SOURCE_SQL = """\
 -- rivet:type: source
 -- rivet:catalog: local
 -- rivet:table: raw_orders.csv
-SELECT * FROM raw_orders
+SELECT
+    id,
+    customer_name,
+    amount,
+    created_at
+FROM raw_orders
 """
 
 _JOINT_SQL = """\
@@ -161,8 +172,8 @@ def _build_example_files(style: str) -> dict[str, str]:
         files["joints/transform_orders.sql"] = _JOINT_SQL
         files["sinks/orders_clean.sql"] = _SINK_SQL
     else:
-        # mixed (default): sources/sinks as YAML, joints as SQL
-        files["sources/raw_orders.yaml"] = _SOURCE_YAML
+        # mixed (default): source as SQL, sinks as YAML, joints as SQL
+        files["sources/raw_orders.sql"] = _SOURCE_SQL
         files["joints/transform_orders.sql"] = _JOINT_SQL
         files["sinks/orders_clean.yaml"] = _SINK_YAML
     return files
@@ -211,6 +222,9 @@ def run_init(
 
     (target / "profiles.yaml").write_text(_PROFILES_YAML)
     created.append("profiles.yaml")
+
+    (target / "AGENTS.md").write_text(AGENTS_MD)
+    created.append("AGENTS.md")
 
     # Create directories
     for d in _DIRS:

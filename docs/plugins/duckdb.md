@@ -45,9 +45,12 @@ default:
 
 | Adapter | Requires | Description |
 |---------|----------|-------------|
+| `DuckDBLocalAdapter` | — | Native SQL read/write for DuckDB engine → DuckDB catalog |
 | `S3DuckDBAdapter` | `boto3` | Read/write S3 via `httpfs` |
 | `GlueDuckDBAdapter` | `boto3` | Read/write Glue-managed tables |
 | `UnityDuckDBAdapter` | `requests` | Read/write Unity Catalog tables |
+
+The `DuckDBLocalAdapter` supports native SQL write for `replace`, `append`, and `truncate_insert` strategies — the fused SQL is embedded directly into the write DDL, eliminating the Arrow round-trip. See [Native SQL Write Optimization](../guides/write-strategies.md#native-sql-write-optimization) for details.
 
 ---
 
@@ -176,7 +179,7 @@ When reading from filesystem catalogs, DuckDB auto-detects the reader:
     import pyarrow.compute as pc
     from rivet_core.models import Material
 
-    def transform(material: Material) -> pa.Table:
+    def transform(material: Material) -> Material:
         table = material.to_arrow()
         totals = table.group_by("customer_id").aggregate([("amount", "sum")])
         return totals.rename_columns(["customer_id", "total"])

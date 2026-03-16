@@ -7,7 +7,7 @@ from typing import Any
 import pyarrow
 
 from rivet_core.models import ComputeEngine
-from rivet_core.plugins import ComputeEnginePlugin
+from rivet_core.plugins import ComputeEnginePlugin, ReferenceResolver
 
 ALL_6_CAPABILITIES = [
     "projection_pushdown",
@@ -17,6 +17,99 @@ ALL_6_CAPABILITIES = [
     "join",
     "aggregation",
 ]
+
+
+class DuckDBReferenceResolver(ReferenceResolver):
+    """Compile-time resolver that rewrites logical source names to DuckDB-native expressions.
+
+    Called by the compiler's ``_resolve_references`` pass for fused groups targeting
+    the DuckDB engine.  For each upstream source joint, the resolver substitutes the
+    logical name with:
+
+    * **Filesystem sources** — a reader function call such as
+      ``read_csv_auto('/abs/path/file.csv')``, ``read_parquet(...)`` or
+      ``read_json_auto(...)`` depending on the catalog format or file extension.
+    * **DuckDB sources** — the qualified (or simple) table name from the source
+      catalog entry.
+
+    CTE siblings (non-source joints with SQL in the same fused group) are left
+    untouched so their CTE aliases remain valid.
+
+    Replacement uses word-boundary regex (``\\b``) to avoid partial substitution
+    inside longer identifiers (e.g. ``src_products`` won't match
+    ``src_products_v2``).
+
+    Returns ``None`` when no substitution was made, signalling the compiler to
+    keep the original SQL and fall back to the Arrow staging path at runtime.
+    """
+
+    def resolve_references(
+        self,
+        sql: str,
+        joint: Any,
+        catalog: Any,
+        compiled_joints: dict[str, Any] | None = None,
+        catalog_map: dict[str, Any] | None = None,
+        fused_group_joints: list[str] | None = None,
+    ) -> str | None:
+        import re
+
+        upstream = getattr(joint, "upstream", [])
+        if not upstream or not compiled_joints or not catalog_map:
+            return None
+
+        # Identify CTE siblings: non-source joints with SQL in the same fused group.
+        cte_siblings: set[str] = set()
+        if fused_group_joints and compiled_joints:
+            for jn in fused_group_joints:
+                cj = compiled_joints.get(jn)
+                if not cj:
+                    continue
+                if getattr(cj, "type", None) == "source":
+                    continue
+                if getattr(cj, "sql", None) or getattr(cj, "sql_translated", None):
+                    cte_siblings.add(jn)
+
+        result = sql
+        changed = False
+
+        for up_name in upstream:
+            if up_name in cte_siblings:
+                continue
+
+            up_cj = compiled_joints.get(up_name)
+            if not up_cj:
+                continue
+            up_type = getattr(up_cj, "type", None)
+            if up_type not in ("source", "checkpoint"):
+                continue
+
+            up_catalog_name = getattr(up_cj, "catalog", None)
+            if not up_catalog_name:
+                continue
+            cat = catalog_map.get(up_catalog_name)
+            if not cat:
+                continue
+
+            catalog_type = getattr(cat, "type", None) or (getattr(cat, "options", {}).get("type"))
+
+            if catalog_type == "filesystem":
+                replacement = _resolve_filesystem_source(up_cj, cat)
+            elif catalog_type == "duckdb":
+                replacement = _resolve_duckdb_source(up_cj, cat)
+            else:
+                continue
+
+            if replacement is None:
+                continue
+
+            pattern = re.compile(r"\b" + re.escape(up_name) + r"\b")
+            new_result = pattern.sub(replacement, result)
+            if new_result != result:
+                result = new_result
+                changed = True
+
+        return result if changed else None
 
 
 class DuckDBComputeEnginePlugin(ComputeEnginePlugin):
@@ -39,6 +132,7 @@ class DuckDBComputeEnginePlugin(ComputeEnginePlugin):
     def __init__(self) -> None:
         super().__init__()
         import threading
+
         self._conn: Any = None  # duckdb.DuckDBPyConnection | None (backward compat)
         self._registered_views: set[str] = set()  # backward compat
         # Per-engine-name connections and view sets for thread-safe parallel execution.
@@ -122,6 +216,7 @@ class DuckDBComputeEnginePlugin(ComputeEnginePlugin):
         """Lazily create and return the reusable DuckDB connection."""
         if self._conn is None:
             import duckdb
+
             self._conn = duckdb.connect()
         return self._conn
 
@@ -137,10 +232,25 @@ class DuckDBComputeEnginePlugin(ComputeEnginePlugin):
     def _get_engine_lock(self, engine_name: str) -> Any:
         """Return a per-engine lock, creating one if needed."""
         import threading
+
         with self._meta_lock:
             if engine_name not in self._engine_locks:
                 self._engine_locks[engine_name] = threading.Lock()
             return self._engine_locks[engine_name]
+
+    @property
+    def supports_native_assertions(self) -> bool:
+        """DuckDB supports running assertion checks via SQL."""
+        return True
+
+    def execute_assertion_sql(
+        self,
+        engine: ComputeEngine,
+        sql: str,
+        input_tables: dict[str, pyarrow.Table],
+    ) -> pyarrow.Table:
+        """Execute assertion SQL by delegating to execute_sql."""
+        return self.execute_sql(engine, sql, input_tables)
 
     def execute_sql(
         self,
@@ -163,6 +273,7 @@ class DuckDBComputeEnginePlugin(ComputeEnginePlugin):
             conn = self._engine_conns.get(engine_name)
             if conn is None:
                 import duckdb
+
                 conn = duckdb.connect()
                 self._engine_conns[engine_name] = conn
                 self._engine_views[engine_name] = set()
@@ -192,6 +303,10 @@ class DuckDBComputeEnginePlugin(ComputeEnginePlugin):
                 self._conn = None
                 self._registered_views = set()
                 raise
+
+    def get_reference_resolver(self) -> ReferenceResolver | None:
+        """Return a resolver that rewrites source references to DuckDB-native expressions."""
+        return DuckDBReferenceResolver()
 
 
 def apply_engine_settings(conn: Any, config: dict[str, Any]) -> None:
@@ -248,6 +363,99 @@ def infer_filesystem_reader(path: str) -> str:
             )
         )
     return reader
+
+
+_FORMAT_TO_READER: dict[str, str] = {
+    "csv": "read_csv_auto",
+    "parquet": "read_parquet",
+    "json": "read_json_auto",
+    "ndjson": "read_json_auto",
+    "jsonl": "read_json_auto",
+}
+"""Mapping from catalog ``format`` option value to DuckDB reader function name.
+
+Used by :func:`_resolve_filesystem_source` when the catalog declares an explicit
+format.  Falls back to :data:`_EXTENSION_TO_READER` when no format is set.
+"""
+
+
+def _resolve_filesystem_source(source_cj: Any, catalog: Any) -> str | None:
+    """Resolve a filesystem source to a DuckDB reader function call.
+
+    Builds an expression like ``read_csv_auto('/abs/path/file.csv')`` by:
+
+    1. Reading the catalog's ``path`` option as the base directory.
+    2. Appending the source's ``table`` (or ``name``) to form the file path.
+    3. If the exact path doesn't exist, falling back to stem matching — scanning
+       the base directory for a file whose stem equals the table name.
+    4. Choosing the reader function from the catalog's explicit ``format`` option
+       (via :data:`_FORMAT_TO_READER`) or, when absent, from the resolved file's
+       extension (via :data:`_EXTENSION_TO_READER`).
+
+    Args:
+        source_cj: The compiled joint for the upstream source.
+        catalog: The catalog object for the source (must be ``type="filesystem"``).
+
+    Returns:
+        A DuckDB reader call string, or ``None`` if the file cannot be found or
+        the format is not recognised.
+    """
+    from pathlib import Path
+
+    opts = getattr(catalog, "options", {})
+    base_path = opts.get("path")
+    if not base_path:
+        return None
+
+    table_name = getattr(source_cj, "table", None) or getattr(source_cj, "name", None)
+    if not table_name:
+        return None
+
+    file_path = Path(base_path) / table_name
+    if not file_path.exists():
+        # Fallback: find a file whose stem matches the table name.
+        base = Path(base_path)
+        if base.is_dir():
+            for entry in base.iterdir():
+                if entry.is_file() and entry.stem == table_name:
+                    file_path = entry
+                    break
+        if not file_path.exists():
+            return None
+
+    # Determine reader function: explicit catalog format takes priority.
+    fmt = opts.get("format")
+    if fmt:
+        reader = _FORMAT_TO_READER.get(fmt)
+    else:
+        reader = _EXTENSION_TO_READER.get(file_path.suffix.lower())
+
+    if reader is None:
+        return None
+
+    return f"{reader}('{file_path}')"
+
+
+def _resolve_duckdb_source(source_cj: Any, catalog: Any) -> str | None:
+    """Resolve a DuckDB source to a table reference.
+
+    Returns the source's ``table`` field as-is (which may be a qualified name
+    like ``schema.table``), or falls back to the joint ``name`` when ``table``
+    is not set.
+
+    Args:
+        source_cj: The compiled joint for the upstream source.
+        catalog: The catalog object for the source (must be ``type="duckdb"``).
+
+    Returns:
+        A table name string, or ``None`` if neither ``table`` nor ``name`` is
+        available.
+    """
+    table: str | None = getattr(source_cj, "table", None)
+    if not table:
+        name: str | None = getattr(source_cj, "name", None)
+        return name
+    return table
 
 
 def register_arrow_tables(conn: Any, tables: dict[str, Any]) -> None:

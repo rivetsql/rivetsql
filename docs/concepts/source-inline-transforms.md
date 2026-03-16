@@ -20,6 +20,22 @@ If your transform requires joins, CTEs, subqueries, aggregations, or window func
 
 ---
 
+## The `__self` Alias
+
+When writing SQL for a source joint, use `FROM __self` to reference the source's backing table. The `__self` alias is a reserved placeholder that the compiler substitutes with the actual table FQN (e.g., `warehouse.raw_orders`) at compile time.
+
+```sql
+SELECT order_id, customer_name
+FROM __self
+WHERE status = 'active'
+```
+
+This avoids circular CTE references that would occur if the SQL used the joint's own name in the FROM clause. The YAML form (`columns`, `filter`, `limit`) generates `FROM __self` automatically — you only need to think about `__self` when writing the SQL form directly.
+
+If the source has no backing table (e.g., a REST API source), `__self` is left intact and the adapter handles the read without a table reference.
+
+---
+
 ## YAML Fields
 
 ### `columns`
@@ -117,7 +133,7 @@ Every YAML source declaration has an equivalent SQL form. The two are interchang
         order_id,
         customer_name,
         price * quantity AS revenue
-    FROM raw_orders
+    FROM __self
     WHERE status = 'active'
     LIMIT 1000
     ```
