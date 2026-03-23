@@ -9,6 +9,7 @@ import re
 from collections import defaultdict
 
 from rivet_core.compiler import CompiledAssembly, CompiledJoint
+from rivet_core.compiler.models import CompilationStats
 from rivet_core.interactive.types import (
     AdapterInfo,
     AssemblyInspection,
@@ -447,8 +448,12 @@ class AssemblyFormatter:
     # ------------------------------------------------------------------
 
     def _render_text(
-        self, inspection: AssemblyInspection, *, ansi: bool, compilation_stats=None
-    ) -> str:  # type: ignore[no-untyped-def]
+        self,
+        inspection: AssemblyInspection,
+        *,
+        ansi: bool,
+        compilation_stats: CompilationStats | None = None,
+    ) -> str:
         sections: list[str] = []
         sections.append(
             self._render_overview_text(
@@ -496,8 +501,12 @@ class AssemblyFormatter:
         return f"═══ {title} ═══\n"
 
     def _render_overview_text(
-        self, ov: OverviewSection, *, ansi: bool, compilation_stats=None
-    ) -> str:  # type: ignore[no-untyped-def]
+        self,
+        ov: OverviewSection,
+        *,
+        ansi: bool,
+        compilation_stats: CompilationStats | None = None,
+    ) -> str:
         lines: list[str] = [self._section_header("Assembly Overview", ansi=ansi)]
         lines.append(f"  Profile: {ov.profile_name}")
         status = "✓ Success" if ov.success else "✗ Failed"

@@ -23,7 +23,8 @@ repos:
     hooks:
       - id: mypy
         files: ^rivet/src/
-        args: [--ignore-missing-imports]
+        pass_filenames: false
+        args: [--ignore-missing-imports, rivet/src/]
         additional_dependencies:
           - types-PyYAML>=6.0
           - types-requests>=2.31
