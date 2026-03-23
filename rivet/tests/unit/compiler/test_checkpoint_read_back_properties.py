@@ -133,7 +133,7 @@ def test_checkpoint_read_back_returns_deferred_ref_with_correct_metadata(
 def test_checkpoint_read_back_native_sql_path_has_no_cached_table(
     meta: dict[str, Any],
 ) -> None:
-    """Native SQL write path: result_table=None → DeferredRef._cached_table is None."""
+    """Native SQL write path: result_table=None leaves no cached Arrow table."""
     cj = _make_compiled_joint(name="cp", catalog="cat", table=meta["table_name"])
     catalog_map = {
         "cat": CompiledCatalog(
@@ -147,7 +147,8 @@ def test_checkpoint_read_back_native_sql_path_has_no_cached_table(
     ref = asyncio.run(executor._checkpoint_read_back(cj, catalog_map, result_table=None))
 
     assert isinstance(ref, DeferredRef)
-    assert ref._cached_table is None
+    assert ref.to_arrow_if_cached() is None
+    assert ref.has_cached_arrow() is False
 
 
 @given(meta=_catalog_metadata())
@@ -155,7 +156,7 @@ def test_checkpoint_read_back_native_sql_path_has_no_cached_table(
 def test_checkpoint_read_back_arrow_fallback_path_carries_cached_table(
     meta: dict[str, Any],
 ) -> None:
-    """Arrow fallback write path: result_table=table → DeferredRef._cached_table is table (identity)."""
+    """Arrow fallback write path: result_table=table is cached by identity."""
     table = _make_arrow_table()
     cj = _make_compiled_joint(name="cp", catalog="cat", table=meta["table_name"])
     catalog_map = {
@@ -170,6 +171,7 @@ def test_checkpoint_read_back_arrow_fallback_path_carries_cached_table(
     ref = asyncio.run(executor._checkpoint_read_back(cj, catalog_map, result_table=table))
 
     assert isinstance(ref, DeferredRef)
-    assert ref._cached_table is table
+    assert ref.to_arrow_if_cached() is table
+    assert ref.has_cached_arrow() is True
     # .to_arrow() returns the same object (identity, not just equality)
     assert ref.to_arrow() is table

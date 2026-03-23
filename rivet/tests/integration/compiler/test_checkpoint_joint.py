@@ -109,7 +109,9 @@ class TestCheckpointValidationErrors:
         result = _compile_pipeline(joints)
 
         catalog_errors = [
-            e for e in result.errors if "catalog" in e.message.lower() and "cp" in e.message
+            e
+            for e in result.diagnostics.errors
+            if "catalog" in e.message.lower() and "cp" in e.message
         ]
         assert len(catalog_errors) >= 1
 
@@ -122,7 +124,9 @@ class TestCheckpointValidationErrors:
         result = _compile_pipeline(joints)
 
         table_errors = [
-            e for e in result.errors if "table" in e.message.lower() and "cp" in e.message
+            e
+            for e in result.diagnostics.errors
+            if "table" in e.message.lower() and "cp" in e.message
         ]
         assert len(table_errors) >= 1
 
@@ -138,5 +142,9 @@ class TestCheckpointWarnings:
         result = _compile_pipeline(joints)
 
         assert result.success
-        matching = [w for w in result.warnings if "cp" in w and "no downstream" in w.lower()]
+        matching = [
+            w.message
+            for w in result.diagnostics.warnings
+            if "cp" in w.message and "no downstream" in w.message.lower()
+        ]
         assert len(matching) >= 1

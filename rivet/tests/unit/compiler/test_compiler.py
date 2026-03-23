@@ -167,7 +167,7 @@ class TestStrategyResolution:
         ]
         result = compile(Assembly(joints), [], _engines(), _make_registry())
         assert result.success is False
-        assert any(e.code == "RVT-603" for e in result.errors)
+        assert any(e.code == "RVT-603" for e in result.diagnostics.errors)
 
     def test_invalid_fusion_strategy_produces_rvt_601(self) -> None:
         joints = [
@@ -180,7 +180,7 @@ class TestStrategyResolution:
         ]
         result = compile(Assembly(joints), [], _engines(), _make_registry())
         assert result.success is False
-        assert any(e.code == "RVT-601" for e in result.errors)
+        assert any(e.code == "RVT-601" for e in result.diagnostics.errors)
 
     def test_invalid_materialization_strategy_produces_rvt_602(self) -> None:
         joints = [
@@ -193,7 +193,7 @@ class TestStrategyResolution:
         ]
         result = compile(Assembly(joints), [], _engines(), _make_registry())
         assert result.success is False
-        assert any(e.code == "RVT-602" for e in result.errors)
+        assert any(e.code == "RVT-602" for e in result.diagnostics.errors)
 
     def test_valid_materialization_strategy_override(self) -> None:
         joints = [
@@ -441,7 +441,10 @@ class TestReferenceResolution:
             resolve_references=resolver,
         )
         assert result.success is True
-        assert any("Reference resolution failed" in w for w in result.warnings)
+        assert any(
+            "Reference resolution failed" in warning.message
+            for warning in result.diagnostics.warnings
+        )
 
     def test_resolved_sql_recomposed_in_fused_group(self) -> None:
         resolver = StubReferenceResolver(return_value="SELECT id FROM schema.src")

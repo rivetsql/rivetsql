@@ -87,6 +87,7 @@ display, execution, testing, inspection — reads from this one immutable object
 | [Engines](engines.md) | ComputeEngine configuration and capabilities |
 | [Catalogs](catalogs.md) | Catalog types and configuration |
 | [Compilation](compilation.md) | Deep dive into the compilation pipeline |
+| [Compiler Internals](compiler-internals.md) | Exhaustive reference for all 10 compiler phases, optimizer passes, SQL parser, lineage, and data models |
 | [Materialization](materialization.md) | `MaterializedRef`, `.to_arrow()`, and eviction |
 | [Assertions, Audits & Tests](assertions-audits-tests.md) | Quality and correctness guarantees |
 | [Smart Cache](smart-cache.md) | Persistent catalog metadata caching across sessions |

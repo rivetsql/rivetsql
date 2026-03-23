@@ -37,7 +37,9 @@ def phased_timing_st(draw: st.DrawFn) -> PhasedTiming:
     materialize = draw(_timing_float)
     residual = draw(_timing_float)
     check = draw(_timing_float)
-    overhead = draw(st.floats(min_value=0.0, max_value=100.0, allow_nan=False, allow_infinity=False))
+    overhead = draw(
+        st.floats(min_value=0.0, max_value=100.0, allow_nan=False, allow_infinity=False)
+    )
     total = engine + materialize + residual + check + overhead
     return PhasedTiming(
         total_ms=total,
@@ -49,7 +51,9 @@ def phased_timing_st(draw: st.DrawFn) -> PhasedTiming:
 
 
 _group_id_st = st.text(min_size=1, max_size=20, alphabet=st.characters(categories=("L", "N")))
-_joint_name_st = st.text(min_size=1, max_size=30, alphabet=st.characters(categories=("L", "N", "P")))
+_joint_name_st = st.text(
+    min_size=1, max_size=30, alphabet=st.characters(categories=("L", "N", "P"))
+)
 _nonneg_int = st.integers(min_value=0, max_value=10_000_000)
 
 
@@ -234,7 +238,9 @@ def test_property8_serialization_round_trip(
     Serialize via to_dict() to JSON and back; verify all fields match.
     """
     gs = GroupStats(group_id="g1", joints=["j1"], timing=timing, success=True)
-    js = JointStats(name="j1", rows_in=rows_in, rows_out=rows_out, timing=timing, materialization_stats=None)
+    js = JointStats(
+        name="j1", rows_in=rows_in, rows_out=rows_out, timing=timing, materialization_stats=None
+    )
     rs = RunStats(
         total_time_ms=timing.total_ms,
         total_engine_ms=timing.engine_ms,
@@ -680,14 +686,13 @@ def test_property9_text_renderer_includes_group_summary(run_stats: RunStats) -> 
         fused_groups=[],
         materializations=[],
         execution_order=[],
-        errors=[],
-        warnings=[],
     )
 
     output = render_run_text(result, compiled, verbosity=0, color=False)
 
     for gs in run_stats.group_stats:
-        assert gs.group_id in output, f"group_id '{gs.group_id}' not found in output"
+        label = gs.joints[-1] if gs.joints else gs.group_id
+        assert label in output, f"group label '{label}' not found in output"
         assert f"{gs.timing.total_ms:.0f}" in output, (
             f"total_ms '{gs.timing.total_ms:.0f}' not found in output"
         )
@@ -735,8 +740,6 @@ def test_property10_json_renderer_includes_run_stats_key(run_stats: RunStats) ->
         fused_groups=[],
         materializations=[],
         execution_order=[],
-        errors=[],
-        warnings=[],
     )
 
     output = render_run_json(result, compiled)

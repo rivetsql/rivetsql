@@ -34,6 +34,7 @@ _RECOGNIZED_KEYS = frozenset(
         "function",
         "fusion_strategy",
         "materialization_strategy",
+        "dialect",
     }
 )
 
@@ -186,6 +187,7 @@ class SQLParser:
             upstream=fields.get("upstream") if "upstream" in fields else None,  # type: ignore[arg-type]
             tags=fields.get("tags") if "tags" in fields else None,  # type: ignore[arg-type]
             description=str(fields["description"]) if "description" in fields else None,
+            dialect=str(fields["dialect"]) if "dialect" in fields else None,
             source_format="sql",
             fusion_strategy=str(fields["fusion_strategy"]) if "fusion_strategy" in fields else None,
             materialization_strategy=str(fields["materialization_strategy"])

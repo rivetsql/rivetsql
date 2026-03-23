@@ -21,6 +21,7 @@ def run_run(
     fail_fast: bool,
     format: str,
     globals: GlobalOptions,
+    engine: str | None = None,
 ) -> int:
     """Compile and execute the pipeline."""
     # Validate format
@@ -75,21 +76,50 @@ def run_run(
         target_sink=sink_name,
         tags=tags or None,
         tag_mode="and" if tag_all else "or",
-        default_engine=config_result.profile.default_engine if config_result.profile else None,
+        default_engine=engine
+        or (config_result.profile.default_engine if config_result.profile else None),
         project_root=globals.project_path,
     )
     if not compiled.success:
-        for e in compiled.errors:  # type: ignore[assignment]
+        for compile_error in compiled.diagnostics.errors:
             print(
-                format_upstream_error(e.code, e.message, e.remediation or "", globals.color),  # type: ignore[attr-defined]
+                format_upstream_error(
+                    compile_error.code,
+                    compile_error.message,
+                    compile_error.remediation or "",
+                    globals.color,
+                ),
                 file=sys.stderr,
             )
         return GENERAL_ERROR
 
-    # Execute
-    result = Executor(registry, project_root=globals.project_path).run_sync(
-        compiled, fail_fast=fail_fast
-    )
+    # Execute — wire LiveRunRenderer as progress callback for text/quiet formats
+    if format in ("text", "quiet"):
+        from rivet_cli.rendering.formatter import AssemblyFormatter
+        from rivet_cli.rendering.run_text import LiveRunRenderer
+
+        verbosity = -1 if format == "quiet" else globals.verbosity
+        renderer = LiveRunRenderer(compiled, verbosity, globals.color)
+
+        # Print compilation summary to stderr before execution
+        if verbosity >= 0:
+            fmt = AssemblyFormatter(color=globals.color, verbosity=verbosity)
+            summary_line = fmt.render_summary_line(compiled)
+            if summary_line:
+                print(summary_line, file=sys.stderr)
+
+        renderer.print_execution_plan()
+        result = Executor(registry, project_root=globals.project_path).run_sync(
+            compiled, fail_fast=fail_fast, progress=renderer
+        )
+        summary = renderer.render_summary(result)
+        if summary:
+            print(summary)
+    else:
+        # JSON format: no callback
+        result = Executor(registry, project_root=globals.project_path).run_sync(
+            compiled, fail_fast=fail_fast
+        )
 
     # Determine exit code from execution result
     has_assertion = any(
@@ -105,31 +135,10 @@ def run_run(
     has_partial = result.status == "partial_failure"
     exit_code = resolve_exit_code(has_assertion, has_audit, has_partial)
 
-    # Render output
+    # Render JSON output (text/quiet already handled above via LiveRunRenderer)
     if format == "json":
         from rivet_cli.rendering.json_out import render_run_json
 
         print(render_run_json(result, compiled))
-    elif format == "quiet":
-        # Quiet mode: errors only
-        for jr in result.joint_results:
-            if not jr.success and jr.error:
-                print(
-                    format_upstream_error(
-                        jr.error.code, jr.error.message, jr.error.remediation or "", globals.color
-                    ),
-                    file=sys.stderr,
-                )
-            for cr in jr.check_results:
-                if not cr.passed:
-                    print(
-                        format_upstream_error(cr.phase.upper(), cr.message, "", globals.color),
-                        file=sys.stderr,
-                    )
-    else:
-        # text format
-        from rivet_cli.rendering.run_text import render_run_text
-
-        print(render_run_text(result, compiled, globals.verbosity, globals.color))
 
     return exit_code

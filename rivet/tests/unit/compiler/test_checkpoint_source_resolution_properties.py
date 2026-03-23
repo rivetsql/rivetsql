@@ -80,6 +80,10 @@ class _StubSink(SinkPlugin):
         pass
 
 
+def _warning_messages(result: Any) -> list[str]:
+    return [warning.message for warning in result.diagnostics.warnings]
+
+
 class _StubAdapter(ComputeEngineAdapter):
     target_engine_type = "stub"
     catalog_type = "stub"
@@ -238,7 +242,7 @@ def test_compiler_resolves_checkpoint_sources(config: dict[str, Any]) -> None:
         default_engine="up_eng",
     )
 
-    assert result.success, f"Compilation failed: {result.errors}"
+    assert result.success, f"Compilation failed: {result.diagnostics.errors}"
 
     # Find the downstream group containing "transform"
     downstream_group = None
@@ -351,7 +355,7 @@ def test_checkpoint_adapter_in_compiled_adapters(config: dict[str, Any]) -> None
         default_engine="up_eng",
     )
 
-    assert result.success, f"Compilation failed: {result.errors}"
+    assert result.success, f"Compilation failed: {result.diagnostics.errors}"
 
     adapter_keys = {(a.engine_type, a.catalog_type) for a in result.adapters}
 
@@ -430,13 +434,13 @@ def test_checkpoint_missing_adapter_emits_warning(config: dict[str, Any]) -> Non
         default_engine="up_eng",
     )
 
-    assert result.success, f"Compilation failed: {result.errors}"
+    assert result.success, f"Compilation failed: {result.diagnostics.errors}"
 
     # Should have a warning about missing adapter for checkpoint resolution
     adapter_warnings = [
-        w for w in result.warnings if "No adapter for" in w and "checkpoint" in w.lower()
+        w for w in _warning_messages(result) if "No adapter for" in w and "checkpoint" in w.lower()
     ]
     assert len(adapter_warnings) > 0, (
         f"Expected warning about missing adapter for ({down_et}, {cp_cat_type}). "
-        f"Warnings: {result.warnings}"
+        f"Warnings: {_warning_messages(result)}"
     )

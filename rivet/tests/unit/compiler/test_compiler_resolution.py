@@ -6,10 +6,16 @@ from typing import Any
 
 from rivet_core.assembly import Assembly
 from rivet_core.checks import Assertion
-from rivet_core.compiler import compile
+from rivet_core.compiler import (
+    CompiledJoint,
+    CompileOptions,
+    _compile_joint,
+    _compute_parallel_execution_plan,
+    compile,
+)
 from rivet_core.introspection import ColumnDetail, ObjectSchema
 from rivet_core.models import Catalog, ComputeEngine, Joint
-from rivet_core.optimizer import EMPTY_RESIDUAL, AdapterPushdownResult
+from rivet_core.optimizer import EMPTY_RESIDUAL, AdapterPushdownResult, FusedGroup
 from rivet_core.plugins import (
     CatalogPlugin,
     ComputeEngineAdapter,
@@ -18,6 +24,7 @@ from rivet_core.plugins import (
     SinkPlugin,
     SourcePlugin,
 )
+from rivet_core.sql_parser import SQLParser
 
 # ---------------------------------------------------------------------------
 # Helpers — minimal plugin stubs
@@ -49,14 +56,24 @@ class IntrospectableCatalogPlugin(StubCatalogPlugin):
             node_type="table",
             columns=[
                 ColumnDetail(
-                    name="id", type="int64", native_type="INTEGER",
-                    nullable=False, default=None, comment=None,
-                    is_primary_key=True, is_partition_key=False,
+                    name="id",
+                    type="int64",
+                    native_type="INTEGER",
+                    nullable=False,
+                    default=None,
+                    comment=None,
+                    is_primary_key=True,
+                    is_partition_key=False,
                 ),
                 ColumnDetail(
-                    name="name", type="utf8", native_type="VARCHAR",
-                    nullable=True, default=None, comment=None,
-                    is_primary_key=False, is_partition_key=False,
+                    name="name",
+                    type="utf8",
+                    native_type="VARCHAR",
+                    nullable=True,
+                    default=None,
+                    comment=None,
+                    is_primary_key=False,
+                    is_partition_key=False,
                 ),
             ],
             primary_key=["id"],
@@ -67,9 +84,10 @@ class IntrospectableCatalogPlugin(StubCatalogPlugin):
 class StubEnginePlugin(ComputeEnginePlugin):
     engine_type = "stub"
     supported_catalog_types: dict[str, list[str]] = {
-        "stub": ["projection_pushdown"],
-        "introspectable": ["projection_pushdown"],
-        "failing": ["projection_pushdown"],
+        "stub": ["projection_pushdown", "predicate_pushdown", "limit_pushdown"],
+        "introspectable": ["projection_pushdown", "predicate_pushdown", "limit_pushdown"],
+        "failing": ["projection_pushdown", "predicate_pushdown", "limit_pushdown"],
+        "duplicate-failing": ["projection_pushdown", "predicate_pushdown", "limit_pushdown"],
     }
 
     def create_engine(self, name: str, config: dict[str, Any]) -> ComputeEngine:
@@ -118,6 +136,43 @@ def _make_registry_with_introspection() -> PluginRegistry:
     return reg
 
 
+def _compiled_joint(name: str, upstream: list[str]) -> CompiledJoint:
+    return CompiledJoint(
+        name=name,
+        type="sql",
+        catalog=None,
+        catalog_type=None,
+        engine="stub-engine",
+        engine_resolution="joint_override",
+        adapter=None,
+        sql=None,
+        sql_translated=None,
+        sql_resolved=None,
+        sql_dialect=None,
+        engine_dialect=None,
+        upstream=upstream,
+        eager=False,
+        table=None,
+        write_strategy=None,
+        function=None,
+        source_file=None,
+        logical_plan=None,
+        output_schema=None,
+        column_lineage=[],
+        optimizations=[],
+        checks=[],
+        fused_group_id=None,
+        tags=[],
+        description=None,
+        fusion_strategy_override=None,
+        materialization_strategy_override=None,
+    )
+
+
+def _warning_messages(result: Any) -> list[str]:
+    return [warning.message for warning in result.diagnostics.warnings]
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -137,7 +192,13 @@ class TestCompileBasic:
     def test_simple_source_sink_pipeline(self) -> None:
         joints = [
             Joint(name="src", joint_type="source", catalog="my_cat", engine="stub-engine"),
-            Joint(name="out", joint_type="sink", catalog="my_cat", upstream=["src"], engine="stub-engine"),
+            Joint(
+                name="out",
+                joint_type="sink",
+                catalog="my_cat",
+                upstream=["src"],
+                engine="stub-engine",
+            ),
         ]
         assembly = Assembly(joints)
         catalogs = [Catalog(name="my_cat", type="stub")]
@@ -159,6 +220,81 @@ class TestCompileBasic:
         assembly = Assembly([])
         result = compile(assembly, [], [], _make_registry())
         assert result.profile_name == "default"
+
+    def test_compile_adds_structured_diagnostics(self) -> None:
+        joints = [
+            Joint(name="src", joint_type="source", catalog="c"),
+        ]
+        assembly = Assembly(joints)
+        catalogs = [Catalog(name="c", type="stub")]
+        engines = [ComputeEngine(name="stub-engine", engine_type="stub")]
+        reg = _make_registry()
+
+        result = compile(
+            assembly,
+            catalogs,
+            engines,
+            reg,
+            options=CompileOptions(default_engine="stub-engine"),
+        )
+
+        assert result.success is True
+        assert result.diagnostics.errors == []
+        assert _warning_messages(result) == []
+        assert result.diagnostics.stats is not None
+
+    def test_compile_failure_includes_structured_diagnostics(self) -> None:
+        assembly = Assembly([])
+        reg = _make_registry()
+
+        result = compile(assembly, [], [], reg, target_sink="missing")
+
+        assert result.success is False
+        assert result.diagnostics.errors
+        assert _warning_messages(result) == []
+        assert result.diagnostics.stats is None
+
+    def test_compile_options_object_applies_defaults(self) -> None:
+        joints = [
+            Joint(name="src", joint_type="source", catalog="c"),
+        ]
+        assembly = Assembly(joints)
+        catalogs = [Catalog(name="c", type="stub")]
+        engines = [ComputeEngine(name="stub-engine", engine_type="stub")]
+        reg = _make_registry()
+
+        result = compile(
+            assembly,
+            catalogs,
+            engines,
+            reg,
+            options=CompileOptions(profile_name="custom", default_engine="stub-engine"),
+        )
+
+        assert result.success is True
+        assert result.profile_name == "custom"
+        assert result.joints[0].engine == "stub-engine"
+
+    def test_explicit_compile_args_override_options(self) -> None:
+        joints = [
+            Joint(name="src", joint_type="source", engine="stub-engine"),
+            Joint(name="sink", joint_type="sink", upstream=["src"], engine="stub-engine"),
+        ]
+        assembly = Assembly(joints)
+        engines = [ComputeEngine(name="stub-engine", engine_type="stub")]
+        reg = _make_registry()
+
+        result = compile(
+            assembly,
+            [],
+            engines,
+            reg,
+            default_fusion_strategy="cte",
+            options=CompileOptions(default_fusion_strategy="temp_view"),
+        )
+
+        assert result.success is True
+        assert result.fused_groups[0].fusion_strategy == "cte"
 
 
 class TestEngineResolution:
@@ -204,7 +340,7 @@ class TestEngineResolution:
 
         result = compile(assembly, catalogs, [], reg)
         assert result.success is False
-        assert any(e.code == "RVT-401" for e in result.errors)
+        assert any(e.code == "RVT-401" for e in result.diagnostics.errors)
 
 
 class TestAdapterLookup:
@@ -217,7 +353,9 @@ class TestAdapterLookup:
             capabilities = ["projection_pushdown"]
             source = "engine_plugin"
 
-            def read_dispatch(self, engine: Any, catalog: Any, joint: Any, pushdown: Any = None) -> AdapterPushdownResult:
+            def read_dispatch(
+                self, engine: Any, catalog: Any, joint: Any, pushdown: Any = None
+            ) -> AdapterPushdownResult:
                 return AdapterPushdownResult(material=None, residual=EMPTY_RESIDUAL)
 
             def write_dispatch(self, engine: Any, catalog: Any, joint: Any, material: Any) -> Any:
@@ -254,7 +392,7 @@ class TestAdapterLookup:
 
         result = compile(assembly, catalogs, engines, reg)
         assert result.success is False
-        assert any(e.code == "RVT-402" for e in result.errors)
+        assert any(e.code == "RVT-402" for e in result.diagnostics.errors)
 
 
 class TestIntrospection:
@@ -264,7 +402,9 @@ class TestIntrospection:
         reg = _make_registry_with_introspection()
 
         joints = [
-            Joint(name="src", joint_type="source", catalog="c", engine="stub-engine", table="users"),
+            Joint(
+                name="src", joint_type="source", catalog="c", engine="stub-engine", table="users"
+            ),
         ]
         assembly = Assembly(joints)
         catalogs = [Catalog(name="c", type="introspectable")]
@@ -299,7 +439,37 @@ class TestIntrospection:
 
         result = compile(assembly, catalogs, engines, reg)
         # Introspection failure should not cause compilation failure
-        assert any("Introspection failed" in w for w in result.warnings)
+        assert any("Introspection failed" in w for w in _warning_messages(result))
+
+    def test_duplicate_introspection_warnings_are_deduped(self) -> None:
+        class DuplicateFailingCatalogPlugin(StubCatalogPlugin):
+            type = "duplicate-failing"
+
+            def get_schema(self, catalog: Catalog, table: str) -> ObjectSchema:
+                raise RuntimeError("Connection failed")
+
+            def get_metadata(self, catalog: Catalog, table: str):
+                raise RuntimeError("Connection failed")
+
+        reg = PluginRegistry()
+        reg.register_catalog_plugin(DuplicateFailingCatalogPlugin())
+        reg.register_engine_plugin(StubEnginePlugin())
+        eng = StubEnginePlugin().create_engine("stub-engine", {})
+        reg.register_compute_engine(eng)
+
+        joints = [
+            Joint(name="src", joint_type="source", catalog="c", engine="stub-engine"),
+        ]
+        assembly = Assembly(joints)
+        catalogs = [Catalog(name="c", type="duplicate-failing")]
+        engines = [ComputeEngine(name="stub-engine", engine_type="stub")]
+
+        result = compile(assembly, catalogs, engines, reg)
+
+        matching = [
+            w for w in _warning_messages(result) if "Introspection failed for source 'src'" in w
+        ]
+        assert matching == ["Introspection failed for source 'src': Connection failed"]
 
 
 class TestSQLParsing:
@@ -345,7 +515,7 @@ class TestSQLParsing:
 
         result = compile(assembly, catalogs, engines, reg)
         assert result.success is False
-        assert any(e.code == "RVT-702" for e in result.errors)
+        assert any(e.code == "RVT-702" for e in result.diagnostics.errors)
 
     def test_sql_lineage_extracted(self) -> None:
         joints = [
@@ -414,7 +584,84 @@ class TestPythonJointHandling:
 
         result = compile(assembly, catalogs, engines, reg)
         assert result.success is False
-        assert any(e.code == "RVT-753" for e in result.errors)
+        assert any(e.code == "RVT-753" for e in result.diagnostics.errors)
+        assert any(
+            "module:callable" in e.remediation
+            for e in result.diagnostics.errors
+            if e.code == "RVT-753"
+        )
+
+
+class TestSourceSelfReferenceRewrite:
+    """Test source self-reference normalization preserves joint metadata."""
+
+    def test_self_reference_sql_rewrite_preserves_assertions_and_tags(self) -> None:
+        joints = [
+            Joint(
+                name="src",
+                joint_type="source",
+                catalog="c",
+                engine="stub-engine",
+                table="public.users",
+                sql="SELECT * FROM __self",
+                tags=["etl"],
+                assertions=[Assertion(type="not_null", config={"column": "id"})],
+            ),
+        ]
+        assembly = Assembly(joints)
+        catalogs = [Catalog(name="c", type="stub")]
+        engines = [ComputeEngine(name="stub-engine", engine_type="stub")]
+        reg = _make_registry()
+
+        result = compile(assembly, catalogs, engines, reg, introspect=False)
+
+        assert result.success is True
+        cj = result.joints[0]
+        assert cj.sql is not None
+        assert "__self" not in cj.sql
+        assert cj.tags == ["etl"]
+        assert len(cj.checks) == 1
+
+    def test_source_sql_is_parsed_once_during_compile_joint(self) -> None:
+        class CountingSQLParser(SQLParser):
+            def __init__(self) -> None:
+                super().__init__()
+                self.parse_calls = 0
+
+            def parse(self, sql: str, dialect: str | None = None):
+                self.parse_calls += 1
+                return super().parse(sql, dialect=dialect)
+
+        parser = CountingSQLParser()
+        errors = []
+        warnings = []
+        joint = Joint(
+            name="src",
+            joint_type="source",
+            catalog="c",
+            engine="stub-engine",
+            table="public.users",
+            sql="SELECT id FROM __self WHERE id > 0",
+        )
+
+        cj = _compile_joint(
+            joint,
+            {"c": Catalog(name="c", type="stub")},
+            {"stub-engine": ComputeEngine(name="stub-engine", engine_type="stub")},
+            _make_registry(),
+            "stub-engine",
+            parser,
+            {},
+            errors,
+            warnings,
+            introspect=False,
+        )
+
+        assert errors == []
+        assert parser.parse_calls == 1
+        assert cj.logical_plan is not None
+        assert cj.sql is not None
+        assert "__self" not in cj.sql
 
 
 class TestAssertionValidation:
@@ -438,7 +685,7 @@ class TestAssertionValidation:
 
         result = compile(assembly, catalogs, engines, reg)
         assert result.success is False
-        assert any(e.code == "RVT-651" for e in result.errors)
+        assert any(e.code == "RVT-651" for e in result.diagnostics.errors)
 
     def test_audit_on_sink_is_valid(self) -> None:
         joints = [
@@ -510,7 +757,9 @@ class TestDAGPruning:
         joints = [
             Joint(name="s1", joint_type="source", engine="stub-engine", tags=["etl"]),
             Joint(name="s2", joint_type="source", engine="stub-engine", tags=["ml"]),
-            Joint(name="out", joint_type="sink", upstream=["s1"], engine="stub-engine", tags=["etl"]),
+            Joint(
+                name="out", joint_type="sink", upstream=["s1"], engine="stub-engine", tags=["etl"]
+            ),
         ]
         assembly = Assembly(joints)
         engines = [ComputeEngine(name="stub-engine", engine_type="stub")]
@@ -548,7 +797,7 @@ class TestErrorCollection:
 
         result = compile(assembly, [], engines, reg)
         assert result.success is False
-        codes = [e.code for e in result.errors]
+        codes = [e.code for e in result.diagnostics.errors]
         assert "RVT-702" in codes
         assert "RVT-651" in codes
 
@@ -586,7 +835,13 @@ class TestCompiledOutputStructure:
     def test_execution_order_is_topological(self) -> None:
         joints = [
             Joint(name="a", joint_type="source", engine="stub-engine"),
-            Joint(name="b", joint_type="sql", upstream=["a"], engine="stub-engine", sql="SELECT 1 FROM a"),
+            Joint(
+                name="b",
+                joint_type="sql",
+                upstream=["a"],
+                engine="stub-engine",
+                sql="SELECT 1 FROM a",
+            ),
             Joint(name="c", joint_type="sink", upstream=["b"], engine="stub-engine"),
         ]
         assembly = Assembly(joints)
@@ -626,3 +881,77 @@ class TestCompiledOutputStructure:
         assert cj.description == "My source"
         assert cj.eager is True
         assert cj.table == "my_table"
+
+    def test_cross_group_optimization_attaches_to_target_joint(self) -> None:
+        joints = [
+            Joint(
+                name="src",
+                joint_type="source",
+                catalog="c",
+                engine="stub-engine",
+                table="users",
+            ),
+            Joint(
+                name="consumer",
+                joint_type="sql",
+                catalog="c",
+                upstream=["src"],
+                engine="stub-engine-2",
+                sql="SELECT id FROM src WHERE id > 0",
+            ),
+        ]
+        assembly = Assembly(joints)
+        catalogs = [Catalog(name="c", type="introspectable")]
+        engines = [
+            ComputeEngine(name="stub-engine", engine_type="stub"),
+            ComputeEngine(name="stub-engine-2", engine_type="stub"),
+        ]
+        reg = _make_registry_with_introspection()
+        reg.register_compute_engine(engines[1])
+
+        result = compile(assembly, catalogs, engines, reg)
+
+        assert result.success is True
+        src_joint = next(cj for cj in result.joints if cj.name == "src")
+        applied = [
+            opt
+            for opt in src_joint.optimizations
+            if opt.rule == "cross_group_predicate_pushdown" and opt.status == "applied"
+        ]
+        assert len(applied) >= 1
+        assert all(opt.target_joint == "src" for opt in applied)
+        assert all(opt.target_group is not None for opt in applied)
+
+
+class TestParallelExecutionPlan:
+    """Test safety behavior in parallel execution planning."""
+
+    def test_cycle_in_group_dependencies_produces_warning(self) -> None:
+        fused_groups = [
+            FusedGroup(
+                id="g1",
+                joints=["a"],
+                engine="stub-engine",
+                engine_type="stub",
+                adapters={},
+                fused_sql=None,
+            ),
+            FusedGroup(
+                id="g2",
+                joints=["b"],
+                engine="stub-engine",
+                engine_type="stub",
+                adapters={},
+                fused_sql=None,
+            ),
+        ]
+        cj_map = {
+            "a": _compiled_joint("a", ["b"]),
+            "b": _compiled_joint("b", ["a"]),
+        }
+        warnings: list[str] = []
+
+        plan = _compute_parallel_execution_plan(fused_groups, cj_map, warnings)
+
+        assert plan == []
+        assert any("cyclic or inconsistent" in w for w in warnings)

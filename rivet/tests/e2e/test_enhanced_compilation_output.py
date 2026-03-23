@@ -64,9 +64,9 @@ def test_execution_sql_display_verbosity_1(rivet_project: Path, capsys) -> None:
         "Expected 'Fused SQL:' in compilation output at verbosity 1"
     )
 
-    # Verify joint's own SQL is displayed
-    assert "sql (original):" in result.stdout, (
-        "Expected 'sql (original):' for joints in fused group"
+    # At v=1, original SQL should NOT be shown (only executed/fused SQL)
+    assert "sql (original):" not in result.stdout, (
+        "Original SQL should not appear at v=1 per requirement 2.3"
     )
 
     # Verify execution SQL is displayed for the transform joint
@@ -366,8 +366,10 @@ def test_enhanced_fused_group_display(rivet_project: Path, capsys) -> None:
     # Verify fused SQL is shown at the top
     assert "Fused SQL:" in output
 
-    # Verify individual joint SQL is shown (not execution SQL)
-    assert "sql (original):" in output
+    # At v=1, original SQL should NOT be shown (only executed/fused SQL)
+    assert "sql (original):" not in output, (
+        "Original SQL should not appear at v=1 per requirement 2.3"
+    )
 
     # Verify joints are listed
     assert "step1" in output

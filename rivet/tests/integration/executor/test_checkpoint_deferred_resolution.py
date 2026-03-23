@@ -220,14 +220,16 @@ def test_property3_deferred_ref_properties_consistent(table: pa.Table) -> None:
         # storage_type is always available without reading
         assert ref.storage_type == "catalog_deferred"
 
-        # _cached_table starts as None (no pre-computed table)
-        assert ref._cached_table is None
+        # No pre-computed table is cached yet
+        assert ref.to_arrow_if_cached() is None
+        assert ref.has_cached_arrow() is False
 
         # Accessing row_count triggers .to_arrow()
         assert ref.row_count == table.num_rows
 
-        # After row_count, _cached_table is populated
-        assert ref._cached_table is not None
+        # After row_count, Arrow data is cached
+        assert ref.to_arrow_if_cached() is not None
+        assert ref.has_cached_arrow() is True
 
         # Schema column names match
         ref_col_names = [c.name for c in ref.schema.columns]
@@ -248,9 +250,9 @@ def test_property3_deferred_ref_properties_consistent(table: pa.Table) -> None:
 @settings(max_examples=50)
 def test_property10_write_path_aware_caching(table: pa.Table) -> None:
     """For the Arrow fallback write path, DeferredRef(cached_table=table) stores
-    the table as _cached_table and .to_arrow() returns the exact same object
+    the table in its Arrow cache and .to_arrow() returns the exact same object
     (identity). For the native SQL write path, DeferredRef(cached_table=None)
-    has _cached_table=None and .to_arrow() reads from the catalog and caches.
+    starts without cached Arrow data and .to_arrow() reads from the catalog and caches.
 
     Validates: Requirements 1.3, 2.2, 2.3
     """
@@ -264,7 +266,8 @@ def test_property10_write_path_aware_caching(table: pa.Table) -> None:
         cached_table=table,
     )
 
-    assert ref_cached._cached_table is table
+    assert ref_cached.to_arrow_if_cached() is table
+    assert ref_cached.has_cached_arrow() is True
     assert ref_cached.to_arrow() is table
     # Second call also returns same object
     assert ref_cached.to_arrow() is table
@@ -282,13 +285,15 @@ def test_property10_write_path_aware_caching(table: pa.Table) -> None:
             cached_table=None,
         )
 
-        assert ref_deferred._cached_table is None
+        assert ref_deferred.to_arrow_if_cached() is None
+        assert ref_deferred.has_cached_arrow() is False
 
         result = ref_deferred.to_arrow()
 
-        # After first call, _cached_table is populated
-        assert ref_deferred._cached_table is not None
-        assert ref_deferred._cached_table is result
+        # After first call, Arrow data is cached
+        assert ref_deferred.to_arrow_if_cached() is not None
+        assert ref_deferred.to_arrow_if_cached() is result
+        assert ref_deferred.has_cached_arrow() is True
 
         # Subsequent calls return same object
         assert ref_deferred.to_arrow() is result

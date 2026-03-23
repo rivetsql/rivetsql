@@ -43,7 +43,9 @@ def _compile_and_run_cross_engine(
     engines: list[ComputeEngine],
     default_engine: str = "duckdb_primary",
 ) -> tuple:
-    catalogs = [Catalog(name="local", type="filesystem", options={"path": str(data_dir), "format": "csv"})]
+    catalogs = [
+        Catalog(name="local", type="filesystem", options={"path": str(data_dir), "format": "csv"})
+    ]
     assembly = Assembly(joints)
     compiled = compile(
         assembly,
@@ -53,7 +55,9 @@ def _compile_and_run_cross_engine(
         default_engine=default_engine,
         introspect=True,
     )
-    assert compiled.success, f"Compilation failed: {[e.message for e in compiled.errors]}"
+    assert compiled.success, (
+        f"Compilation failed: {[e.message for e in compiled.diagnostics.errors]}"
+    )
 
     executor = Executor(registry=registry)
     result = executor.run_sync(compiled)
@@ -77,17 +81,35 @@ class TestCrossEngineDataFlow:
         reg, eng1, eng2 = _setup_dual_engine_registry()
 
         joints = [
-            Joint(name="src", joint_type="source", catalog="local", table="orders",
-                  engine="duckdb_primary"),
-            Joint(name="transform", joint_type="sql", upstream=["src"],
-                  sql="SELECT id, amount * 2 AS doubled FROM src",
-                  engine="duckdb_secondary"),
-            Joint(name="sink", joint_type="sink", catalog="local", table="result",
-                  upstream=["transform"], engine="duckdb_secondary"),
+            Joint(
+                name="src",
+                joint_type="source",
+                catalog="local",
+                table="orders",
+                engine="duckdb_primary",
+            ),
+            Joint(
+                name="transform",
+                joint_type="sql",
+                upstream=["src"],
+                sql="SELECT id, amount * 2 AS doubled FROM src",
+                engine="duckdb_secondary",
+            ),
+            Joint(
+                name="sink",
+                joint_type="sink",
+                catalog="local",
+                table="result",
+                upstream=["transform"],
+                engine="duckdb_secondary",
+            ),
         ]
 
         compiled, result = _compile_and_run_cross_engine(
-            joints, data_dir, reg, [eng1, eng2],
+            joints,
+            data_dir,
+            reg,
+            [eng1, eng2],
         )
 
         assert result.success
@@ -110,22 +132,50 @@ class TestCrossEngineDataFlow:
         reg, eng1, eng2 = _setup_dual_engine_registry()
 
         joints = [
-            Joint(name="src", joint_type="source", catalog="local", table="data",
-                  engine="duckdb_primary"),
-            Joint(name="high", joint_type="sql", upstream=["src"],
-                  sql="SELECT id, val FROM src WHERE val > 15",
-                  engine="duckdb_primary"),
-            Joint(name="low", joint_type="sql", upstream=["src"],
-                  sql="SELECT id, val FROM src WHERE val <= 15",
-                  engine="duckdb_secondary"),
-            Joint(name="sink_high", joint_type="sink", catalog="local", table="high_result",
-                  upstream=["high"], engine="duckdb_primary"),
-            Joint(name="sink_low", joint_type="sink", catalog="local", table="low_result",
-                  upstream=["low"], engine="duckdb_secondary"),
+            Joint(
+                name="src",
+                joint_type="source",
+                catalog="local",
+                table="data",
+                engine="duckdb_primary",
+            ),
+            Joint(
+                name="high",
+                joint_type="sql",
+                upstream=["src"],
+                sql="SELECT id, val FROM src WHERE val > 15",
+                engine="duckdb_primary",
+            ),
+            Joint(
+                name="low",
+                joint_type="sql",
+                upstream=["src"],
+                sql="SELECT id, val FROM src WHERE val <= 15",
+                engine="duckdb_secondary",
+            ),
+            Joint(
+                name="sink_high",
+                joint_type="sink",
+                catalog="local",
+                table="high_result",
+                upstream=["high"],
+                engine="duckdb_primary",
+            ),
+            Joint(
+                name="sink_low",
+                joint_type="sink",
+                catalog="local",
+                table="low_result",
+                upstream=["low"],
+                engine="duckdb_secondary",
+            ),
         ]
 
         compiled, result = _compile_and_run_cross_engine(
-            joints, data_dir, reg, [eng1, eng2],
+            joints,
+            data_dir,
+            reg,
+            [eng1, eng2],
         )
 
         assert result.success
@@ -148,16 +198,35 @@ class TestCrossEngineMaterialization:
         reg, eng1, eng2 = _setup_dual_engine_registry()
 
         joints = [
-            Joint(name="src", joint_type="source", catalog="local", table="data",
-                  engine="duckdb_primary"),
-            Joint(name="transform", joint_type="sql", upstream=["src"],
-                  sql="SELECT * FROM src", engine="duckdb_secondary"),
-            Joint(name="sink", joint_type="sink", catalog="local", table="result",
-                  upstream=["transform"], engine="duckdb_secondary"),
+            Joint(
+                name="src",
+                joint_type="source",
+                catalog="local",
+                table="data",
+                engine="duckdb_primary",
+            ),
+            Joint(
+                name="transform",
+                joint_type="sql",
+                upstream=["src"],
+                sql="SELECT * FROM src",
+                engine="duckdb_secondary",
+            ),
+            Joint(
+                name="sink",
+                joint_type="sink",
+                catalog="local",
+                table="result",
+                upstream=["transform"],
+                engine="duckdb_secondary",
+            ),
         ]
 
         compiled, result = _compile_and_run_cross_engine(
-            joints, data_dir, reg, [eng1, eng2],
+            joints,
+            data_dir,
+            reg,
+            [eng1, eng2],
         )
 
         assert result.success
@@ -176,18 +245,39 @@ class TestCrossEngineMaterialization:
         reg, eng1, eng2 = _setup_dual_engine_registry()
 
         joints = [
-            Joint(name="src", joint_type="source", catalog="local", table="data",
-                  engine="duckdb_primary"),
-            Joint(name="transform", joint_type="sql", upstream=["src"],
-                  sql="SELECT * FROM src", engine="duckdb_secondary"),
-            Joint(name="sink", joint_type="sink", catalog="local", table="result",
-                  upstream=["transform"], engine="duckdb_secondary"),
+            Joint(
+                name="src",
+                joint_type="source",
+                catalog="local",
+                table="data",
+                engine="duckdb_primary",
+            ),
+            Joint(
+                name="transform",
+                joint_type="sql",
+                upstream=["src"],
+                sql="SELECT * FROM src",
+                engine="duckdb_secondary",
+            ),
+            Joint(
+                name="sink",
+                joint_type="sink",
+                catalog="local",
+                table="result",
+                upstream=["transform"],
+                engine="duckdb_secondary",
+            ),
         ]
 
         compiled, _result = _compile_and_run_cross_engine(
-            joints, data_dir, reg, [eng1, eng2],
+            joints,
+            data_dir,
+            reg,
+            [eng1, eng2],
         )
 
-        # Same engine type but different instances → engine_instance_change trigger
+        # Same engine type but different instances → lands in different fused
+        # groups, so the trigger is "capability_gap" (engine_instance_change
+        # only fires when the engine *type* differs).
         triggers = {m.trigger for m in compiled.materializations}
-        assert "engine_instance_change" in triggers
+        assert "capability_gap" in triggers

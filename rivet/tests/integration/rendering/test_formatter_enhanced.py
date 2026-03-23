@@ -140,7 +140,11 @@ class TestRenderExecutionSQL:
         assert "sql (executed):" not in output
 
     def test_execution_sql_displayed_when_available(self):
-        """Fused SQL and individual joint SQL should be displayed for fused groups."""
+        """Fused SQL should be displayed for fused groups at v=1; original SQL only at v=2.
+
+        Per requirement 2.3, v=1 shows only executed SQL (fused SQL for groups).
+        Individual joint original/translated/resolved SQL is only shown at v=2.
+        """
         joints = [
             Joint(name="src", joint_type="source", catalog="local", table="data"),
             Joint(
@@ -153,21 +157,26 @@ class TestRenderExecutionSQL:
         result = _compile_pipeline(joints)
         assert result.success
 
-        # Manually set execution_sql to match sql
-        simple_joint = next(j for j in result.joints if j.name == "simple")
-        formatter = AssemblyFormatter(color=False, verbosity=1)
-        output = formatter.render(result)
+        # At v=1: fused SQL shown, original SQL omitted
+        formatter_v1 = AssemblyFormatter(color=False, verbosity=1)
+        output_v1 = formatter_v1.render(result)
 
-        # For fused groups, should show Fused SQL at top and individual joint SQL
-        lines = output.split("\n")
-        fused_sql_count = sum(1 for l in lines if "Fused SQL:" in l)
-        original_sql_count = sum(1 for l in lines if "sql (original):" in l)
+        lines_v1 = output_v1.split("\n")
+        fused_sql_count = sum(1 for line in lines_v1 if "Fused SQL:" in line)
+        original_sql_count_v1 = sum(1 for line in lines_v1 if "sql (original):" in line)
 
         # Should show fused SQL for the group
         assert fused_sql_count > 0, "Fused SQL should be displayed for fused groups"
-        # Should show individual joint SQL (not execution SQL)
-        if simple_joint.sql is not None:
-            assert original_sql_count > 0, "Individual joint SQL should be displayed"
+        # Should NOT show individual joint original SQL at v=1
+        assert original_sql_count_v1 == 0, "Original SQL should not be displayed at v=1"
+
+        # At v=2: both fused SQL and original SQL shown
+        formatter_v2 = AssemblyFormatter(color=False, verbosity=2)
+        output_v2 = formatter_v2.render(result)
+
+        lines_v2 = output_v2.split("\n")
+        original_sql_count_v2 = sum(1 for line in lines_v2 if "sql (original):" in line)
+        assert original_sql_count_v2 > 0, "Original SQL should be displayed at v=2"
 
 
 class TestRenderPushdownDetails:

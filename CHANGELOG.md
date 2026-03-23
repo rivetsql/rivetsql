@@ -5,6 +5,57 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.16] - 2026-03-22
+
+### Added
+- `--engine` / `-e` flag on `rivet run` and `rivet compile` to override the profile's `default_engine` without editing `profiles.yaml`
+
+### Changed
+- Compiler pipeline phases 8 and 9 swapped: Engine Boundary Detection now runs before Materialization Determination, so materialization uses validated `engine_boundaries` instead of ad-hoc engine-name comparison
+- Group stats table in `compile` and `run` output now shows the last joint name instead of the group UUID, making output easier to read
+- Dialect translation pipeline refactored into composable pre-transpile and post-transpile normalization passes for extensibility
+
+### Fixed
+- Source joints without an adapter (e.g. filesystem catalog on Spark/Polars) now correctly rewrite CTE bodies to reference the joint name instead of the `table_map`-resolved physical name — previously only adapter-backed sources were rewritten, causing `TABLE_OR_VIEW_NOT_FOUND` errors on engines like PySpark
+- `rivet run` no longer repeats materialization lines (⚡) for each joint in a fused group — materialization is now reported once per group
+- `rivet run` no longer shows rows and timing on every joint in a fused group — rows/time are now shown only on the exit joint where they are meaningful
+- Schema mismatch warning in sink writes now reports only the columns that actually differ (after type normalization) instead of dumping the entire expected/actual schema
+- Introspection now resolves `table_map` aliases before calling catalog plugins, using the same resolution logic as compilation and execution — previously introspection used the raw logical name, causing all `table_map`-dependent sources to fail schema/metadata retrieval
+- Sources without a catalog plugin are now correctly counted as "skipped" instead of "failed" in introspection stats
+- `LATERAL VIEW EXPLODE(map_col)` in Databricks-dialect joints now translates correctly to DuckDB using `map_keys()`/`map_values()` instead of producing an invalid `UNNEST(map)` call
+- Executor no longer falls back to unresolved SQL when downstream groups have checkpoint dependencies from previous groups — checkpoint sources handled by CTE injection no longer set `has_materialized_inputs`, preserving the resolved SQL with engine-native references
+- `table_map` aliases in catalog profiles are now resolved at compile time for all catalog types — previously source joints with inline SQL had `__self` substituted with the unmapped table name, causing `table_map` entries to be ignored in fused SQL CTEs
+- Reference resolver now resolves source joints' own table references in fused CTE groups, preventing self-referencing CTEs (e.g. `x AS (SELECT * FROM x)`) at execution time
+- Catalog `table_map` lookup now falls back to all available catalogs when the joint's catalog name doesn't match any profile catalog (e.g. production "unity" vs local "datalake")
+- `dialect` annotation (`-- rivet:dialect: <name>`) is now recognized in SQL joint files and propagated through compilation
+- Filesystem sink `append` strategy now uses `promote_options="permissive"` when concatenating Arrow tables, so schema differences between engines (timezone info, string vs large_binary, decimal precision, integer widths) no longer cause `ArrowInvalid` errors
+- Dialect-translated SQL is now used in fused CTE composition, ensuring functions like `IFF()` are translated to the target engine's syntax
+- `IFF()` function (Databricks/Snowflake) is now normalized to `IF()` before sqlglot translation, fixing silent pass-through in dialects where sqlglot doesn't natively recognize it
+- Checkpoint joints without an adapter (e.g. filesystem catalog on Spark) now correctly reference the joint name in fallback CTE injection instead of the `table_map`-resolved physical name, fixing `TABLE_OR_VIEW_NOT_FOUND` errors
+- CTE fusion now preserves the engine's SQL dialect when extracting and re-composing CTEs, fixing `UNSUPPORTED_DATATYPE "TEXT"` errors on Spark where `STRING` was silently converted to DuckDB's `TEXT` during CTE extraction
+- Fused SQL now uses dialect-translated SQL (`sql_translated`) instead of DuckDB-normalized SQL (`j.sql`), fixing `UNSUPPORTED_DATATYPE` errors (e.g. `TEXT` instead of `STRING`) on engines like PySpark
+- Execution SQL resolution no longer uses catalog-resolved SQL (`sql_resolved`) when upstream data is materialized across engine boundaries, preventing bypass of in-memory input tables (e.g. source inline transforms like YAML columns/filter being ignored)
+
+### Added
+- Subgraph poisoning in the compiler: when a joint fails engine or adapter resolution in Phase 2, all its downstream dependents are skipped in Phase 4 (SQL compilation), preventing cascading error noise that obscured the root cause
+- `compile_until()` public API for partial compilation — returns the intermediate `PhaseState` at any named phase, enabling targeted debugging and testing
+- `AdapterDecision` traceability records on `CompiledAssembly` — each adapter lookup records the engine/catalog pair, resolution method (exact match, wildcard fallback, none), and available alternatives
+- Per-phase timing in `CompilationStats.phase_durations_ms` — records execution duration of each compiler phase in milliseconds
+- `PluginAnnotation` records on `CompiledAssembly` for core/plugin boundary visibility — every catalog, engine, adapter, and reference resolver invocation is annotated with phase, plugin class, operation, and result
+- Exhaustive compiler internals documentation at `docs/concepts/compiler-internals.md` covering all 10 compilation phases, optimizer passes, SQL parser, lineage, plugin interactions, and data models
+- `IntrospectionRecord` entries on `CompiledAssembly` — per-source introspection details including catalog type, result status, duration, and schema/stats availability
+- Three verbosity tiers for `rivet compile` output: compact (v=0), normal (v=1), verbose (v=2)
+- `ProgressCallback` protocol in the Executor for live progress events during pipeline execution
+- `LiveRunRenderer` for real-time execution progress during `rivet run` with three verbosity tiers
+- Consistent icon vocabulary for joint types (`📥` source, `🔧` transform, `📤` sink, `🔒` checkpoint)
+- Output channel separation: live progress to stderr, final summary to stdout
+- Compilation summary line printed to stderr before `rivet run` execution
+
+### Changed
+- Compiler internals refactored into 10 sequential phases (`prune_dag` → `resolve_metadata` → `introspect_sources` → `compile_sql` → `fusion` → `optimization` → `strategy_resolution` → `materialization` → `engine_boundaries` → `finalization`), each a pure function over an immutable `PhaseState` accumulator — no change to `compile()` signature or `CompiledAssembly` output
+- Normal compile output (v=1) shows only executed SQL, omitting original/translated/resolved variants (now v=2 only)
+- `rivet run` text format uses `LiveRunRenderer` for real-time progress output
+
 ## [0.1.15] - 2026-03-16
 
 ### Added
@@ -26,7 +77,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Databricks Arrow fallback staging view no longer uses type definitions in `CREATE VIEW` column lists — Spark/Databricks rejects `CREATE VIEW (col BIGINT, ...)` syntax; staging views now use `SELECT CAST(...) FROM VALUES ... AS _t(col_names)` instead
 - Native SQL write guard now correctly treats empty `ResidualPlan` (no predicates, no limit, no casts) as equivalent to no residual — previously an empty residual object blocked native SQL write for all groups processed by the optimizer, forcing the slower Arrow fallback path even for same-backend writes (e.g. Databricks→Databricks checkpoints)
 - Native SQL write now gracefully falls back to Arrow path when the fused SQL references tables that only exist in the engine connection (e.g. filesystem source → DuckDB sink) — previously this caused a silent group failure; for same-backend scenarios like Databricks→Databricks where the SQL Warehouse resolves all references, native SQL write still works directly
-- Cross-group checkpoint references in downstream fused groups are now resolved via CTE injection — checkpoint CTEs with fully-qualified table names are prepended to the downstream group's fused SQL at compile time, so engines like Databricks can resolve them natively without special-casing in the reference resolver
+- Cross-group checkpoint references in downstream fused groups are now resolved via CTE injection — checkpoint CTEs are prepended to the downstream group's fused SQL at compile time using the engine's reference resolver, producing engine-native expressions (e.g. `read_parquet(...)` for DuckDB filesystem catalogs, `catalog.schema.table` for Databricks) so checkpoint and source references go through the same resolution path
+- DuckDB filesystem source resolver now handles checkpoint tables that don't exist at compile time — when the file is missing but the catalog declares an explicit `format`, the resolver constructs the expected path with the format extension (e.g. `read_parquet('/path/table.parquet')`)
 - Checkpoint CTE injection now scans all joints in a fused group, not just entry joints — joints with both intra-group and cross-group upstream dependencies (e.g. a joint referencing a local source AND a checkpoint from another group) were previously missed because they are not entry joints
 - Sink native SQL write now correctly filters upstream materials by the exit joint's declared upstream — previously the method checked all accumulated materials from the execution wave, causing it to see multiple entries and skip native write for sinks whose upstream was not fused with them (e.g. eager upstream or assertion barrier)
 - Executor no longer calls `.to_arrow()` on `DeferredRef` entries from unrelated groups when building Arrow input tables — previously, a checkpoint written via native SQL in one group caused `RVT-501` errors when a sibling group tried to eagerly materialize it during its own execution

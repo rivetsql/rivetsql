@@ -286,8 +286,6 @@ def test_property_execution_sql_display_for_fused_groups(fg: FusedGroup) -> None
         materializations=[],
         engine_boundaries=[],
         success=True,
-        errors=[],
-        warnings=[],
     )
 
     # Render at verbosity 1
@@ -367,8 +365,6 @@ def test_property_pushdown_information_display(fg: FusedGroup) -> None:
         materializations=[],
         engine_boundaries=[],
         success=True,
-        errors=[],
-        warnings=[],
     )
 
     # Render at verbosity 1
@@ -521,8 +517,6 @@ def test_property_cross_group_optimization_display(
         materializations=[],
         engine_boundaries=[],
         success=True,
-        errors=[],
-        warnings=[],
     )
 
     # Render at verbosity 1
@@ -634,8 +628,6 @@ def test_property_fused_group_display_completeness(num_joints: int) -> None:
         materializations=[],
         engine_boundaries=[],
         success=True,
-        errors=[],
-        warnings=[],
     )
 
     # Render at verbosity 1
@@ -719,8 +711,6 @@ def test_property_verbosity_0_backward_compatibility(fg: FusedGroup) -> None:
         materializations=[],
         engine_boundaries=[],
         success=True,
-        errors=[],
-        warnings=[],
     )
 
     # Render at verbosity 0
@@ -862,8 +852,6 @@ def test_property_verbosity_gating(fg: FusedGroup, verbosity: int) -> None:
         materializations=[],
         engine_boundaries=[],
         success=True,
-        errors=[],
-        warnings=[],
     )
 
     # Render at specified verbosity

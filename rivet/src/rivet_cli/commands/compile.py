@@ -24,7 +24,7 @@ from rivet_cli.errors import (
 from rivet_cli.exit_codes import GENERAL_ERROR, SUCCESS, USAGE_ERROR
 from rivet_config import load_config
 from rivet_core import PluginRegistry, compile
-from rivet_core.compiler import CompiledAssembly
+from rivet_core.compiler import CompiledAssembly, TagMode
 
 _VALID_FORMATS = ("visual", "json", "mermaid")
 
@@ -36,6 +36,7 @@ def run_compile(
     format: str,
     output: str | None,
     globals: GlobalOptions,
+    engine: str | None = None,
 ) -> int:
     """Compile the project and render the CompiledAssembly.
 
@@ -93,7 +94,7 @@ def run_compile(
         return GENERAL_ERROR
 
     # 5. Compile
-    tag_mode = "and" if tag_all else "or"
+    tag_mode: TagMode = "and" if tag_all else "or"
     compiled: CompiledAssembly = compile(
         assembly=bridge_result.assembly,
         catalogs=list(bridge_result.catalogs.values()),
@@ -102,12 +103,13 @@ def run_compile(
         target_sink=sink_name,
         tags=tags if tags else None,
         tag_mode=tag_mode,
-        default_engine=config_result.profile.default_engine if config_result.profile else None,
+        default_engine=engine
+        or (config_result.profile.default_engine if config_result.profile else None),
         project_root=globals.project_path,
     )
 
     if not compiled.success:
-        for ce in compiled.errors:
+        for ce in compiled.diagnostics.errors:
             print(
                 format_upstream_error(
                     ce.code,
@@ -120,9 +122,9 @@ def run_compile(
         return GENERAL_ERROR
 
     # Print compilation warnings (e.g. checkpoint with no downstream)
-    for cw in compiled.warnings:
+    for cw in compiled.diagnostics.warnings:
         print(
-            format_cli_warning(cw, None, globals.color),
+            format_cli_warning(cw.message, None, globals.color),
             file=sys.stderr,
         )
 

@@ -81,7 +81,7 @@ WITH checkpoint_name AS (
 -- existing CTEs follow ...
 ```
 
-This allows the engine's reference resolver to treat the checkpoint identically to a source — no special-casing needed. The fully-qualified table name is derived from the checkpoint's catalog options at compile time, consistent with how source references are resolved.
+This allows the engine's reference resolver to treat the checkpoint identically to a source — no special-casing needed. The CTE body is resolved at compile time by delegating to the engine's `ReferenceResolver`, producing engine-native expressions (e.g. `read_parquet('/path/to/table.parquet')` for DuckDB filesystem catalogs, or `catalog.schema.table` for database-style catalogs like Databricks). This is the same resolution path used for source joints, so checkpoint CTEs and source CTEs are handled identically.
 
 The compiler scans all joints in each fused group (not just entry joints) to discover checkpoint dependencies. A joint can have upstream both inside and outside its group — for example, a SQL joint that references a local source AND a checkpoint from another group. Since such joints have at least one intra-group upstream, they are not entry joints, but they still need checkpoint CTE injection.
 

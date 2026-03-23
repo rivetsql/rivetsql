@@ -17,6 +17,16 @@ from hypothesis import strategies as st
 
 from .conftest import read_sink_csv
 
+
+def _looks_numeric(s: str) -> bool:
+    """Return True if *s* would be parsed as a number by a CSV reader."""
+    try:
+        float(s)
+        return True
+    except ValueError:
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Strategies
 # ---------------------------------------------------------------------------
@@ -45,13 +55,13 @@ _str_value_st = st.text(
     min_size=1,
     max_size=30,
 ).filter(
-    # Exclude strings that look numeric (e.g. "00", "123", "3.14") because
-    # CSV readers auto-detect types and would parse them as int/float,
-    # breaking the string round-trip.
+    # Exclude strings that look numeric (e.g. "00", "123", "3.14", "0e0")
+    # because CSV readers auto-detect types and would parse them as
+    # int/float, breaking the string round-trip.
     # Also exclude boolean-looking strings ("true", "false", etc.) because
     # CSV readers auto-detect them as booleans.
     lambda s: (
-        not s.strip().replace(".", "", 1).replace("-", "", 1).replace("+", "", 1).isdigit()
+        not _looks_numeric(s.strip())
         and len(s.strip()) > 0
         and s.strip().lower() not in ("true", "false", "yes", "no", "null", "nan", "none")
     )

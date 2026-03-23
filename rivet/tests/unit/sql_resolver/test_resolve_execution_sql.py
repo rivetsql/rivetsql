@@ -273,8 +273,8 @@ class TestMaterializedInputsPath:
 class TestSingleJointFallback:
     """Tests for single joint fallback path (Requirements 1.1)."""
 
-    def test_single_joint_without_fused_sql_returns_none(self):
-        """Single joint group without fused_sql returns None."""
+    def test_single_joint_without_fused_sql_uses_translated(self):
+        """Single joint group without fused_sql falls back to sql_translated."""
         joint1 = _make_joint(
             "joint1",
             sql="SELECT * FROM table",
@@ -285,8 +285,7 @@ class TestSingleJointFallback:
 
         result = resolve_execution_sql(group, joint_map, set())
 
-        # Function doesn't fall back to joint SQL, returns None
-        assert result is None
+        assert result == "SELECT * FROM table -- translated"
 
     def test_single_joint_with_fused_sql_returns_fused(self):
         """Single joint group with fused_sql returns it."""

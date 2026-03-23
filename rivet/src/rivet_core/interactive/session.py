@@ -358,7 +358,7 @@ class InteractiveSession:
         )
 
         if not compiled.success:
-            msgs = "; ".join(str(e) for e in compiled.errors)
+            msgs = "; ".join(str(e) for e in compiled.diagnostics.errors)
             raise SessionError(f"Transient pipeline compilation failed: {msgs}")
 
         return compiled
@@ -411,14 +411,14 @@ class InteractiveSession:
                     message=f"Compiled: {joint_count} joints, {group_count} fused groups, engines: {', '.join(engine_names) or 'none'}",
                 )
             )
-            if compiled.warnings:
-                for w in compiled.warnings:
+            if compiled.diagnostics.warnings:
+                for w in compiled.diagnostics.warnings:
                     self._emit_log(
                         Execution_Log(
                             timestamp=datetime.now(tz=UTC),
                             level="WARNING",
                             source="compiler",
-                            message=w,
+                            message=w.message,
                         )
                     )
 
@@ -753,7 +753,7 @@ class InteractiveSession:
             if assembly is None:
                 assembly = self.compile()
             if not assembly.success:
-                msgs = "; ".join(str(e) for e in assembly.errors)
+                msgs = "; ".join(str(e) for e in assembly.diagnostics.errors)
                 raise SessionError(f"Compilation failed: {msgs}")
             return self._formatter.format_assembly(assembly, verbosity, filter)
 

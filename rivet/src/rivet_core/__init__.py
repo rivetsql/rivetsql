@@ -12,7 +12,7 @@ from rivet_core.catalog_explorer import (
     NodeDetail,
     SearchResult,
 )
-from rivet_core.compiler import compile
+from rivet_core.compiler import compile, compile_until
 from rivet_core.credentials import CredentialResolver, Credentials
 from rivet_core.executor import Executor
 from rivet_core.formats import FileFormat, FormatRegistry
@@ -41,6 +41,7 @@ __all__ = [
     "Column",
     "ComputeEngine",
     "compile",
+    "compile_until",
     "ConnectionResult",
     "CredentialResolver",
     "Credentials",

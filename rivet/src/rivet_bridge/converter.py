@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 from rivet_bridge.errors import BridgeError
 from rivet_config import JointDeclaration
 from rivet_core import ComputeEngine, Joint
 from rivet_core.checks import Assertion
+from rivet_core.models import JointType
 
 
 class JointConverter:
@@ -62,7 +65,7 @@ class JointConverter:
 
         joint = Joint(
             name=declaration.name,
-            joint_type=declaration.joint_type,
+            joint_type=cast(JointType, declaration.joint_type),
             catalog=declaration.catalog,
             upstream=declaration.upstream if declaration.upstream is not None else [],
             tags=declaration.tags if declaration.tags is not None else [],
@@ -75,6 +78,7 @@ class JointConverter:
             write_strategy=declaration.write_strategy.mode if declaration.write_strategy else None,
             function=declaration.function,
             source_file=str(declaration.source_path),
+            dialect=declaration.dialect,
             fusion_strategy_override=declaration.fusion_strategy,
             materialization_strategy_override=declaration.materialization_strategy,
         )

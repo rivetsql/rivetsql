@@ -39,7 +39,9 @@ def _compile_pipeline(
     if registry is None:
         registry = _setup_registry()
     if catalogs is None:
-        catalogs = [Catalog(name="local", type="filesystem", options={"path": "/tmp/fake", "format": "csv"})]
+        catalogs = [
+            Catalog(name="local", type="filesystem", options={"path": "/tmp/fake", "format": "csv"})
+        ]
     if engines is None:
         engines = [
             registry.get_engine_plugin("duckdb").create_engine("duckdb_primary", {}),
@@ -69,24 +71,42 @@ class TestLinearPipeline:
     def test_linear_pipeline_compiles_successfully(self):
         joints = [
             Joint(name="src", joint_type="source", catalog="local", table="orders"),
-            Joint(name="transform", joint_type="sql", upstream=["src"],
-                  sql="SELECT id, amount FROM src WHERE amount > 0"),
-            Joint(name="sink", joint_type="sink", catalog="local", table="output",
-                  upstream=["transform"]),
+            Joint(
+                name="transform",
+                joint_type="sql",
+                upstream=["src"],
+                sql="SELECT id, amount FROM src WHERE amount > 0",
+            ),
+            Joint(
+                name="sink",
+                joint_type="sink",
+                catalog="local",
+                table="output",
+                upstream=["transform"],
+            ),
         ]
         result = _compile_pipeline(joints)
 
         assert result.success
-        assert len(result.errors) == 0
+        assert len(result.diagnostics.errors) == 0
         assert len(result.joints) == 3
 
     def test_linear_pipeline_fuses_same_engine_joints(self):
         joints = [
             Joint(name="src", joint_type="source", catalog="local", table="orders"),
-            Joint(name="transform", joint_type="sql", upstream=["src"],
-                  sql="SELECT id, amount FROM src WHERE amount > 0"),
-            Joint(name="sink", joint_type="sink", catalog="local", table="output",
-                  upstream=["transform"]),
+            Joint(
+                name="transform",
+                joint_type="sql",
+                upstream=["src"],
+                sql="SELECT id, amount FROM src WHERE amount > 0",
+            ),
+            Joint(
+                name="sink",
+                joint_type="sink",
+                catalog="local",
+                table="output",
+                upstream=["transform"],
+            ),
         ]
         result = _compile_pipeline(joints)
 
@@ -102,10 +122,19 @@ class TestLinearPipeline:
     def test_linear_pipeline_execution_order_respects_dependencies(self):
         joints = [
             Joint(name="src", joint_type="source", catalog="local", table="orders"),
-            Joint(name="transform", joint_type="sql", upstream=["src"],
-                  sql="SELECT id, amount FROM src WHERE amount > 0"),
-            Joint(name="sink", joint_type="sink", catalog="local", table="output",
-                  upstream=["transform"]),
+            Joint(
+                name="transform",
+                joint_type="sql",
+                upstream=["src"],
+                sql="SELECT id, amount FROM src WHERE amount > 0",
+            ),
+            Joint(
+                name="sink",
+                joint_type="sink",
+                catalog="local",
+                table="output",
+                upstream=["transform"],
+            ),
         ]
         result = _compile_pipeline(joints)
 
@@ -119,14 +148,27 @@ class TestDiamondPipeline:
     def test_diamond_compiles_with_correct_joint_count(self):
         joints = [
             Joint(name="src", joint_type="source", catalog="local", table="data"),
-            Joint(name="left", joint_type="sql", upstream=["src"],
-                  sql="SELECT id, amount FROM src WHERE amount > 0"),
-            Joint(name="right", joint_type="sql", upstream=["src"],
-                  sql="SELECT id, amount FROM src WHERE amount <= 0"),
-            Joint(name="merged", joint_type="sql", upstream=["left", "right"],
-                  sql="SELECT * FROM left UNION ALL SELECT * FROM right"),
-            Joint(name="sink", joint_type="sink", catalog="local", table="output",
-                  upstream=["merged"]),
+            Joint(
+                name="left",
+                joint_type="sql",
+                upstream=["src"],
+                sql="SELECT id, amount FROM src WHERE amount > 0",
+            ),
+            Joint(
+                name="right",
+                joint_type="sql",
+                upstream=["src"],
+                sql="SELECT id, amount FROM src WHERE amount <= 0",
+            ),
+            Joint(
+                name="merged",
+                joint_type="sql",
+                upstream=["left", "right"],
+                sql="SELECT * FROM left UNION ALL SELECT * FROM right",
+            ),
+            Joint(
+                name="sink", joint_type="sink", catalog="local", table="output", upstream=["merged"]
+            ),
         ]
         result = _compile_pipeline(joints)
 
@@ -136,14 +178,27 @@ class TestDiamondPipeline:
     def test_diamond_all_joints_assigned_to_groups(self):
         joints = [
             Joint(name="src", joint_type="source", catalog="local", table="data"),
-            Joint(name="left", joint_type="sql", upstream=["src"],
-                  sql="SELECT id, amount FROM src WHERE amount > 0"),
-            Joint(name="right", joint_type="sql", upstream=["src"],
-                  sql="SELECT id, amount FROM src WHERE amount <= 0"),
-            Joint(name="merged", joint_type="sql", upstream=["left", "right"],
-                  sql="SELECT * FROM left UNION ALL SELECT * FROM right"),
-            Joint(name="sink", joint_type="sink", catalog="local", table="output",
-                  upstream=["merged"]),
+            Joint(
+                name="left",
+                joint_type="sql",
+                upstream=["src"],
+                sql="SELECT id, amount FROM src WHERE amount > 0",
+            ),
+            Joint(
+                name="right",
+                joint_type="sql",
+                upstream=["src"],
+                sql="SELECT id, amount FROM src WHERE amount <= 0",
+            ),
+            Joint(
+                name="merged",
+                joint_type="sql",
+                upstream=["left", "right"],
+                sql="SELECT * FROM left UNION ALL SELECT * FROM right",
+            ),
+            Joint(
+                name="sink", joint_type="sink", catalog="local", table="output", upstream=["merged"]
+            ),
         ]
         result = _compile_pipeline(joints)
 
@@ -160,10 +215,20 @@ class TestEagerMaterialization:
     def test_eager_joint_triggers_materialization(self):
         joints = [
             Joint(name="src", joint_type="source", catalog="local", table="data"),
-            Joint(name="checkpoint", joint_type="sql", upstream=["src"],
-                  sql="SELECT * FROM src", eager=True),
-            Joint(name="sink", joint_type="sink", catalog="local", table="output",
-                  upstream=["checkpoint"]),
+            Joint(
+                name="checkpoint",
+                joint_type="sql",
+                upstream=["src"],
+                sql="SELECT * FROM src",
+                eager=True,
+            ),
+            Joint(
+                name="sink",
+                joint_type="sink",
+                catalog="local",
+                table="output",
+                upstream=["checkpoint"],
+            ),
         ]
         result = _compile_pipeline(joints)
 
@@ -186,14 +251,32 @@ class TestCrossEngineMaterialization:
         registry.register_compute_engine(eng2)
 
         joints = [
-            Joint(name="src", joint_type="source", catalog="local", table="data",
-                  engine="duckdb_primary"),
-            Joint(name="transform", joint_type="sql", upstream=["src"],
-                  sql="SELECT * FROM src", engine="duckdb_secondary"),
-            Joint(name="sink", joint_type="sink", catalog="local", table="output",
-                  upstream=["transform"], engine="duckdb_secondary"),
+            Joint(
+                name="src",
+                joint_type="source",
+                catalog="local",
+                table="data",
+                engine="duckdb_primary",
+            ),
+            Joint(
+                name="transform",
+                joint_type="sql",
+                upstream=["src"],
+                sql="SELECT * FROM src",
+                engine="duckdb_secondary",
+            ),
+            Joint(
+                name="sink",
+                joint_type="sink",
+                catalog="local",
+                table="output",
+                upstream=["transform"],
+                engine="duckdb_secondary",
+            ),
         ]
-        catalogs = [Catalog(name="local", type="filesystem", options={"path": "/tmp/fake", "format": "csv"})]
+        catalogs = [
+            Catalog(name="local", type="filesystem", options={"path": "/tmp/fake", "format": "csv"})
+        ]
         engines = [eng1, eng2]
 
         result = compile(
@@ -216,10 +299,19 @@ class TestPythonJointBoundary:
     def test_python_joint_produces_materialization(self):
         joints = [
             Joint(name="src", joint_type="source", catalog="local", table="data"),
-            Joint(name="py_transform", joint_type="python", upstream=["src"],
-                  function="os.path:exists"),  # dummy — won't be executed
-            Joint(name="sink", joint_type="sink", catalog="local", table="output",
-                  upstream=["py_transform"]),
+            Joint(
+                name="py_transform",
+                joint_type="python",
+                upstream=["src"],
+                function="os.path:exists",
+            ),  # dummy — won't be executed
+            Joint(
+                name="sink",
+                joint_type="sink",
+                catalog="local",
+                table="output",
+                upstream=["py_transform"],
+            ),
         ]
         result = _compile_pipeline(joints)
 
@@ -234,10 +326,14 @@ class TestFusionStrategies:
     def test_default_fusion_strategy_is_cte(self):
         joints = [
             Joint(name="src", joint_type="source", catalog="local", table="data"),
-            Joint(name="transform", joint_type="sql", upstream=["src"],
-                  sql="SELECT * FROM src"),
-            Joint(name="sink", joint_type="sink", catalog="local", table="output",
-                  upstream=["transform"]),
+            Joint(name="transform", joint_type="sql", upstream=["src"], sql="SELECT * FROM src"),
+            Joint(
+                name="sink",
+                joint_type="sink",
+                catalog="local",
+                table="output",
+                upstream=["transform"],
+            ),
         ]
         result = _compile_pipeline(joints)
 
@@ -249,16 +345,31 @@ class TestFusionStrategies:
     def test_temp_view_strategy_applied_when_requested(self):
         joints = [
             Joint(name="src", joint_type="source", catalog="local", table="data"),
-            Joint(name="transform", joint_type="sql", upstream=["src"],
-                  sql="SELECT * FROM src",
-                  fusion_strategy_override="temp_view"),
-            Joint(name="sink", joint_type="sink", catalog="local", table="output",
-                  upstream=["transform"]),
+            Joint(
+                name="transform",
+                joint_type="sql",
+                upstream=["src"],
+                sql="SELECT * FROM src",
+                fusion_strategy_override="temp_view",
+            ),
+            Joint(
+                name="sink",
+                joint_type="sink",
+                catalog="local",
+                table="output",
+                upstream=["transform"],
+            ),
         ]
         result = compile(
             Assembly(joints),
-            catalogs=[Catalog(name="local", type="filesystem", options={"path": "/tmp/fake", "format": "csv"})],
-            engines=[_setup_registry().get_engine_plugin("duckdb").create_engine("duckdb_primary", {})],
+            catalogs=[
+                Catalog(
+                    name="local", type="filesystem", options={"path": "/tmp/fake", "format": "csv"}
+                )
+            ],
+            engines=[
+                _setup_registry().get_engine_plugin("duckdb").create_engine("duckdb_primary", {})
+            ],
             registry=_setup_registry(),
             default_engine="duckdb_primary",
             default_fusion_strategy="cte",
@@ -280,8 +391,12 @@ class TestCompilationErrors:
         from rivet_core.assembly import AssemblyError
 
         joints = [
-            Joint(name="transform", joint_type="sql", upstream=["nonexistent"],
-                  sql="SELECT * FROM nonexistent"),
+            Joint(
+                name="transform",
+                joint_type="sql",
+                upstream=["nonexistent"],
+                sql="SELECT * FROM nonexistent",
+            ),
         ]
         with pytest.raises(AssemblyError):
             Assembly(joints)

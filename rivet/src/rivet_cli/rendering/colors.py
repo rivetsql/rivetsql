@@ -18,6 +18,25 @@ SYM_AUDIT = "●"
 SYM_MATERIALIZE = "⚡"
 SYM_NOT_APPLICABLE = "·"
 
+# Joint type icons
+ICON_SOURCE = "📥"
+ICON_TRANSFORM = "🔧"
+ICON_SINK = "📤"
+ICON_CHECKPOINT = "🔒"
+
+_JOINT_ICON_MAP: dict[str, str] = {
+    "source": ICON_SOURCE,
+    "sql": ICON_TRANSFORM,
+    "python": ICON_TRANSFORM,
+    "sink": ICON_SINK,
+    "checkpoint": ICON_CHECKPOINT,
+}
+
+
+def joint_icon(joint_type: str) -> str:
+    """Map a joint type string to its corresponding icon."""
+    return _JOINT_ICON_MAP.get(joint_type, ICON_TRANSFORM)
+
 
 def colorize(text: str, color: str, enabled: bool) -> str:
     """Wrap text in ANSI color codes if enabled."""

@@ -122,6 +122,31 @@ class PostgresReferenceResolver(ReferenceResolver):
 
         import re
 
+        joint_type = getattr(joint, "type", None)
+
+        # Source joints: resolve their own table reference to avoid
+        # self-referencing CTEs (e.g. `x AS (SELECT * FROM x)`).
+        if joint_type == "source":
+            joint_name = getattr(joint, "name", None)
+            cat_name = getattr(joint, "catalog", None)
+            if cat_name and joint_name:
+                cat = catalog_map.get(cat_name)
+                if cat:
+                    opts = getattr(cat, "options", {})
+                    pg_schema = opts.get("schema", "public")
+                    table = getattr(joint, "table", None)
+                    if table:
+                        if "." in table:
+                            qualified_table = table
+                        else:
+                            qualified_table = f"{pg_schema}.{table}"
+                        table_ref: str = str(table or joint_name)
+                        pattern = re.compile(r"\b" + re.escape(table_ref) + r"\b")
+                        new_sql: str = pattern.sub(qualified_table, sql)
+                        if new_sql != sql:
+                            return new_sql
+            return None
+
         upstream = getattr(joint, "upstream", [])
         if not upstream:
             return None

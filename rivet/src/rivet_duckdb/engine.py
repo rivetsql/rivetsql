@@ -54,6 +54,42 @@ class DuckDBReferenceResolver(ReferenceResolver):
     ) -> str | None:
         import re
 
+        joint_type = getattr(joint, "type", None)
+
+        # Source joints: resolve their own table reference to avoid
+        # self-referencing CTEs (e.g. `x AS (SELECT * FROM x)`).
+        if joint_type == "source" and catalog_map:
+            joint_name = getattr(joint, "name", None)
+            table_ref = getattr(joint, "table", None) or joint_name
+            if joint_name and table_ref:
+                # Try the joint's own catalog first, then fall back to any
+                # catalog in the map that can resolve this source.
+                cat_name = getattr(joint, "catalog", None)
+                candidates: list[Any] = []
+                if cat_name:
+                    exact = catalog_map.get(cat_name)
+                    if exact:
+                        candidates.append(exact)
+                # Fallback: try all catalogs (handles catalog name mismatches
+                # between production and local profiles).
+                if not candidates:
+                    candidates.extend(catalog_map.values())
+                for cat in candidates:
+                    cat_type = getattr(cat, "type", None) or (
+                        getattr(cat, "options", {}).get("type")
+                    )
+                    replacement: str | None = None
+                    if cat_type == "filesystem":
+                        replacement = _resolve_filesystem_source(joint, cat)
+                    elif cat_type == "duckdb":
+                        replacement = _resolve_duckdb_source(joint, cat)
+                    if replacement and replacement != table_ref:
+                        pattern = re.compile(r"\b" + re.escape(table_ref) + r"\b")
+                        new_sql = pattern.sub(replacement, sql)
+                        if new_sql != sql:
+                            return new_sql
+            return None
+
         upstream = getattr(joint, "upstream", [])
         if not upstream or not compiled_joints or not catalog_map:
             return None
@@ -88,23 +124,32 @@ class DuckDBReferenceResolver(ReferenceResolver):
             if not up_catalog_name:
                 continue
             cat = catalog_map.get(up_catalog_name)
-            if not cat:
-                continue
+            # Fallback: when the catalog name doesn't match any profile
+            # catalog (e.g. production "unity" vs local "datalake"), try
+            # all catalogs to find one that can resolve this source.
+            up_candidates: list[Any] = [cat] if cat else list(catalog_map.values())
 
-            catalog_type = getattr(cat, "type", None) or (getattr(cat, "options", {}).get("type"))
+            resolved_replacement: str | None = None
+            for cand in up_candidates:
+                if cand is None:
+                    continue
+                catalog_type = getattr(cand, "type", None) or (
+                    getattr(cand, "options", {}).get("type")
+                )
 
-            if catalog_type == "filesystem":
-                replacement = _resolve_filesystem_source(up_cj, cat)
-            elif catalog_type == "duckdb":
-                replacement = _resolve_duckdb_source(up_cj, cat)
-            else:
-                continue
+                if catalog_type == "filesystem":
+                    resolved_replacement = _resolve_filesystem_source(up_cj, cand)
+                elif catalog_type == "duckdb":
+                    resolved_replacement = _resolve_duckdb_source(up_cj, cand)
 
-            if replacement is None:
+                if resolved_replacement is not None:
+                    break
+
+            if resolved_replacement is None:
                 continue
 
             pattern = re.compile(r"\b" + re.escape(up_name) + r"\b")
-            new_result = pattern.sub(replacement, result)
+            new_result = pattern.sub(resolved_replacement, result)
             if new_result != result:
                 result = new_result
                 changed = True
@@ -378,6 +423,19 @@ Used by :func:`_resolve_filesystem_source` when the catalog declares an explicit
 format.  Falls back to :data:`_EXTENSION_TO_READER` when no format is set.
 """
 
+_FORMAT_TO_EXTENSION: dict[str, str] = {
+    "csv": ".csv",
+    "parquet": ".parquet",
+    "json": ".json",
+    "ndjson": ".ndjson",
+    "jsonl": ".jsonl",
+}
+"""Mapping from catalog ``format`` option value to file extension.
+
+Used by :func:`_resolve_filesystem_source` to construct the expected file path
+when the file does not exist yet (e.g. checkpoint tables written at runtime).
+"""
+
 
 def _resolve_filesystem_source(source_cj: Any, catalog: Any) -> str | None:
     """Resolve a filesystem source to a DuckDB reader function call.
@@ -388,7 +446,10 @@ def _resolve_filesystem_source(source_cj: Any, catalog: Any) -> str | None:
     2. Appending the source's ``table`` (or ``name``) to form the file path.
     3. If the exact path doesn't exist, falling back to stem matching — scanning
        the base directory for a file whose stem equals the table name.
-    4. Choosing the reader function from the catalog's explicit ``format`` option
+    4. If the file still doesn't exist but the catalog declares an explicit
+       ``format``, constructing the expected path with the format extension.
+       This handles checkpoint tables that will be written at runtime.
+    5. Choosing the reader function from the catalog's explicit ``format`` option
        (via :data:`_FORMAT_TO_READER`) or, when absent, from the resolved file's
        extension (via :data:`_EXTENSION_TO_READER`).
 
@@ -421,6 +482,16 @@ def _resolve_filesystem_source(source_cj: Any, catalog: Any) -> str | None:
                     file_path = entry
                     break
         if not file_path.exists():
+            # Last resort: if the catalog declares an explicit format, we can
+            # construct the expected path even when the file doesn't exist yet
+            # (e.g. checkpoint tables that will be written at runtime).
+            fmt = opts.get("format")
+            if fmt:
+                reader = _FORMAT_TO_READER.get(fmt)
+                ext = _FORMAT_TO_EXTENSION.get(fmt)
+                if reader and ext:
+                    expected = Path(base_path) / f"{table_name}{ext}"
+                    return f"{reader}('{expected}')"
             return None
 
     # Determine reader function: explicit catalog format takes priority.

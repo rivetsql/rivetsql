@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, TypeAlias
 
 import pyarrow
 
@@ -56,6 +56,8 @@ class Schema:
     columns: list[Column]
 
 
+JointType: TypeAlias = Literal["source", "sql", "sink", "python", "checkpoint"]
+
 JOINT_TYPES = frozenset({"source", "sql", "sink", "python", "checkpoint"})
 
 
@@ -75,7 +77,7 @@ class Joint:
     """
 
     name: str
-    joint_type: str
+    joint_type: JointType
     catalog: str | None = None
     upstream: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)

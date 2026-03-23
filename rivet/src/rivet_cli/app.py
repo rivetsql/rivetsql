@@ -92,6 +92,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--tag-all", action="store_true", help="Require all tags (AND semantics)"
     )
     compile_p.add_argument("--output", "-o", default=None, help="Write compiled JSON to file")
+    compile_p.add_argument(
+        "--engine", "-e", default=None, help="Override default engine for compilation"
+    )
 
     # --- run ---
     run_p = subs.add_parser("run", help="Compile and execute the pipeline")
@@ -108,6 +111,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_p.add_argument("--tag-all", action="store_true", help="Require all tags (AND semantics)")
     run_p.add_argument("--format", default="text", help="Output format (text/json/quiet)")
+    run_p.add_argument("--engine", "-e", default=None, help="Override default engine for execution")
 
     # --- test ---
     test_p = subs.add_parser("test", help="Run tests against fixtures")
@@ -391,6 +395,7 @@ def _dispatch(command: str, args: argparse.Namespace, globals_: GlobalOptions) -
             tag_all=args.tag_all,
             format=args.format,
             output=args.output,
+            engine=args.engine,
             globals=globals_,
         )
 
@@ -403,6 +408,7 @@ def _dispatch(command: str, args: argparse.Namespace, globals_: GlobalOptions) -
             tag_all=args.tag_all,
             fail_fast=args.fail_fast,
             format=args.format,
+            engine=args.engine,
             globals=globals_,
         )
 

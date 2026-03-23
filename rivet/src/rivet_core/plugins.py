@@ -430,6 +430,12 @@ class PluginRegistry:
     def get_compute_engine(self, instance_name: str) -> ComputeEngine | None:
         return self._compute_engines.get(instance_name)
 
+    def get_source_plugin(self, catalog_type: str) -> SourcePlugin | None:
+        return self._sources.get(catalog_type)
+
+    def get_sink_plugin(self, catalog_type: str) -> SinkPlugin | None:
+        return self._sinks.get(catalog_type)
+
     def get_adapter(self, engine_type: str, catalog_type: str) -> ComputeEngineAdapter | None:
         # Exact match takes precedence
         exact = self._adapters.get((engine_type, catalog_type))

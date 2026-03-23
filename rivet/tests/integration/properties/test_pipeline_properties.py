@@ -42,41 +42,51 @@ def linear_pipeline_configs(draw):
     is always valid SQL that DuckDB can execute.
     """
     n_transforms = draw(st.integers(min_value=1, max_value=5))
-    columns = draw(st.lists(
-        st.sampled_from(["id", "amount", "name", "value", "count"]),
-        min_size=1, max_size=3, unique=True,
-    ))
+    columns = draw(
+        st.lists(
+            st.sampled_from(["id", "amount", "name", "value", "count"]),
+            min_size=1,
+            max_size=3,
+            unique=True,
+        )
+    )
 
     joints: list[Joint] = []
 
     # Source
-    joints.append(Joint(
-        name="src",
-        joint_type="source",
-        catalog="local",
-        table="data",
-    ))
+    joints.append(
+        Joint(
+            name="src",
+            joint_type="source",
+            catalog="local",
+            table="data",
+        )
+    )
 
     prev = "src"
     for i in range(n_transforms):
         name = f"t{i}"
         col_list = ", ".join(columns)
-        joints.append(Joint(
-            name=name,
-            joint_type="sql",
-            upstream=[prev],
-            sql=f"SELECT {col_list} FROM {prev}",
-        ))
+        joints.append(
+            Joint(
+                name=name,
+                joint_type="sql",
+                upstream=[prev],
+                sql=f"SELECT {col_list} FROM {prev}",
+            )
+        )
         prev = name
 
     # Sink
-    joints.append(Joint(
-        name="sink",
-        joint_type="sink",
-        catalog="local",
-        table="output",
-        upstream=[prev],
-    ))
+    joints.append(
+        Joint(
+            name="sink",
+            joint_type="sink",
+            catalog="local",
+            table="output",
+            upstream=[prev],
+        )
+    )
 
     return joints, columns
 
@@ -102,7 +112,7 @@ def test_valid_pipeline_always_compiles(config):
         introspect=False,
     )
 
-    assert result.success, f"Compilation failed: {[e.message for e in result.errors]}"
+    assert result.success, f"Compilation failed: {[e.message for e in result.diagnostics.errors]}"
     assert len(result.joints) == len(joints)
     assert len(result.fused_groups) >= 1
     assert len(result.execution_order) >= 1

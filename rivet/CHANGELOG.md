@@ -2,6 +2,20 @@
 
 <!-- version list -->
 
+## [Unreleased]
+
+### Fixed
+
+- Fix property test string strategy allowing scientific-notation strings (e.g. `0e0`) that CSV readers parse as floats, breaking round-trip assertions
+- Fix checkpoint CTE injection property tests using substring matching for CTE name positions, causing false failures when one name is a prefix of another
+- Fix cross-engine integration test expecting `engine_instance_change` trigger for same-type different-instance engines (correct trigger is `capability_gap`)
+- Remove unused `AdapterDecision` import in compiler phase pipeline tests
+
+### Changed
+
+- Refactor monolithic `rivet_core/executor.py` (~4300 lines) into a `rivet_core/executor/` package with a 4-level dependency hierarchy (models → helpers → phases → pipeline). No business logic changes; all existing imports and tests remain unchanged.
+- Refactor monolithic `rivet_core/compiler.py` into a `rivet_core/compiler/` package with a 4-level dependency hierarchy (models/state → helpers → phases → pipeline). No business logic changes; all existing imports and tests remain unchanged.
+
 ## [0.1.15] - 2026-03-16
 
 ### Fixed

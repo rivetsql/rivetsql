@@ -25,3 +25,4 @@ docs/_build/
 *.zip
 .kiro/
 scripts/run-sample.sh
+scripts/run-demo.sh

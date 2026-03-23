@@ -142,8 +142,61 @@ def _do_replace(base: Path, table: Any, fmt: str, joint: Joint) -> None:
     _write_arrow_to_file(table, out_path, fmt)
 
 
+def _coerce_to_schema(table: Any, target_schema: Any) -> Any:
+    """Cast *table* so its schema matches *target_schema*.
+
+    Handles the common cross-engine mismatches that ``pa.concat_tables`` with
+    ``promote_options="permissive"`` still rejects:
+
+    * timezone-aware vs timezone-naive timestamps (nested or top-level)
+    * ``string`` ↔ ``large_string`` / ``large_binary``
+    * integer / decimal width differences
+    * column name casing differences (case-insensitive match)
+    * missing columns in either direction (filled with nulls / dropped)
+    """
+    import pyarrow as pa
+
+    new_columns: list[pa.Array] = []
+    new_fields: list[pa.Field] = []
+
+    for target_field in target_schema:
+        src_idx = table.schema.get_field_index(target_field.name)
+        if src_idx == -1:
+            # Try case-insensitive lookup
+            for i, src_field in enumerate(table.schema):
+                if src_field.name.lower() == target_field.name.lower():
+                    src_idx = i
+                    break
+
+        if src_idx == -1:
+            # Column missing in incoming table — fill with nulls
+            new_columns.append(pa.nulls(len(table), type=target_field.type))
+        else:
+            col = table.column(src_idx)
+            if col.type != target_field.type:
+                try:
+                    col = col.cast(target_field.type, safe=False)
+                except (pa.ArrowInvalid, pa.ArrowNotImplementedError, pa.ArrowTypeError):
+                    # If direct cast fails, keep the original column type —
+                    # concat with promote_options will handle the rest.
+                    pass
+            new_columns.append(col)
+
+        new_fields.append(target_field.with_nullable(True))
+
+    coerced_schema = pa.schema(new_fields)
+    return pa.table(
+        {f.name: c for f, c in zip(new_fields, new_columns)},
+    ).cast(coerced_schema)
+
+
 def _do_append(base: Path, table: Any, fmt: str, joint: Joint) -> None:
-    """Append: read existing file (if any), concatenate, write back."""
+    """Append: read existing file (if any), concatenate, write back.
+
+    Coerces the incoming table to match the on-disk schema so that
+    cross-engine type differences (timestamps, string widths, decimal
+    precision, column casing) don't cause ``ArrowInvalid`` on concat.
+    """
     import pyarrow as pa
 
     out_path = _resolve_file_path(base, joint, fmt)
@@ -151,7 +204,8 @@ def _do_append(base: Path, table: Any, fmt: str, joint: Joint) -> None:
 
     if out_path.exists():
         existing = _read_file(out_path, fmt)
-        combined = pa.concat_tables([existing, table])
+        table = _coerce_to_schema(table, existing.schema)
+        combined = pa.concat_tables([existing, table], promote_options="permissive")
     else:
         combined = table
 

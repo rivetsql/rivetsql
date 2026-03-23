@@ -41,7 +41,9 @@ def _compile_and_run(
     """Compile and execute a pipeline, returning (compiled, exec_result)."""
     if registry is None:
         registry = _setup_registry()
-    catalogs = [Catalog(name="local", type="filesystem", options={"path": str(data_dir), "format": "csv"})]
+    catalogs = [
+        Catalog(name="local", type="filesystem", options={"path": str(data_dir), "format": "csv"})
+    ]
     if engines is None:
         eng = registry.get_engine_plugin("duckdb").create_engine("duckdb_primary", {})
         engines = [eng]
@@ -58,7 +60,9 @@ def _compile_and_run(
         default_engine=default_engine,
         introspect=True,
     )
-    assert compiled.success, f"Compilation failed: {[e.message for e in compiled.errors]}"
+    assert compiled.success, (
+        f"Compilation failed: {[e.message for e in compiled.diagnostics.errors]}"
+    )
 
     executor = Executor(registry=registry)
     result = executor.run_sync(compiled)
@@ -80,10 +84,19 @@ class TestSimplePipeline:
 
         joints = [
             Joint(name="src", joint_type="source", catalog="local", table="orders"),
-            Joint(name="transform", joint_type="sql", upstream=["src"],
-                  sql="SELECT id, amount FROM src WHERE amount > 0"),
-            Joint(name="sink", joint_type="sink", catalog="local", table="result",
-                  upstream=["transform"]),
+            Joint(
+                name="transform",
+                joint_type="sql",
+                upstream=["src"],
+                sql="SELECT id, amount FROM src WHERE amount > 0",
+            ),
+            Joint(
+                name="sink",
+                joint_type="sink",
+                catalog="local",
+                table="result",
+                upstream=["transform"],
+            ),
         ]
 
         _compiled, result = _compile_and_run(joints, data_dir)
@@ -102,14 +115,21 @@ class TestSimplePipeline:
     def test_aggregation_produces_correct_result(self, tmp_path):
         data_dir = tmp_path / "data"
         data_dir.mkdir()
-        (data_dir / "sales.csv").write_text("region,amount\nnorth,100\nsouth,200\nnorth,150\nsouth,50\n")
+        (data_dir / "sales.csv").write_text(
+            "region,amount\nnorth,100\nsouth,200\nnorth,150\nsouth,50\n"
+        )
 
         joints = [
             Joint(name="src", joint_type="source", catalog="local", table="sales"),
-            Joint(name="agg", joint_type="sql", upstream=["src"],
-                  sql="SELECT region, SUM(amount) AS total FROM src GROUP BY region"),
-            Joint(name="sink", joint_type="sink", catalog="local", table="result",
-                  upstream=["agg"]),
+            Joint(
+                name="agg",
+                joint_type="sql",
+                upstream=["src"],
+                sql="SELECT region, SUM(amount) AS total FROM src GROUP BY region",
+            ),
+            Joint(
+                name="sink", joint_type="sink", catalog="local", table="result", upstream=["agg"]
+            ),
         ]
 
         _compiled, result = _compile_and_run(joints, data_dir)
@@ -133,12 +153,25 @@ class TestMultiStepPipeline:
 
         joints = [
             Joint(name="src", joint_type="source", catalog="local", table="items"),
-            Joint(name="with_total", joint_type="sql", upstream=["src"],
-                  sql="SELECT id, price * qty AS total FROM src"),
-            Joint(name="filtered", joint_type="sql", upstream=["with_total"],
-                  sql="SELECT id, total FROM with_total WHERE total > 50"),
-            Joint(name="sink", joint_type="sink", catalog="local", table="result",
-                  upstream=["filtered"]),
+            Joint(
+                name="with_total",
+                joint_type="sql",
+                upstream=["src"],
+                sql="SELECT id, price * qty AS total FROM src",
+            ),
+            Joint(
+                name="filtered",
+                joint_type="sql",
+                upstream=["with_total"],
+                sql="SELECT id, total FROM with_total WHERE total > 50",
+            ),
+            Joint(
+                name="sink",
+                joint_type="sink",
+                catalog="local",
+                table="result",
+                upstream=["filtered"],
+            ),
         ]
 
         _compiled, result = _compile_and_run(joints, data_dir)
@@ -162,10 +195,15 @@ class TestJoinPipeline:
         joints = [
             Joint(name="customers", joint_type="source", catalog="local", table="customers"),
             Joint(name="orders", joint_type="source", catalog="local", table="orders"),
-            Joint(name="joined", joint_type="sql", upstream=["customers", "orders"],
-                  sql="SELECT c.name, o.amount FROM customers c JOIN orders o ON c.id = o.customer_id"),
-            Joint(name="sink", joint_type="sink", catalog="local", table="result",
-                  upstream=["joined"]),
+            Joint(
+                name="joined",
+                joint_type="sql",
+                upstream=["customers", "orders"],
+                sql="SELECT c.name, o.amount FROM customers c JOIN orders o ON c.id = o.customer_id",
+            ),
+            Joint(
+                name="sink", joint_type="sink", catalog="local", table="result", upstream=["joined"]
+            ),
         ]
 
         _compiled, result = _compile_and_run(joints, data_dir)
@@ -187,8 +225,9 @@ class TestExecutionResult:
 
         joints = [
             Joint(name="src", joint_type="source", catalog="local", table="data"),
-            Joint(name="sink", joint_type="sink", catalog="local", table="result",
-                  upstream=["src"]),
+            Joint(
+                name="sink", joint_type="sink", catalog="local", table="result", upstream=["src"]
+            ),
         ]
 
         _compiled, result = _compile_and_run(joints, data_dir)
@@ -205,8 +244,9 @@ class TestExecutionResult:
 
         joints = [
             Joint(name="src", joint_type="source", catalog="local", table="data"),
-            Joint(name="sink", joint_type="sink", catalog="local", table="result",
-                  upstream=["src"]),
+            Joint(
+                name="sink", joint_type="sink", catalog="local", table="result", upstream=["src"]
+            ),
         ]
 
         _compiled, result = _compile_and_run(joints, data_dir)

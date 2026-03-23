@@ -189,7 +189,10 @@ class FilesystemCatalogPlugin(CatalogPlugin):
             )
 
         recognized = (
-            set(self.required_options) | set(self.optional_options) | set(self.credential_options)
+            set(self.required_options)
+            | set(self.optional_options)
+            | set(self.credential_options)
+            | {"table_map"}
         )
         for key in options:
             if key not in recognized:

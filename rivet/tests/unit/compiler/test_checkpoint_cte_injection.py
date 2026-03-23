@@ -199,7 +199,11 @@ class TestInjectCheckpointCtes:
     """Tests for _inject_checkpoint_ctes with various group configurations."""
 
     def test_group_with_one_checkpoint_dep_cte_prepended(self) -> None:
-        """Group with one checkpoint dep → CTE prepended to fused_sql."""
+        """Group with one checkpoint dep → CTE prepended to fused_sql.
+
+        Without a registry/resolver, the fallback uses the joint name
+        (the engine receives data via input_tables keyed by joint name).
+        """
         cj_map = {"bu_prep": _checkpoint_cj(name="bu_prep", table="rvt_bu_prep")}
         catalog_map = {
             "unity": _catalog(options={"catalog_name": "datalake_gold", "schema": "stock"})
@@ -221,10 +225,7 @@ class TestInjectCheckpointCtes:
         result = _inject_checkpoint_ctes([group], cj_map, catalog_map)
 
         assert len(result) == 1
-        assert (
-            "bu_prep AS (\n    SELECT * FROM datalake_gold.stock.rvt_bu_prep\n)"
-            in result[0].fused_sql
-        )
+        assert "bu_prep AS (\n    SELECT * FROM bu_prep\n)" in result[0].fused_sql
 
     def test_group_with_multiple_checkpoint_deps_all_prepended(self) -> None:
         """Group with multiple checkpoint deps → all CTEs prepended in order."""
@@ -260,8 +261,8 @@ class TestInjectCheckpointCtes:
 
         assert len(result) == 1
         fused = result[0].fused_sql
-        assert "bu_prep AS (\n    SELECT * FROM datalake_gold.stock.rvt_bu_prep\n)" in fused
-        assert "product AS (\n    SELECT * FROM datalake_gold.stock.rvt_product\n)" in fused
+        assert "bu_prep AS (\n    SELECT * FROM bu_prep\n)" in fused
+        assert "product AS (\n    SELECT * FROM product\n)" in fused
 
         # bu_prep should appear before product (dict insertion order)
         assert fused.index("bu_prep AS") < fused.index("product AS")
@@ -331,7 +332,7 @@ class TestInjectCheckpointCtes:
 
         fused = result[0].fused_sql
         assert fused.startswith("WITH ")
-        assert "bu_prep AS (\n    SELECT * FROM datalake_gold.stock.rvt_bu_prep\n)" in fused
+        assert "bu_prep AS (\n    SELECT * FROM bu_prep\n)" in fused
         assert "SELECT * FROM bu_prep" in fused
 
     def test_existing_ctes_and_final_select_preserved(self) -> None:
@@ -387,10 +388,7 @@ class TestInjectCheckpointCtes:
         result = _inject_checkpoint_ctes([group], cj_map, catalog_map)
 
         assert result[0].resolved_sql is not None
-        assert (
-            "bu_prep AS (\n    SELECT * FROM datalake_gold.stock.rvt_bu_prep\n)"
-            in result[0].resolved_sql
-        )
+        assert "bu_prep AS (\n    SELECT * FROM bu_prep\n)" in result[0].resolved_sql
 
     def test_fusion_result_fields_updated(self) -> None:
         """fusion_result fields (fused_sql, statements, resolved_statements) are updated."""
@@ -423,7 +421,7 @@ class TestInjectCheckpointCtes:
         fr = result[0].fusion_result
         assert fr is not None
         # fusion_result.fused_sql updated
-        assert "bu_prep AS (\n    SELECT * FROM datalake_gold.stock.rvt_bu_prep\n)" in fr.fused_sql
+        assert "bu_prep AS (\n    SELECT * FROM bu_prep\n)" in fr.fused_sql
         # statements prepended
         assert len(fr.statements) == 2
         assert "bu_prep AS" in fr.statements[0]

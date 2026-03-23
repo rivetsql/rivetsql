@@ -15,14 +15,17 @@ from rivet_cli.rendering.colors import (
     DIM,
     GREEN,
     MAGENTA,
+    RED,
     RESET,
     SYM_ASSERT,
     SYM_AUDIT,
     SYM_CHECK,
+    SYM_ERROR,
     SYM_MATERIALIZE,
     SYM_NOT_APPLICABLE,
     YELLOW,
     colorize,
+    joint_icon,
 )
 from rivet_core.compiler import CompiledAssembly, CompiledJoint, Materialization
 from rivet_core.optimizer import FusedGroup
@@ -43,9 +46,11 @@ class AssemblyFormatter:
     """Shared renderer for CompiledAssembly output.
 
     Verbosity levels:
-        0 (compact): joint names and types only
-        1 (normal):  engines, schemas, materializations
-        2 (verbose): all metadata including SourceStats, logical plans, full column lists
+        0 (compact): one line per joint + summary counts
+        1 (normal):  header with status/timing, DAG with executed SQL only,
+                     execution plan (waves), engine boundaries, summary
+        2 (verbose): everything from normal + all SQL variants, logical plans,
+                     source stats, cross-group optimizations, full column lists
     """
 
     def __init__(self, color: bool = True, verbosity: int = 1) -> None:
@@ -60,10 +65,15 @@ class AssemblyFormatter:
         """Full assembly render.
 
         Verbosity controls detail:
-            0 (compact): header, DAG with names/types only, summary line
-            1 (normal):  + execution plan, engine boundaries, full summary
-            2 (verbose): + source stats, logical plans, full column lists
+            0 (compact): one line per joint + summary counts
+            1 (normal):  header with status/timing, DAG with executed SQL only,
+                         execution plan (waves), engine boundaries, summary
+            2 (verbose): everything from normal + all SQL variants, logical plans,
+                         source stats, cross-group optimizations
         """
+        if self.verbosity == 0:
+            return self._render_compact(compiled)
+
         lines: list[str] = []
         self._render_header(lines, compiled)
         lines.append("")
@@ -84,6 +94,33 @@ class AssemblyFormatter:
             lines.append(summary)
         return "\n".join(lines)
 
+    def _render_compact(self, compiled: CompiledAssembly) -> str:
+        """Compact output (v=0): one line per joint + summary counts."""
+        lines: list[str] = []
+
+        for j in compiled.joints:
+            icon = joint_icon(j.type)
+            name = self._c(j.name, BOLD)
+            engine = self._c(j.engine, BLUE)
+            col_part = ""
+            if j.output_schema is not None:
+                col_part = f" {len(j.output_schema.columns)} cols"
+            lines.append(f"{icon} {name} ({j.type}) [{engine}]{col_part}")
+
+        # Summary counts
+        joint_count = len(compiled.joints)
+        group_count = len(compiled.fused_groups)
+        mat_count = len(compiled.materializations)
+        opt_count = sum(
+            1 for j in compiled.joints for o in j.optimizations if o.status == "applied"
+        )
+        lines.append(
+            f"{joint_count} joints | {group_count} groups"
+            f" | {mat_count} materializations | {opt_count} optimizations"
+        )
+
+        return "\n".join(lines)
+
     def render_summary_line(self, compiled: CompiledAssembly) -> str:
         """One-line compilation summary.
 
@@ -93,7 +130,7 @@ class AssemblyFormatter:
         schema_count = sum(1 for j in compiled.joints if j.output_schema is not None)
         schema_total = total
 
-        stats = getattr(compiled, "compilation_stats", None)
+        stats = compiled.diagnostics.stats
         if stats is not None:
             duration = f" in {stats.compile_duration_ms}ms"
             intro = (
@@ -209,19 +246,33 @@ class AssemblyFormatter:
     # ------------------------------------------------------------------
 
     def _render_header(self, lines: list[str], compiled: CompiledAssembly) -> None:
-        lines.append(self._c("═══ Compilation Result ═══", BOLD))
-        lines.append(f"Profile: {self._c(compiled.profile_name, BLUE)}")
-        cat_names = ", ".join(f"{c.name} ({c.type})" for c in compiled.catalogs) or "none"
-        lines.append(f"Catalogs ({len(compiled.catalogs)}): {cat_names}")
-        eng_names = ", ".join(f"{e.name} ({e.engine_type})" for e in compiled.engines) or "none"
-        lines.append(f"Engines ({len(compiled.engines)}): {eng_names}")
-        adp_names = (
-            ", ".join(
-                f"{a.engine_type} -> {a.catalog_type} ({a.source})" for a in compiled.adapters
-            )
-            or "none"
+        # Compilation status line with elapsed time and schema resolution
+        status_sym = self._c(SYM_CHECK, GREEN) if compiled.success else self._c(SYM_ERROR, RED)
+        status_word = "success" if compiled.success else "failed"
+        schema_count = sum(1 for j in compiled.joints if j.output_schema is not None)
+        schema_total = len(compiled.joints)
+
+        stats = compiled.diagnostics.stats
+        elapsed = f" in {stats.compile_duration_ms}ms" if stats else ""
+
+        lines.append(
+            f"{status_sym} Compilation {status_word}{elapsed}"
+            f" ({schema_count}/{schema_total} schemas resolved)"
         )
-        lines.append(f"Adapters ({len(compiled.adapters)}): {adp_names}")
+
+        if self.verbosity >= 2:
+            lines.append(f"Profile: {self._c(compiled.profile_name, BLUE)}")
+            cat_names = ", ".join(f"{c.name} ({c.type})" for c in compiled.catalogs) or "none"
+            lines.append(f"Catalogs ({len(compiled.catalogs)}): {cat_names}")
+            eng_names = ", ".join(f"{e.name} ({e.engine_type})" for e in compiled.engines) or "none"
+            lines.append(f"Engines ({len(compiled.engines)}): {eng_names}")
+            adp_names = (
+                ", ".join(
+                    f"{a.engine_type} -> {a.catalog_type} ({a.source})" for a in compiled.adapters
+                )
+                or "none"
+            )
+            lines.append(f"Adapters ({len(compiled.adapters)}): {adp_names}")
 
     # ------------------------------------------------------------------
     # Internal: DAG rendering
@@ -363,14 +414,16 @@ class AssemblyFormatter:
                     )
                     lines.append(f"║     schema{confidence}: [{cols}]")
 
-                # Show the joint's own SQL (not execution SQL, which is the fused SQL)
-                # For fused groups, show the individual joint SQL to understand composition
-                if j.sql:
-                    lines.append(f"║     sql (original): {self._highlight_sql(j.sql)}")
-                if j.sql_translated and j.sql_translated != j.sql:
-                    lines.append(f"║     sql (translated): {self._highlight_sql(j.sql_translated)}")
-                if j.sql_resolved and j.sql_resolved != j.sql_translated:
-                    lines.append(f"║     sql (resolved): {self._highlight_sql(j.sql_resolved)}")
+                # Show the joint's own SQL variants only at v=2 (verbose)
+                if self.verbosity >= 2:
+                    if j.sql:
+                        lines.append(f"║     sql (original): {self._highlight_sql(j.sql)}")
+                    if j.sql_translated and j.sql_translated != j.sql:
+                        lines.append(
+                            f"║     sql (translated): {self._highlight_sql(j.sql_translated)}"
+                        )
+                    if j.sql_resolved and j.sql_resolved != j.sql_translated:
+                        lines.append(f"║     sql (resolved): {self._highlight_sql(j.sql_resolved)}")
 
                 # Per-joint pushdown details
                 self._render_pushdown_details(lines, fg, jname, indent="║ ")
@@ -406,12 +459,13 @@ class AssemblyFormatter:
         if j.adapter:
             lines.append(f"{indent}    adapter: {self._c(j.adapter, BLUE)}")
 
-        # SQL variants inline
-        sql_block = self._sql_variants_indented(j, indent)
-        if sql_block:
-            lines.append(sql_block)
+        # SQL variants inline — only at v=2 (verbose)
+        if self.verbosity >= 2:
+            sql_block = self._sql_variants_indented(j, indent)
+            if sql_block:
+                lines.append(sql_block)
 
-        # Execution SQL (after variants, verbosity >= 1)
+        # Execution SQL — at v=1 show only this, at v=2 show alongside variants
         self._render_execution_sql(lines, j, indent)
 
         # Schema (gated by confidence)
@@ -459,20 +513,28 @@ class AssemblyFormatter:
         lines.append(self._c("─── Execution Plan ───", BOLD))
         group_map = {fg.id: fg for fg in compiled.fused_groups}
 
-        for i, step in enumerate(compiled.execution_order, 1):
-            fg = group_map.get(step)
-            if fg:
-                lines.append(
-                    f"  {i}. [fused ({len(fg.joints)} joints)] {step} (engine: {fg.engine})"
-                )
-            else:
-                lines.append(f"  {i}. {step}")
-
-        if compiled.materializations:
-            lines.append("  Materializations:")
-            for m in compiled.materializations:
-                sym = self._c(SYM_MATERIALIZE, YELLOW)
-                lines.append(f"    {sym} {m.from_joint} -> {m.to_joint} ({m.trigger})")
+        # Use parallel execution plan (waves) when available
+        if compiled.parallel_execution_plan:
+            for wave in compiled.parallel_execution_plan:
+                lines.append(f"  Wave {wave.wave_number}:")
+                for gid in wave.groups:
+                    fg = group_map.get(gid)
+                    if fg:
+                        joint_count = len(fg.joints)
+                        engine = self._c(fg.engine, BLUE)
+                        lines.append(f"    {gid} ({joint_count} joints) [engine: {engine}]")
+                    else:
+                        lines.append(f"    {gid}")
+        else:
+            # Fallback to flat execution order
+            for i, step in enumerate(compiled.execution_order, 1):
+                fg = group_map.get(step)
+                if fg:
+                    lines.append(
+                        f"  {i}. [fused ({len(fg.joints)} joints)] {step} (engine: {fg.engine})"
+                    )
+                else:
+                    lines.append(f"  {i}. {step}")
 
     # ------------------------------------------------------------------
     # Internal: engine boundaries
@@ -495,38 +557,45 @@ class AssemblyFormatter:
     def _render_summary(self, lines: list[str], compiled: CompiledAssembly) -> None:
         lines.append(self._c("─── Summary ───", BOLD))
 
+        # Joint counts by type
         type_counts: dict[str, int] = {}
         for j in compiled.joints:
             type_counts[j.type] = type_counts.get(j.type, 0) + 1
         type_str = ", ".join(f"{t}: {c}" for t, c in sorted(type_counts.items()))
         lines.append(f"  Joints: {len(compiled.joints)} ({type_str})")
 
+        # Fused groups
         lines.append(f"  Fused groups: {len(compiled.fused_groups)}")
-        lines.append(f"  Engine boundaries: {len(compiled.engine_boundaries)}")
+
+        # Materializations
         lines.append(f"  Materializations: {len(compiled.materializations)}")
 
+        # Optimizations (applied vs skipped)
+        applied = sum(1 for j in compiled.joints for o in j.optimizations if o.status == "applied")
+        skipped = sum(1 for j in compiled.joints for o in j.optimizations if o.status != "applied")
+        lines.append(f"  Optimizations: {applied} applied, {skipped} skipped")
+
+        # Quality checks
         assertion_count = sum(
             1 for j in compiled.joints for chk in j.checks if chk.phase == "assertion"
         )
         audit_count = sum(1 for j in compiled.joints for chk in j.checks if chk.phase == "audit")
         lines.append(
-            f"  Quality checks: {assertion_count + audit_count}"
+            f"  Checks: {assertion_count + audit_count}"
             f" (assertions: {assertion_count}, audits: {audit_count})"
         )
 
-        schema_count = sum(1 for j in compiled.joints if j.output_schema is not None)
-        lines.append(f"  Schemas resolved: {schema_count}/{len(compiled.joints)}")
-
-        applied = sum(1 for j in compiled.joints for o in j.optimizations if o.status == "applied")
-        not_applied = sum(
-            1 for j in compiled.joints for o in j.optimizations if o.status != "applied"
-        )
-        lines.append(f"  Optimizations: {applied} applied, {not_applied} not applicable")
-
-        status = (
-            self._c(SYM_CHECK + " valid", GREEN) if compiled.success else self._c("invalid", "red")
-        )
-        lines.append(f"  Validation: {status}")
+        # Verbose-only details
+        if self.verbosity >= 2:
+            lines.append(f"  Engine boundaries: {len(compiled.engine_boundaries)}")
+            schema_count = sum(1 for j in compiled.joints if j.output_schema is not None)
+            lines.append(f"  Schemas resolved: {schema_count}/{len(compiled.joints)}")
+            status = (
+                self._c(SYM_CHECK + " valid", GREEN)
+                if compiled.success
+                else self._c("invalid", "red")
+            )
+            lines.append(f"  Validation: {status}")
 
     # ------------------------------------------------------------------
     # Internal: schema display (gated by confidence)
@@ -696,13 +765,13 @@ class AssemblyFormatter:
         - Projection pushdown across groups
         - Limit pushdown across groups
 
-        Only shown at verbosity >= 1 when cross-group optimizations exist.
+        Only shown at verbosity >= 2 when cross-group optimizations exist.
 
         Args:
             lines: List to append output lines to
             compiled: The compiled assembly to analyze
         """
-        if self.verbosity < 1:
+        if self.verbosity < 2:
             return
 
         # Build joint → group mapping

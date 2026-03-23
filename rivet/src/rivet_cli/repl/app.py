@@ -211,7 +211,8 @@ class RivetRepl(App):  # type: ignore[type-arg]
 
         # Wire activity state callback: worker thread → Textual message
         session.on_activity_change = lambda state: self.call_from_thread(  # type: ignore[assignment]
-            self.post_message, ActivityChanged(state=state.value)  # type: ignore[arg-type]
+            self.post_message,
+            ActivityChanged(state=state.value),  # type: ignore[arg-type]
         )
 
     # ------------------------------------------------------------------
@@ -359,10 +360,12 @@ class RivetRepl(App):  # type: ignore[type-arg]
         )
 
         # Post ProjectCompiled message to update StatusBar and CatalogPanel
-        cs = getattr(assembly, "compilation_stats", None) if assembly is not None else None
+        cs = assembly.diagnostics.stats if assembly is not None else None
         self.call_from_thread(
             self.post_message,
-            ProjectCompiled(success=success, elapsed_ms=elapsed_ms, error=error_msg, compilation_stats=cs),
+            ProjectCompiled(
+                success=success, elapsed_ms=elapsed_ms, error=error_msg, compilation_stats=cs
+            ),
         )
 
         # Update connection status in status bar if catalogs failed
@@ -409,10 +412,12 @@ class RivetRepl(App):  # type: ignore[type-arg]
         cs = None
         assembly = getattr(self, "_session", None) and getattr(self._session, "assembly", None)
         if assembly is not None:
-            cs = getattr(assembly, "compilation_stats", None)
+            cs = assembly.diagnostics.stats
         self.call_from_thread(
             self.post_message,
-            ProjectCompiled(success=success, elapsed_ms=elapsed_ms, error=error, compilation_stats=cs),
+            ProjectCompiled(
+                success=success, elapsed_ms=elapsed_ms, error=error, compilation_stats=cs
+            ),
         )
         # Refresh catalog panel after recompilation
         if success:
@@ -473,9 +478,7 @@ class RivetRepl(App):  # type: ignore[type-arg]
 
         panel_ids = ("catalog-panel", "editor-panel", "results-panel")
         is_fullscreen = all(
-            self.query_one(f"#{pid}").has_class("hidden")
-            for pid in panel_ids
-            if pid != widget.id
+            self.query_one(f"#{pid}").has_class("hidden") for pid in panel_ids if pid != widget.id
         )
         for pid in panel_ids:
             target = self.query_one(f"#{pid}")
@@ -696,15 +699,11 @@ class RivetRepl(App):  # type: ignore[type-arg]
         """Ctrl+Enter on a joint in the catalog panel."""
         self._run_joint(message.joint_name)
 
-    def on_catalog_panel_quick_query(
-        self, message: CatalogPanel.QuickQuery
-    ) -> None:
+    def on_catalog_panel_quick_query(self, message: CatalogPanel.QuickQuery) -> None:
         """F4 on a catalog node — put SQL in editor and execute from there."""
         self.query_one("#editor-panel", EditorPanel).set_query_and_execute(message.sql)
 
-    def on_catalog_panel_joint_selected(
-        self, message: CatalogPanel.JointSelected
-    ) -> None:
+    def on_catalog_panel_joint_selected(self, message: CatalogPanel.JointSelected) -> None:
         """Enter on a joint — open joint SQL in a read-only preview tab (Requirement 6.1)."""
         try:
             sql = self._session.get_joint_sql(message.joint_name)
@@ -748,10 +747,7 @@ class RivetRepl(App):  # type: ignore[type-arg]
         # Build schema fields from compiled joint output_schema
         schema = None
         if joint.output_schema is not None:
-            schema = [
-                SchemaField(name=c.name, type=c.type)
-                for c in joint.output_schema.columns
-            ]
+            schema = [SchemaField(name=c.name, type=c.type) for c in joint.output_schema.columns]
 
         # Check MaterialCache for cached rows
         preview_rows = None
@@ -774,9 +770,7 @@ class RivetRepl(App):  # type: ignore[type-arg]
         )
         self.query_one("#results-panel", ResultsPanel).show_joint_preview(preview)
 
-    def on_editor_panel_query_submitted(
-        self, message: EditorPanel.QuerySubmitted
-    ) -> None:
+    def on_editor_panel_query_submitted(self, message: EditorPanel.QuerySubmitted) -> None:
         """F5 in the editor — run ad-hoc SQL."""
         self._run_ad_hoc_query(message.sql)
 
@@ -1011,7 +1005,9 @@ class RivetRepl(App):  # type: ignore[type-arg]
             if result == "copy":
                 self.copy_to_clipboard(error.format_text())
 
-        self.push_screen(ErrorModal(error=error, show_in_editor=show_in_editor), callback=_on_dismiss)
+        self.push_screen(
+            ErrorModal(error=error, show_in_editor=show_in_editor), callback=_on_dismiss
+        )
 
     def on_execution_complete(self, message: ExecutionComplete) -> None:
         """Show error modal on execution failure (Requirement 34.4)."""
@@ -1035,7 +1031,9 @@ class RivetRepl(App):  # type: ignore[type-arg]
             )
             self._show_error_modal(error, show_in_editor=True)
 
-    def show_repl_error(self, code: str, detail: str | None = None, show_in_editor: bool = False) -> None:
+    def show_repl_error(
+        self, code: str, detail: str | None = None, show_in_editor: bool = False
+    ) -> None:
         """Display a registered REPL error (RVT-860 through RVT-867) as a modal."""
         error = make_repl_error(code, detail)
         self._show_error_modal(error, show_in_editor=show_in_editor)
@@ -1156,7 +1154,11 @@ class RivetRepl(App):  # type: ignore[type-arg]
                 target = a
             i += 1
 
-        filt = InspectFilter(engine=engine, tag=tag, joint_type=joint_type) if (engine or tag or joint_type) else None
+        filt = (
+            InspectFilter(engine=engine, tag=tag, joint_type=joint_type)
+            if (engine or tag or joint_type)
+            else None
+        )
 
         try:
             result = self._session.inspect_assembly(target=target, verbosity=verbosity, filter=filt)

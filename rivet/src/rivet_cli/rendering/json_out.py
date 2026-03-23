@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import json
 from dataclasses import asdict
 from pathlib import Path
@@ -17,6 +18,10 @@ def _default(obj: Any) -> Any:
         return str(obj)
     if isinstance(obj, (set, frozenset)):
         return sorted(obj)
+    if isinstance(obj, (datetime.datetime, datetime.date, datetime.time)):
+        return obj.isoformat()
+    if isinstance(obj, datetime.timedelta):
+        return obj.total_seconds()
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 

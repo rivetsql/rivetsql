@@ -77,6 +77,38 @@ class DatabricksReferenceResolver(ReferenceResolver):
 
         import re
 
+        joint_type = getattr(joint, "type", None)
+
+        # Source joints: resolve their own table reference to avoid
+        # self-referencing CTEs (e.g. `x AS (SELECT * FROM x)`).
+        if joint_type == "source":
+            joint_name = getattr(joint, "name", None)
+            cat_name = getattr(joint, "catalog", None)
+            if cat_name and joint_name:
+                cat = catalog_map.get(cat_name)
+                if cat:
+                    opts = getattr(cat, "options", {})
+                    db_catalog = opts.get("catalog_name") or opts.get("catalog")
+                    if db_catalog:
+                        db_schema = opts.get("schema", "default")
+                        table = getattr(joint, "table", None)
+                        if table:
+                            parts = table.split(".")
+                            if len(parts) == 3:
+                                fq_name = table
+                            elif len(parts) == 2:
+                                fq_name = f"{db_catalog}.{table}"
+                            else:
+                                fq_name = f"{db_catalog}.{db_schema}.{table}"
+                        else:
+                            fq_name = f"{db_catalog}.{db_schema}.{joint_name}"
+                        table_ref: str = str(table or joint_name)
+                        pattern = re.compile(r"\b" + re.escape(table_ref) + r"\b")
+                        new_sql: str = pattern.sub(fq_name, sql)
+                        if new_sql != sql:
+                            return new_sql
+            return None
+
         upstream = getattr(joint, "upstream", [])
         if not upstream:
             return None

@@ -9,6 +9,8 @@ Properties:
 
 from __future__ import annotations
 
+import re
+
 from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
@@ -189,9 +191,13 @@ def test_property_checkpoint_ctes_prepended_before_existing(
 
     # Checkpoint CTEs must appear BEFORE any original CTEs
     for cp_name in checkpoint_names:
-        cp_pos = result.index(f"{cp_name} AS")
+        cp_match = re.search(rf"\b{re.escape(cp_name)} AS\b", result)
+        assert cp_match, f"Checkpoint {cp_name} not found in result"
+        cp_pos = cp_match.start()
         for existing_name in existing_cte_names:
-            existing_pos = result.index(f"{existing_name} AS")
+            ex_match = re.search(rf"\b{re.escape(existing_name)} AS\b", result)
+            assert ex_match, f"Existing CTE {existing_name} not found in result"
+            existing_pos = ex_match.start()
             assert cp_pos < existing_pos, (
                 f"Checkpoint {cp_name} (pos {cp_pos}) should appear before "
                 f"existing CTE {existing_name} (pos {existing_pos})"
@@ -257,9 +263,13 @@ def test_property_inject_checkpoint_ctes_prepends_all(
 
     # Checkpoint CTEs must appear BEFORE any original CTEs
     for cp_name in checkpoint_names:
-        cp_pos = result_sql.index(f"{cp_name} AS")
+        cp_match = re.search(rf"\b{re.escape(cp_name)} AS\b", result_sql)
+        assert cp_match, f"Checkpoint {cp_name} not found in result"
+        cp_pos = cp_match.start()
         for existing_name in existing_cte_names:
-            existing_pos = result_sql.index(f"{existing_name} AS")
+            ex_match = re.search(rf"\b{re.escape(existing_name)} AS\b", result_sql)
+            assert ex_match, f"Existing CTE {existing_name} not found in result"
+            existing_pos = ex_match.start()
             assert cp_pos < existing_pos, (
                 f"Checkpoint {cp_name} (pos {cp_pos}) should appear before "
                 f"existing CTE {existing_name} (pos {existing_pos})"

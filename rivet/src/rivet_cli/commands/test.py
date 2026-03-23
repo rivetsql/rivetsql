@@ -416,7 +416,7 @@ def run_single_test(
         compiled = rivet_compile(iso_asm, catalogs, engines, registry, project_root=project_root)
         if not compiled.success:
             elapsed = (time.monotonic() - start) * 1000
-            msgs = "; ".join(e.message for e in compiled.errors)
+            msgs = "; ".join(e.message for e in compiled.diagnostics.errors)
             return TestResult(
                 name=test_def.name,
                 passed=False,

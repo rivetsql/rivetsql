@@ -187,7 +187,7 @@ class TestReadyGroups:
             "j2": _make_joint("j2", upstream=[]),
         }
         graph = DependencyGraph.build(groups, joint_map)
-        graph._submitted.add("g1")
+        graph.mark_submitted("g1")
 
         ready = graph.ready_groups()
         assert ready == ["g2"]
@@ -269,7 +269,7 @@ class TestMarkComplete:
             "jB": _make_joint("jB", upstream=["jA"]),
         }
         graph = DependencyGraph.build(groups, joint_map)
-        graph._submitted.add("gB")
+        graph.mark_submitted("gB")
 
         newly_ready = graph.mark_complete("gA")
         assert "gB" not in newly_ready

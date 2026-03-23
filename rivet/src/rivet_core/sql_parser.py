@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import sqlglot
@@ -131,6 +133,102 @@ _ARROW_TO_SQLGLOT: dict[str, str] = {
     "timestamp[us]": "TIMESTAMP",
     "large_binary": "VARBINARY",
 }
+
+
+# ---------------------------------------------------------------------------
+# Dialect normalization passes
+# ---------------------------------------------------------------------------
+# Each pass is a small, focused function that fixes a specific sqlglot
+# transpilation gap.  They are organized into two phases:
+#
+#   PRE-TRANSPILE  — applied to the source-dialect AST *before* sqlglot.transpile().
+#                    Use these when sqlglot mis-parses a construct in the source dialect.
+#
+#   POST-TRANSPILE — applied to the transpiled SQL string *after* sqlglot.transpile().
+#                    Use these when sqlglot produces invalid SQL for the target dialect.
+#
+# To add a new pass:
+#   1. Write a function matching the appropriate signature (see below).
+#   2. Append it to _PRE_TRANSPILE_PASSES or _POST_TRANSPILE_PASSES.
+#   3. Add a unit test in tests/unit/sql_parser/.
+# ---------------------------------------------------------------------------
+
+
+def _normalize_iff(
+    ast: exp.Expression,
+    source_dialect: str,
+    target_dialect: str,
+) -> exp.Expression:
+    """Rewrite IFF() → IF() in the source AST.
+
+    IFF() is valid in Databricks/Snowflake but sqlglot's databricks dialect
+    parses it as ``exp.Anonymous``.  We replace it with ``exp.If`` so that
+    sqlglot can transpile it correctly to any target dialect.
+    """
+    iff_nodes = [n for n in ast.walk() if isinstance(n, exp.Anonymous) and n.name.upper() == "IFF"]
+    for node in iff_nodes:
+        args = node.expressions
+        if len(args) >= 2:
+            replacement = exp.If(
+                this=args[0],
+                true=args[1],
+                false=args[2] if len(args) > 2 else exp.Null(),
+            )
+            node.replace(replacement)
+    return ast
+
+
+# Regex for: CROSS JOIN UNNEST(<expr>) AS <alias>(<col1>, <col2>)
+# Two alias columns signals a MAP explode (arrays produce a single alias column).
+_MAP_UNNEST_RE = re.compile(
+    r"CROSS\s+JOIN\s+UNNEST\((.+?)\)\s+AS\s+(\w+)\((\w+),\s*(\w+)\)",
+    re.IGNORECASE,
+)
+
+
+def _rewrite_map_unnest_for_duckdb(
+    sql: str,
+    source_dialect: str,
+    target_dialect: str,
+) -> str:
+    """Rewrite MAP UNNEST for DuckDB after transpilation.
+
+    sqlglot transpiles Spark's ``LATERAL VIEW EXPLODE(map_col) AS k, v`` into
+    ``CROSS JOIN UNNEST(map_col) AS _t(k, v)``.  DuckDB's UNNEST only accepts
+    a single list argument, so this fails for MAP columns.
+
+    This pass rewrites the pattern to a LATERAL subquery that splits the map
+    into keys and values via ``map_keys()`` / ``map_values()``:
+
+        CROSS JOIN UNNEST(col) AS _t(k, v)
+        →  , LATERAL (SELECT UNNEST(map_keys(col)) AS k,
+                              UNNEST(map_values(col)) AS v) AS _t
+    """
+    if target_dialect not in ("duckdb",):
+        return sql
+
+    def _rewrite(m: re.Match[str]) -> str:
+        expr, alias, col1, col2 = m.group(1), m.group(2), m.group(3), m.group(4)
+        return (
+            f", LATERAL (SELECT UNNEST(map_keys({expr})) AS {col1}, "
+            f"UNNEST(map_values({expr})) AS {col2}) AS {alias}"
+        )
+
+    return _MAP_UNNEST_RE.sub(_rewrite, sql)
+
+
+# Pre-transpile passes: (ast, source_dialect, target_dialect) → ast
+PreTranspilePass = Callable[[exp.Expression, str, str], exp.Expression]
+
+# Post-transpile passes: (sql, source_dialect, target_dialect) → sql
+PostTranspilePass = Callable[[str, str, str], str]
+
+_PRE_TRANSPILE_PASSES: list[PreTranspilePass] = []
+_POST_TRANSPILE_PASSES: list[PostTranspilePass] = []
+
+# Concrete registrations — append new passes here.
+_PRE_TRANSPILE_PASSES.append(_normalize_iff)
+_POST_TRANSPILE_PASSES.append(_rewrite_map_unnest_for_duckdb)
 
 
 class SQLParser:
@@ -521,11 +619,29 @@ class SQLParser:
     def translate(self, ast: exp.Expression, source_dialect: str, target_dialect: str) -> str:
         """Translate SQL from source_dialect to target_dialect using sqlglot transpile.
 
+        The translation pipeline has three stages:
+
+        1. **Pre-transpile passes** — fix constructs that sqlglot mis-parses in
+           the source dialect (e.g. IFF → IF).  See ``_PRE_TRANSPILE_PASSES``.
+        2. **sqlglot.transpile()** — the core dialect conversion.
+        3. **Post-transpile passes** — fix constructs that sqlglot produces
+           incorrectly for the target dialect (e.g. MAP UNNEST for DuckDB).
+           See ``_POST_TRANSPILE_PASSES``.
+
         Raises SQLParseError with RVT-703 on translation failure.
         Supports any dialect sqlglot supports: duckdb, postgres, mysql, bigquery,
         snowflake, sqlite, trino, spark, hive, tsql, etc.
         """
-        sql = ast.sql(dialect=source_dialect)
+        # --- Stage 1: pre-transpile passes on the source AST ---------------
+        normalized: exp.Expression = sqlglot.parse_one(  # type: ignore[assignment]
+            ast.sql(dialect=source_dialect),
+            dialect=source_dialect,
+        )
+        for pre_pass in _PRE_TRANSPILE_PASSES:
+            normalized = pre_pass(normalized, source_dialect, target_dialect)
+        sql = normalized.sql(dialect=source_dialect)
+
+        # --- Stage 2: sqlglot transpile ------------------------------------
         try:
             results = sqlglot.transpile(sql, read=source_dialect, write=target_dialect)
         except Exception as e:
@@ -566,7 +682,12 @@ class SQLParser:
                 )
             )
 
-        return results[0]
+        # --- Stage 3: post-transpile passes on the target SQL string -------
+        result = results[0]
+        for post_pass in _POST_TRANSPILE_PASSES:
+            result = post_pass(result, source_dialect, target_dialect)
+
+        return result
 
     # ------------------------------------------------------------------
     # Schema inference (task 9.4)

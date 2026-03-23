@@ -240,8 +240,8 @@ def _print_compilation(compiled: CompiledAssembly) -> None:
 
     output = {
         "success": compiled.success,
-        "errors": [{"code": e.code, "message": e.message} for e in compiled.errors],
-        "warnings": compiled.warnings,
+        "errors": [{"code": e.code, "message": e.message} for e in compiled.diagnostics.errors],
+        "warnings": [warning.message for warning in compiled.diagnostics.warnings],
         "joints": joints_out,
         "fused_groups": groups_out,
         "execution_order": compiled.execution_order,

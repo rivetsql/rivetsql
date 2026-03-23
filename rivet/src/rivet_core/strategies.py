@@ -51,6 +51,14 @@ class MaterializedRef:
         """Storage backend identifier, e.g. 'arrow', 'parquet', 'engine_temp'."""
         ...
 
+    def to_arrow_if_cached(self) -> pyarrow.Table | None:
+        """Return cached Arrow data when available without triggering I/O."""
+        return self.to_arrow()
+
+    def has_cached_arrow(self) -> bool:
+        """Whether Arrow data is already available without additional reads."""
+        return self.to_arrow_if_cached() is not None
+
 
 @dataclass
 class MaterializationContext:
@@ -168,7 +176,7 @@ class DeferredRef(MaterializedRef):
                 )
             )
 
-        source = self._registry._sources.get(self.catalog_type)
+        source = self._registry.get_source_plugin(self.catalog_type)
         if not source:
             raise ExecutionError(
                 RivetError(
@@ -235,6 +243,12 @@ class DeferredRef(MaterializedRef):
 
         self._cached_table = mat.to_arrow()
         return self._cached_table
+
+    def to_arrow_if_cached(self) -> pyarrow.Table | None:
+        return self._cached_table
+
+    def has_cached_arrow(self) -> bool:
+        return self._cached_table is not None
 
     @property
     def schema(self) -> Schema:

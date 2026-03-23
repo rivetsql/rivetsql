@@ -113,7 +113,7 @@ class AssemblyFormatter:
         ansi: bool = True,
     ) -> str:
         inspection = self.format_assembly(assembly, verbosity, filter)
-        cs = getattr(assembly, "compilation_stats", None)
+        cs = assembly.diagnostics.stats
         return self._render_text(inspection, ansi=ansi, compilation_stats=cs)
 
     def format_joint(
@@ -170,11 +170,6 @@ class AssemblyFormatter:
             if m.from_joint in filtered_names or m.to_joint in filtered_names
         )
 
-        # Schema coverage from compilation_stats or computed from joints
-        cs = getattr(assembly, "compilation_stats", None)
-        if cs is not None:
-            pass
-
         return OverviewSection(
             profile_name=assembly.profile_name,
             joint_counts=dict(joint_counts),
@@ -188,8 +183,8 @@ class AssemblyFormatter:
                 for a in assembly.adapters
             ],
             success=assembly.success,
-            warnings=list(assembly.warnings),
-            errors=[str(e) for e in assembly.errors],
+            warnings=[warning.message for warning in assembly.diagnostics.warnings],
+            errors=[str(e) for e in assembly.diagnostics.errors],
         )
 
     def _build_execution_order(
@@ -310,13 +305,9 @@ class AssemblyFormatter:
                 )
         return MaterializationsSection(by_trigger=dict(by_trigger))
 
-    def _build_dag(
-        self, assembly: CompiledAssembly, filtered_names: set[str]
-    ) -> DagSection:
+    def _build_dag(self, assembly: CompiledAssembly, filtered_names: set[str]) -> DagSection:
         joint_map = {j.name: j for j in assembly.joints if j.name in filtered_names}
-        mat_set = {
-            (m.from_joint, m.to_joint) for m in assembly.materializations
-        }
+        mat_set = {(m.from_joint, m.to_joint) for m in assembly.materializations}
 
         # Topological sort via Kahn's algorithm
         in_degree: dict[str, int] = {n: 0 for n in joint_map}
@@ -378,13 +369,19 @@ class AssemblyFormatter:
                 lines.append(f"{icon} {name} ({j.engine}){group_str}{schema_str}")
             else:
                 connector = "└──▶ " if is_last else "├──▶ "
-                lines.append(f"{prefix}{connector}{icon} {name} ({j.engine}){group_str}{schema_str}")
+                lines.append(
+                    f"{prefix}{connector}{icon} {name} ({j.engine}){group_str}{schema_str}"
+                )
 
             # Check materialization annotation
             for up in j.upstream:
                 if (up, name) in mat_set:
                     mat = next(
-                        (m for m in assembly.materializations if m.from_joint == up and m.to_joint == name),
+                        (
+                            m
+                            for m in assembly.materializations
+                            if m.from_joint == up and m.to_joint == name
+                        ),
                         None,
                     )
                     if mat:
@@ -449,9 +446,15 @@ class AssemblyFormatter:
     # Text rendering
     # ------------------------------------------------------------------
 
-    def _render_text(self, inspection: AssemblyInspection, *, ansi: bool, compilation_stats=None) -> str:  # type: ignore[no-untyped-def]
+    def _render_text(
+        self, inspection: AssemblyInspection, *, ansi: bool, compilation_stats=None
+    ) -> str:  # type: ignore[no-untyped-def]
         sections: list[str] = []
-        sections.append(self._render_overview_text(inspection.overview, ansi=ansi, compilation_stats=compilation_stats))
+        sections.append(
+            self._render_overview_text(
+                inspection.overview, ansi=ansi, compilation_stats=compilation_stats
+            )
+        )
 
         if inspection.filter_applied is not None:
             parts = []
@@ -465,13 +468,17 @@ class AssemblyFormatter:
             sections.append(self._section_header("Filter", ansi=ansi) + "  " + ", ".join(parts))
 
         if inspection.execution_order is not None:
-            sections.append(self._render_execution_order_text(inspection.execution_order, ansi=ansi))
+            sections.append(
+                self._render_execution_order_text(inspection.execution_order, ansi=ansi)
+            )
 
         if inspection.fused_groups is not None:
             sections.append(self._render_fused_groups_text(inspection.fused_groups, ansi=ansi))
 
         if inspection.materializations is not None:
-            sections.append(self._render_materializations_text(inspection.materializations, ansi=ansi))
+            sections.append(
+                self._render_materializations_text(inspection.materializations, ansi=ansi)
+            )
 
         if inspection.dag is not None:
             sections.append(self._render_dag_text(inspection.dag, ansi=ansi))
@@ -488,7 +495,9 @@ class AssemblyFormatter:
             return f"{_BOLD}{_CYAN}═══ {title} ═══{_RESET}\n"
         return f"═══ {title} ═══\n"
 
-    def _render_overview_text(self, ov: OverviewSection, *, ansi: bool, compilation_stats=None) -> str:  # type: ignore[no-untyped-def]
+    def _render_overview_text(
+        self, ov: OverviewSection, *, ansi: bool, compilation_stats=None
+    ) -> str:  # type: ignore[no-untyped-def]
         lines: list[str] = [self._section_header("Assembly Overview", ansi=ansi)]
         lines.append(f"  Profile: {ov.profile_name}")
         status = "✓ Success" if ov.success else "✗ Failed"
@@ -504,8 +513,12 @@ class AssemblyFormatter:
 
         if compilation_stats is not None:
             cs = compilation_stats
-            lines.append(f"  Compilation:       {cs.compile_duration_ms}ms, {cs.joints_with_schema}/{cs.joints_total} schemas")
-            lines.append(f"  Introspection:     {cs.introspection_succeeded} ok, {cs.introspection_failed} failed, {cs.introspection_skipped} skipped")
+            lines.append(
+                f"  Compilation:       {cs.compile_duration_ms}ms, {cs.joints_with_schema}/{cs.joints_total} schemas"
+            )
+            lines.append(
+                f"  Introspection:     {cs.introspection_succeeded} ok, {cs.introspection_failed} failed, {cs.introspection_skipped} skipped"
+            )
 
         if ov.engines:
             lines.append("  Engines:")
@@ -531,9 +544,7 @@ class AssemblyFormatter:
                 lines.append(f"    ✗ {e}")
         return "\n".join(lines)
 
-    def _render_execution_order_text(
-        self, eo: ExecutionOrderSection, *, ansi: bool
-    ) -> str:
+    def _render_execution_order_text(self, eo: ExecutionOrderSection, *, ansi: bool) -> str:
         lines: list[str] = [self._section_header("Execution Order", ansi=ansi)]
 
         # Group steps by wave_number for parallel wave display
@@ -561,6 +572,7 @@ class AssemblyFormatter:
                 lines.append(self._format_step_line(step, ansi=ansi))
 
         return "\n".join(lines)
+
     def _format_step_line(self, step: ExecutionStep, *, ansi: bool, indent: int = 2) -> str:
         """Format a single execution step as a text line."""
         prefix = " " * indent
@@ -574,14 +586,14 @@ class AssemblyFormatter:
             line += f"\n{prefix}   joints: {', '.join(step.joints)}"
         return line
 
-    def _render_fused_groups_text(
-        self, fg: FusedGroupsSection, *, ansi: bool
-    ) -> str:
+    def _render_fused_groups_text(self, fg: FusedGroupsSection, *, ansi: bool) -> str:
         lines: list[str] = [self._section_header("Fused Groups", ansi=ansi)]
         for g in fg.groups:
             header = f"  {g.id} ({g.engine}, {g.engine_type}, {g.fusion_strategy})"
             if ansi:
-                header = f"  {_BOLD}{g.id}{_RESET} ({g.engine}, {g.engine_type}, {g.fusion_strategy})"
+                header = (
+                    f"  {_BOLD}{g.id}{_RESET} ({g.engine}, {g.engine_type}, {g.fusion_strategy})"
+                )
             lines.append(header)
             lines.append(f"    joints: {', '.join(g.joints)}")
             lines.append(f"    entry:  {', '.join(g.entry_joints)}")
@@ -602,9 +614,7 @@ class AssemblyFormatter:
                     lines.append(f"      {r}")
         return "\n".join(lines)
 
-    def _render_materializations_text(
-        self, ms: MaterializationsSection, *, ansi: bool
-    ) -> str:
+    def _render_materializations_text(self, ms: MaterializationsSection, *, ansi: bool) -> str:
         lines: list[str] = [self._section_header("Materializations", ansi=ansi)]
         for trigger, details in ms.by_trigger.items():
             trigger_label = trigger

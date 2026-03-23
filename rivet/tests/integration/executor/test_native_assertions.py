@@ -59,7 +59,9 @@ def _compile_and_run(
         default_engine="duckdb_primary",
         introspect=True,
     )
-    assert compiled.success, f"Compilation failed: {[e.message for e in compiled.errors]}"
+    assert compiled.success, (
+        f"Compilation failed: {[e.message for e in compiled.diagnostics.errors]}"
+    )
 
     executor = Executor(registry=registry)
     result = executor.run_sync(compiled)
