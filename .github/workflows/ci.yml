@@ -62,7 +62,7 @@ jobs:
       - run: pip install -e "./rivet[dev,test]"
       - run: pytest tests --cov=src --cov-report=xml --cov-report=term-missing -n auto
         working-directory: rivet
-      - uses: codecov/codecov-action@v5
+      - uses: codecov/codecov-action@v6
         with:
           files: rivet/coverage.xml
           fail_ci_if_error: false
