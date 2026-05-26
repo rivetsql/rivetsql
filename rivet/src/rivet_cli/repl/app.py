@@ -68,8 +68,9 @@ from .widgets.status_bar import (
 )
 
 if TYPE_CHECKING:
+    from rivet_core.catalog_explorer import CatalogInfo
     from rivet_core.interactive.session import InteractiveSession
-    from rivet_core.interactive.types import CatalogInfo, Execution_Log, QueryProgress
+    from rivet_core.interactive.types import Execution_Log, QueryProgress
 
     from .config import ReplConfig
 
@@ -327,7 +328,7 @@ class RivetRepl(App):  # type: ignore[type-arg]
             # Update completion engine with catalog and assembly data
             try:
                 if catalog_infos:
-                    self._session.completion_engine.update_catalogs(catalog_infos)
+                    self._session.completion_engine.update_catalogs(catalog_infos)  # type: ignore[arg-type]
             except Exception:  # noqa: BLE001
                 logger.debug("Completion engine catalog update failed", exc_info=True)
 
