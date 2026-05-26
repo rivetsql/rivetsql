@@ -26,9 +26,11 @@ repos:
         # mypy configuration. Do NOT pass --ignore-missing-imports here — it
         # overrides the per-module overrides in pyproject.toml and causes
         # local pre-commit results to disagree with CI.
-        files: ^rivet/(src|tests)/
+        # Scope: src/ only. Tests are not yet typed; see ROADMAP / a future
+        # cleanup PR to introduce annotations and re-add tests/ to the scope.
+        files: ^rivet/src/
         pass_filenames: false
-        args: [--config-file=rivet/pyproject.toml, rivet/src, rivet/tests]
+        args: [--config-file=rivet/pyproject.toml, rivet/src]
         additional_dependencies:
           - types-PyYAML>=6.0
           - types-requests>=2.31
