@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Tightened dependency lower bounds: `pyarrow>=16.0`, `sqlglot>=25.0`, `duckdb>=1.1`, `polars>=1.0`, `pyspark>=3.5`, `textual>=1.0`, `ruff>=0.9`, `mypy>=1.15`, `pytest>=8.0`
 - Updated `codecov/codecov-action` from `v5` to `v6` in CI workflow
-- Replaced monolithic `ignore_missing_imports` mypy override with per-package overrides; pyarrow now uses `ignore_errors = true` to avoid chasing stub churn across versions; packages that now ship their own stubs (`duckdb`, `polars`, `psycopg`, `databricks`, `deltalake`, `pandas`, `boto3`) removed from the override block
+- Fix mypy config: split pyarrow into its own override with `ignore_errors = true`; add per-module `disable_error_code = ["attr-defined", "no-untyped-call"]` for all files that use pyarrow APIs with incomplete stubs; restore `ignore_missing_imports` for all packages absent from the lint job (`[dev]` only installs); fix `pad.FileFormat` annotation in `s3_source.py` and `s3_sink.py` (local import used as type annotation — changed to `Any`)
 
 ### Removed
 - Deleted `rivet_core/_compiler_monolith.py` — dead code left over from the compiler-package-split refactor

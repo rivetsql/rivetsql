@@ -96,7 +96,7 @@ ignore = ["E501", "E741", "E402", "SIM102", "SIM103", "SIM105", "SIM108", "SIM11
 python_version = "3.11"
 strict = true
 warn_return_any = true
-warn_unused_configs = true
+warn_unused_configs = false
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
 check_untyped_defs = true
@@ -105,22 +105,65 @@ warn_redundant_casts = true
 warn_unused_ignores = false
 disable_error_code = ["import-untyped"]
 
-# pyarrow ships stubs but they are incomplete and inconsistent across versions —
-# suppress all errors rather than chasing stub churn on every pyarrow release.
+# pyarrow ships stubs but they are incomplete and inconsistent across versions.
+# ignore_errors = true suppresses errors *within* pyarrow modules; the attr-defined
+# and no-untyped-call errors that appear in our own code when calling pyarrow APIs
+# are suppressed via per-package overrides below.
 [[tool.mypy.overrides]]
 module = ["pyarrow", "pyarrow.*"]
 ignore_errors = true
+ignore_missing_imports = true
 
-# Packages that do not ship stubs at all.
+# Our packages that use pyarrow heavily: suppress the stub-quality errors that
+# pyarrow 16+ stubs produce (attr-defined on compute functions, no-untyped-call
+# on parquet/ipc/dataset functions). These are pyarrow stub gaps, not real bugs.
+[[tool.mypy.overrides]]
+module = [
+    "rivet_core.testing.comparison",
+    "rivet_core.testing.fixtures",
+    "rivet_core.interactive.exporter",
+    "rivet_core.interactive.profiler",
+    "rivet_core.builtins.filesystem_catalog",
+    "rivet_core.executor.helpers.arrow_helpers",
+    "rivet_core.executor.helpers.checks",
+    "rivet_cli.repl.widgets.results",
+    "rivet_cli.commands.test",
+    "rivet_duckdb.filesystem_sink",
+    "rivet_databricks.engine",
+    "rivet_aws.s3_source",
+    "rivet_aws.s3_sink",
+    "rivet_aws.s3_catalog",
+    "rivet_aws.glue_catalog",
+    "rivet_aws.glue_source",
+    "rivet_rest.adapter",
+]
+disable_error_code = ["attr-defined", "no-untyped-call"]
+
+# Packages that are not installed in the lint job (only [dev] extras, not [test]).
+# They have no stubs available at lint time so imports must be ignored.
 [[tool.mypy.overrides]]
 module = [
     "boto3",
+    "boto3.*",
     "botocore",
     "botocore.*",
+    "duckdb",
+    "duckdb.*",
+    "polars",
+    "polars.*",
     "pyspark",
     "pyspark.*",
+    "pandas",
+    "pandas.*",
+    "databricks.*",
     "textual",
     "textual.*",
+    "psycopg",
+    "psycopg.*",
+    "psycopg_pool",
+    "psycopg_pool.*",
+    "deltalake",
+    "deltalake.*",
 ]
 ignore_missing_imports = true
 

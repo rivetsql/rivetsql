@@ -215,7 +215,7 @@ def _write_to_s3(
         write_path = write_path[len("s3://") :]
 
     if fmt == "parquet":
-        file_format: pad.FileFormat = pad.ParquetFileFormat()
+        file_format: Any = pad.ParquetFileFormat()
         write_options = file_format.make_write_options(compression=compression)
     elif fmt == "csv":
         file_format = pad.CsvFileFormat()

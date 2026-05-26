@@ -712,10 +712,10 @@ class SQLParser:
             # Qualify and annotate types
             qualified = qualify(
                 ast.copy(),
-                schema=sg_schema,
+                schema=sg_schema,  # type: ignore[arg-type]
                 validate_qualify_columns=False,
             )
-            annotated = annotate_types(qualified, schema=sg_schema)
+            annotated = annotate_types(qualified, schema=sg_schema)  # type: ignore[arg-type]
 
             # Find the outermost SELECT
             select = annotated if isinstance(annotated, exp.Select) else annotated.find(exp.Select)

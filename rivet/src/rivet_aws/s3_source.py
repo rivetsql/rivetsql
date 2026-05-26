@@ -106,7 +106,7 @@ class S3DeferredMaterializedRef(MaterializedRef):
 
         fmt = self._fmt
         if fmt == "parquet":
-            file_format: pad.FileFormat = pad.ParquetFileFormat()
+            file_format: Any = pad.ParquetFileFormat()
         elif fmt == "csv":
             file_format = pad.CsvFileFormat()
         elif fmt == "json":
