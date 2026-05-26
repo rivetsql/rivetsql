@@ -105,31 +105,22 @@ warn_redundant_casts = true
 warn_unused_ignores = false
 disable_error_code = ["import-untyped"]
 
+# pyarrow ships stubs but they are incomplete and inconsistent across versions —
+# suppress all errors rather than chasing stub churn on every pyarrow release.
+[[tool.mypy.overrides]]
+module = ["pyarrow", "pyarrow.*"]
+ignore_errors = true
+
+# Packages that do not ship stubs at all.
 [[tool.mypy.overrides]]
 module = [
-    "pyarrow",
-    "pyarrow.*",
     "boto3",
-    "boto3.*",
     "botocore",
     "botocore.*",
-    "duckdb",
-    "duckdb.*",
-    "polars",
-    "polars.*",
     "pyspark",
     "pyspark.*",
-    "pandas",
-    "pandas.*",
-    "databricks.*",
     "textual",
     "textual.*",
-    "psycopg",
-    "psycopg.*",
-    "psycopg_pool",
-    "psycopg_pool.*",
-    "deltalake",
-    "deltalake.*",
 ]
 ignore_missing_imports = true
 
