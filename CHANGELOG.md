@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.17] - 2026-05-26
+
+### Changed
+- Tightened dependency lower bounds: `pyarrow>=16.0`, `sqlglot>=25.0`, `duckdb>=1.1`, `polars>=1.0`, `pyspark>=3.5`, `textual>=1.0`, `ruff>=0.9`, `mypy>=1.15`, `pytest>=8.0`
+- Updated `codecov/codecov-action` from `v5` to `v6` in CI workflow
+
+### Removed
+- Deleted `rivet_core/_compiler_monolith.py` — dead code left over from the compiler-package-split refactor
+
 ## [0.1.16] - 2026-03-22
 
 ### Added

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rivetsql"
-version = "0.1.16"
+version = "0.1.17"
 description = "Core SQL pipeline framework — joints, engines, catalogs"
 requires-python = ">=3.11"
 license = "MIT"
@@ -20,8 +20,8 @@ classifiers = [
     "Topic :: Database",
 ]
 dependencies = [
-    "pyarrow>=14.0",
-    "sqlglot>=20.0",
+    "pyarrow>=16.0",
+    "sqlglot>=25.0",
     "pyyaml>=6.0",
 ]
 
@@ -50,23 +50,23 @@ all = [
     "rivetsql-databricks>=0.1.0,<0.2.0",
 ]
 dev = [
-    "pytest>=7.0",
+    "pytest>=8.0",
     "pytest-xdist>=3.5",
     "pytest-cov>=5.0",
-    "ruff>=0.4",
-    "mypy>=1.10",
+    "ruff>=0.9",
+    "mypy>=1.15",
     "hypothesis>=6.0",
     "types-PyYAML>=6.0",
     "types-requests>=2.31",
 ]
 test = [
-    "duckdb>=0.9",
+    "duckdb>=1.1",
     "boto3>=1.28",
-    "polars>=0.20",
+    "polars>=1.0",
     "psycopg[binary,pool]>=3.1",
-    "pyspark>=3.3",
+    "pyspark>=3.5",
     "requests>=2.28",
-    "textual>=0.40",
+    "textual>=1.0",
 ]
 
 [tool.hatch.build.targets.wheel]
