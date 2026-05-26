@@ -1,10 +1,9 @@
-"""Preservation property tests for source self-reference normalization bugfix.
+"""Preservation property tests for source self-reference normalization.
 
-Property 2 (Preservation): Non-source joints, pure source joints, existing
-validations, and SQLDecomposer round-trips remain unchanged after the fix.
-
-These tests capture baseline behavior on UNFIXED code and MUST PASS both
-before and after the fix is applied.
+These tests assert that the ``FROM __self`` substitution path leaves
+unaffected paths unchanged: non-source joints, pure source joints (no
+inline SQL transforms), single-table validation errors (RVT-760, RVT-761,
+RVT-762), and the SQLDecomposer round-trip behaviour.
 """
 
 from __future__ import annotations

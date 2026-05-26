@@ -1,21 +1,10 @@
-"""Preservation property tests for PostgreSQL asyncio event loop fix.
+"""Preservation property tests: PostgreSQL plugin behaviour outside the
+running-loop fix path.
 
-**Validates: Requirements 3.1, 3.2, 3.3, 3.4, 3.5**
-
-Property 2: Preservation - Non-PostgreSQL Plugin Behavior Unchanged
-
-These tests verify that non-buggy code paths remain unchanged:
-- Non-PostgreSQL data sources (DuckDB, CSV, REST API) continue working
-- PostgreSQL operations in sync context (no event loop) work correctly
-- PostgreSQL catalog operations (list_tables, get_schema) work correctly
-- PostgreSQL connection configuration is respected
-
-CRITICAL: These tests are EXPECTED TO PASS on unfixed code.
-- Passing confirms baseline behavior to preserve
-- After the fix, these tests must still pass (no regressions)
-
-The tests use property-based testing to generate many test cases for stronger
-guarantees that behavior is unchanged across the input domain.
+These tests encode invariants that the asyncio-loop fix must not regress:
+non-PostgreSQL sources continue to work, PostgreSQL operations in sync
+context still succeed, catalog operations are unchanged, and connection
+configuration is respected.
 """
 
 from __future__ import annotations
@@ -35,7 +24,6 @@ from rivet_core.strategies import MaterializedRef
 # ---------------------------------------------------------------------------
 # Strategies
 # ---------------------------------------------------------------------------
-
 
 @st.composite
 def non_postgres_catalog_strategy(draw: Any) -> Catalog:
@@ -72,7 +60,6 @@ def non_postgres_catalog_strategy(draw: Any) -> Catalog:
             options={"path": ":memory:"},
         )
 
-
 @st.composite
 def postgres_connection_config_strategy(draw: Any) -> dict[str, Any]:
     """Generate random PostgreSQL connection configurations."""
@@ -96,11 +83,9 @@ def postgres_connection_config_strategy(draw: Any) -> dict[str, Any]:
         "password": password,
     }
 
-
 # ---------------------------------------------------------------------------
 # Property 2.1: Non-PostgreSQL Sources Continue Working
 # ---------------------------------------------------------------------------
-
 
 @pytest.mark.integration
 @settings(max_examples=50)
@@ -108,13 +93,8 @@ def postgres_connection_config_strategy(draw: Any) -> dict[str, Any]:
 def test_property_rest_api_source_works(num_rows: int) -> None:
     """Property 2.1: Non-PostgreSQL data sources continue working.
 
-    Validates: Requirement 3.1
-
     Test that REST API sources work correctly in sync context (no event loop).
-    This behavior must be preserved after the fix.
 
-    EXPECTED ON UNFIXED CODE: Test PASSES
-    EXPECTED ON FIXED CODE: Test PASSES (no regression)
     """
     from rivet_rest.source import RestApiSource
 
@@ -166,18 +146,12 @@ def test_property_rest_api_source_works(num_rows: int) -> None:
         assert isinstance(table, pa.Table)
         assert table.num_rows == num_rows
 
-
 @pytest.mark.integration
 def test_property_duckdb_source_works(tmp_path: Path) -> None:
     """Property 2.1: Non-PostgreSQL data sources continue working.
 
-    Validates: Requirement 3.1
-
     Test that DuckDB sources work correctly in sync context.
-    This behavior must be preserved after the fix.
 
-    EXPECTED ON UNFIXED CODE: Test PASSES
-    EXPECTED ON FIXED CODE: Test PASSES (no regression)
     """
     from rivet_core.plugins import PluginRegistry
     from rivet_duckdb import DuckDBPlugin
@@ -227,11 +201,9 @@ def test_property_duckdb_source_works(tmp_path: Path) -> None:
     assert "id" in table.column_names
     assert "value" in table.column_names
 
-
 # ---------------------------------------------------------------------------
 # Property 2.2: PostgreSQL Sync Context Operations Work
 # ---------------------------------------------------------------------------
-
 
 @pytest.mark.integration
 @settings(max_examples=30)
@@ -239,14 +211,10 @@ def test_property_duckdb_source_works(tmp_path: Path) -> None:
 def test_property_postgres_source_works_in_sync_context(num_rows: int) -> None:
     """Property 2.2: PostgreSQL operations in sync context work correctly.
 
-    Validates: Requirements 3.2, 3.3
-
     Test that PostgreSQL source.to_arrow() works when called from sync context
     (no existing event loop). This is the normal usage pattern and must continue
     working after the fix.
 
-    EXPECTED ON UNFIXED CODE: Test PASSES
-    EXPECTED ON FIXED CODE: Test PASSES (no regression)
     """
     from rivet_postgres.source import PostgresDeferredMaterializedRef
 
@@ -290,20 +258,15 @@ def test_property_postgres_source_works_in_sync_context(num_rows: int) -> None:
     assert "id" in result.column_names
     assert "value" in result.column_names
 
-
 @pytest.mark.integration
 @settings(max_examples=30)
 @given(st.integers(min_value=1, max_value=50))
 def test_property_postgres_engine_works_in_sync_context(num_rows: int) -> None:
     """Property 2.2: PostgreSQL engine operations in sync context work correctly.
 
-    Validates: Requirements 3.2, 3.3
-
     Test that PostgreSQL engine.execute_sql() works when called from sync context.
     This is the normal usage pattern and must continue working after the fix.
 
-    EXPECTED ON UNFIXED CODE: Test PASSES
-    EXPECTED ON FIXED CODE: Test PASSES (no regression)
     """
     from rivet_postgres.engine import PostgresComputeEnginePlugin
 
@@ -340,20 +303,15 @@ def test_property_postgres_engine_works_in_sync_context(num_rows: int) -> None:
     assert "id" in result.column_names
     assert "value" in result.column_names
 
-
 @pytest.mark.integration
 @settings(max_examples=30)
 @given(st.integers(min_value=1, max_value=50))
 def test_property_postgres_sink_works_in_sync_context(num_rows: int) -> None:
     """Property 2.2: PostgreSQL sink operations in sync context work correctly.
 
-    Validates: Requirements 3.2, 3.3
-
     Test that PostgreSQL sink.write() works when called from sync context.
     This is the normal usage pattern and must continue working after the fix.
 
-    EXPECTED ON UNFIXED CODE: Test PASSES
-    EXPECTED ON FIXED CODE: Test PASSES (no regression)
     """
     from rivet_postgres.sink import PostgresSink
 
@@ -448,23 +406,17 @@ def test_property_postgres_sink_works_in_sync_context(num_rows: int) -> None:
 
     # If we get here, the write completed successfully
 
-
 # ---------------------------------------------------------------------------
 # Property 2.3: PostgreSQL Catalog Operations Work
 # ---------------------------------------------------------------------------
-
 
 @pytest.mark.integration
 def test_property_postgres_catalog_list_tables_works() -> None:
     """Property 2.3: PostgreSQL catalog operations work correctly.
 
-    Validates: Requirement 3.2
-
     Test that PostgreSQL catalog.list_tables() works correctly.
     Catalog operations use sync psycopg API and should be unaffected by the fix.
 
-    EXPECTED ON UNFIXED CODE: Test PASSES
-    EXPECTED ON FIXED CODE: Test PASSES (no regression)
     """
     from rivet_postgres.catalog import PostgresCatalogPlugin
 
@@ -507,18 +459,13 @@ def test_property_postgres_catalog_list_tables_works() -> None:
     assert nodes[2].name == "products"
     assert nodes[2].node_type == "view"
 
-
 @pytest.mark.integration
 def test_property_postgres_catalog_get_schema_works() -> None:
     """Property 2.3: PostgreSQL catalog.get_schema() works correctly.
 
-    Validates: Requirement 3.2
-
     Test that PostgreSQL catalog.get_schema() works correctly.
     Catalog operations use sync psycopg API and should be unaffected by the fix.
 
-    EXPECTED ON UNFIXED CODE: Test PASSES
-    EXPECTED ON FIXED CODE: Test PASSES (no regression)
     """
     from rivet_postgres.catalog import PostgresCatalogPlugin
 
@@ -561,11 +508,9 @@ def test_property_postgres_catalog_get_schema_works() -> None:
     assert schema.columns[1].name == "name"
     assert schema.columns[1].nullable is True
 
-
 # ---------------------------------------------------------------------------
 # Property 2.4: PostgreSQL Connection Configuration Respected
 # ---------------------------------------------------------------------------
-
 
 @pytest.mark.integration
 @settings(max_examples=50)
@@ -573,14 +518,10 @@ def test_property_postgres_catalog_get_schema_works() -> None:
 def test_property_postgres_connection_config_respected(config: dict[str, Any]) -> None:
     """Property 2.4: PostgreSQL connection configuration is respected.
 
-    Validates: Requirement 3.4
-
     Test that PostgreSQL connection parameters (host, port, database, credentials)
     are correctly used when establishing connections. This behavior must be
     preserved after the fix.
 
-    EXPECTED ON UNFIXED CODE: Test PASSES
-    EXPECTED ON FIXED CODE: Test PASSES (no regression)
     """
     from rivet_postgres.source import PostgresDeferredMaterializedRef
 
@@ -636,11 +577,9 @@ def test_property_postgres_connection_config_respected(config: dict[str, Any]) -
     assert isinstance(result, pa.Table)
     assert result.num_rows == 1
 
-
 # ---------------------------------------------------------------------------
 # Property 2.5: PostgreSQL Adapters Work
 # ---------------------------------------------------------------------------
-
 
 @pytest.mark.integration
 @settings(max_examples=30)
@@ -648,13 +587,9 @@ def test_property_postgres_connection_config_respected(config: dict[str, Any]) -
 def test_property_postgres_duckdb_adapter_works_in_sync_context(num_rows: int) -> None:
     """Property 2.5: PostgreSQL DuckDB adapter works in sync context.
 
-    Validates: Requirement 3.5
-
     Test that PostgreSQL DuckDB adapter read_dispatch() works when called from
     sync context. This is the normal usage pattern and must continue working.
 
-    EXPECTED ON UNFIXED CODE: Test PASSES
-    EXPECTED ON FIXED CODE: Test PASSES (no regression)
     """
     from rivet_postgres.adapters.duckdb import PostgresDuckDBAdapter
 
@@ -711,23 +646,17 @@ def test_property_postgres_duckdb_adapter_works_in_sync_context(num_rows: int) -
         assert isinstance(table, pa.Table)
         assert table.num_rows == num_rows
 
-
 # ---------------------------------------------------------------------------
 # Property 2.6: Multiple PostgreSQL Sources in Same Pipeline
 # ---------------------------------------------------------------------------
-
 
 @pytest.mark.integration
 def test_property_multiple_postgres_sources_work_in_sync_context() -> None:
     """Property 2.6: Multiple PostgreSQL sources in same pipeline work correctly.
 
-    Validates: Requirement 3.3
-
     Test that multiple PostgreSQL sources can be used in the same pipeline
     when called from sync context. This behavior must be preserved.
 
-    EXPECTED ON UNFIXED CODE: Test PASSES
-    EXPECTED ON FIXED CODE: Test PASSES (no regression)
     """
     from rivet_postgres.source import PostgresDeferredMaterializedRef
 
@@ -784,23 +713,17 @@ def test_property_multiple_postgres_sources_work_in_sync_context() -> None:
     assert isinstance(result2, pa.Table)
     assert result2.num_rows == 3
 
-
 # ---------------------------------------------------------------------------
 # Property 2.7: CSV Source Works (Filesystem Plugin)
 # ---------------------------------------------------------------------------
-
 
 @pytest.mark.integration
 def test_property_csv_source_works(tmp_path: Path) -> None:
     """Property 2.1: CSV sources continue working.
 
-    Validates: Requirement 3.1
-
     Test that CSV (filesystem) sources work correctly. This is a non-PostgreSQL
     source that must continue working after the fix.
 
-    EXPECTED ON UNFIXED CODE: Test PASSES
-    EXPECTED ON FIXED CODE: Test PASSES (no regression)
     """
     from rivet_core.plugins import PluginRegistry
 

@@ -85,11 +85,11 @@ The `_compose_cte()` function now:
 
 ## Testing
 
-- Unit tests: `tests/unit/optimizer/test_cte_fusion_bug.py`
+- Unit tests: `tests/unit/optimizer/test_cte_fusion.py`
   - Single joint with nested WITH clause
   - Multiple joints with WITH clauses
 
-- E2E tests: `tests/e2e/test_cte_fusion_bug.py`
+- E2E tests: `tests/e2e/test_cte_fusion.py`
   - Real pipeline with multiple joints containing WITH clauses
   - Verifies compilation succeeds without SQL syntax errors
 

@@ -459,7 +459,7 @@ class SmartCache:
                 try:
                     total += len(self._serialize_catalog(fk).encode("utf-8"))
                 except Exception:
-                    pass
+                    logger.debug('Cache-size accounting', exc_info=True)  # best-effort: see RVT logs at debug level
         return total
 
     def _evict_if_needed(self) -> None:

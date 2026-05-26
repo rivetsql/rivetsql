@@ -1,13 +1,10 @@
-"""Bug condition exploration: Source self-reference creates circular CTE.
+"""Property tests: source-joint self-reference must not produce a circular CTE.
 
-Property 1 (Fault Condition): When a source joint has inline SQL transforms
-(columns, filter, limit), SQLGenerator emits FROM {joint.name}. When the
-optimizer fuses this source into a CTE group with a downstream transform,
-the resulting SQL contains a circular reference:
-    WITH raw_orders AS (SELECT ... FROM raw_orders ...)
-
-These tests MUST FAIL on unfixed code — failure confirms the bug exists.
-They encode the expected (correct) behavior and will pass after the fix.
+When a source joint declares inline SQL transforms (``columns``, ``filter``,
+``limit``), the SQL generator emits ``FROM __self`` and the compiler
+substitutes ``__self`` with the table FQN at compile time. This produces a
+non-circular fused CTE; the property tests below assert that invariant
+across many randomized inputs.
 """
 
 from __future__ import annotations

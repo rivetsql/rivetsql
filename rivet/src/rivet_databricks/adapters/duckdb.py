@@ -93,7 +93,7 @@ def _apply_duckdb_pushdown(
             cols = ", ".join(pushdown.projections.pushed_columns)
             sql = sql.replace("SELECT *", f"SELECT {cols}", 1)
         except Exception:
-            pass
+            _logger.debug('Pushdown projection rewrite', exc_info=True)  # best-effort: see RVT logs at debug level
 
     if pushdown.predicates.pushed:
         where_parts: list[str] = []

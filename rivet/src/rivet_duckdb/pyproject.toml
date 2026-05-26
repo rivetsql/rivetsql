@@ -21,7 +21,7 @@ classifiers = [
 ]
 dependencies = [
     "rivetsql>=0.1.0,<0.2.0",
-    "duckdb>=0.9",
+    "duckdb>=1.1",
 ]
 
 [project.urls]

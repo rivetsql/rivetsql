@@ -230,7 +230,7 @@ def _warn_if_parquet_schema_diverges(
             )
     except Exception:
         # Best-effort: never block get_schema() on divergence check failure
-        pass
+        logger.debug('Schema divergence diagnostic check', exc_info=True)  # best-effort: see RVT logs at debug level
 
 
 class GlueCatalogPlugin(CatalogPlugin):

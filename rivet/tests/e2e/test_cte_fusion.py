@@ -1,7 +1,8 @@
-"""E2E test for CTE fusion bug fix.
+"""E2E: CTE fusion across multiple joints with WITH clauses.
 
-Reproduces the bug where fusing multiple joints with WITH clauses
-generated invalid SQL with multiple WITH keywords.
+Compiles a project where several joints each declare WITH clauses and a
+downstream joint joins their results. The fused SQL must contain exactly
+one top-level ``WITH`` keyword.
 """
 
 from pathlib import Path

@@ -42,16 +42,20 @@ default:
 """
 
 _EXAMPLE_TEST = """\
-# Test: transform_orders
+# Test fixture for transform_orders.
+# Compared against expected rows offline (no catalog access).
 name: test_transform_orders
-joint: transform_orders
+target: transform_orders
 inputs:
   raw_orders:
     rows:
       - {id: 1, customer_name: Alice, amount: 100, created_at: "2024-01-01"}
+      - {id: 2, customer_name: Bob, amount: -5, created_at: "2024-01-02"}
+      - {id: 3, customer_name: Carol, amount: 250, created_at: "2024-01-03"}
 expected:
   rows:
     - {id: 1, customer_name: Alice, amount: 100, created_at: "2024-01-01"}
+    - {id: 3, customer_name: Carol, amount: 250, created_at: "2024-01-03"}
 """
 
 _EXAMPLE_QUALITY = """\
@@ -131,7 +135,7 @@ SELECT
     customer_name,
     amount,
     created_at
-FROM raw_orders
+FROM __self
 """
 
 _JOINT_SQL = """\
@@ -160,7 +164,7 @@ _DIRS = ["sources", "joints", "sinks", "tests", "quality", "data"]
 def _build_example_files(style: str) -> dict[str, str]:
     """Build the example file map based on declaration style."""
     files: dict[str, str] = {
-        "tests/test_transform_orders.yaml": _EXAMPLE_TEST,
+        "tests/transform_orders.test.yaml": _EXAMPLE_TEST,
         "quality/orders_clean.yaml": _EXAMPLE_QUALITY,
     }
     if style == "yaml":

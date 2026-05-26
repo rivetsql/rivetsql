@@ -7,6 +7,7 @@ modules.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 
 from rivet_core.compiler.helpers.resolution import _do_introspect
@@ -26,6 +27,8 @@ from rivet_core.compiler.state import PhaseState
 from rivet_core.errors import RivetError
 from rivet_core.models import Schema
 from rivet_core.sql_parser import SQLParser
+
+_logger = logging.getLogger(__name__)
 
 
 class _CompileSQLPhase:
@@ -99,7 +102,7 @@ class _CompileSQLPhase:
                                     source_stats=stats if stats is not None else cj.source_stats,
                                 )
                         except Exception:
-                            pass
+                            _logger.debug('Source introspection update', exc_info=True)  # best-effort: see RVT logs at debug level
 
                     # Re-run source inline transform validation with introspected schema
                     if cj.output_schema is not None and cj.logical_plan is not None:

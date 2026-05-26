@@ -46,12 +46,12 @@ def _has_delta_jars(session: Any) -> bool:
             jvm.java.lang.Class.forName("io.delta.tables.DeltaTable")
             return True
         except Exception:
-            pass
+            _logger.debug('Delta detection via DeltaTable class', exc_info=True)  # best-effort: see RVT logs at debug level
         try:
             jvm.java.lang.Class.forName("org.apache.spark.sql.delta.DeltaLog")
             return True
         except Exception:
-            pass
+            _logger.debug('Delta detection via DeltaLog class', exc_info=True)  # best-effort: see RVT logs at debug level
         _logger.debug("Delta not found via JVM reflection")
         return False
     except Exception:

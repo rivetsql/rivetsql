@@ -1,7 +1,8 @@
-"""Test for CTE fusion bug with multiple WITH clauses.
+"""CTE fusion: multiple WITH clauses must merge into a single top-level WITH.
 
-Reproduces the bug where fusing joints that contain WITH clauses
-generates invalid SQL with multiple WITH keywords.
+When fusing joints that each contain a WITH clause, the composed SQL must
+have exactly one ``WITH`` keyword and the union of all CTEs at the top level
+— never nested ``WITH`` inside another ``WITH``.
 """
 
 from rivet_core.optimizer import _compose_cte

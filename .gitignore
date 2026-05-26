@@ -26,3 +26,7 @@ docs/_build/
 .kiro/
 scripts/run-sample.sh
 scripts/run-demo.sh
+
+
+# Output of rivet/scripts/find_dead_code.py
+dead_code_analysis.md

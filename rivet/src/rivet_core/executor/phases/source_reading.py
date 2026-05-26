@@ -14,6 +14,7 @@ modules.
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from dataclasses import replace
 
@@ -43,6 +44,8 @@ from rivet_core.optimizer import (
 from rivet_core.plugins import PluginRegistry
 from rivet_core.stats import StatsCollector
 from rivet_core.strategies import DeferredRef, MaterializedRef
+
+_logger = logging.getLogger(__name__)
 
 
 async def read_source_via_adapter(
@@ -331,7 +334,7 @@ async def read_sources_into(
                             )
                         continue
                 except Exception:
-                    pass  # Fall through to source plugin fallback
+                    _logger.debug("Adapter read of cross-group checkpoint failed; falling back to source plugin", exc_info=True)  # noqa: BLE001
 
             # Source plugin fallback
             try:
@@ -342,7 +345,7 @@ async def read_sources_into(
                         input_tables[cp_name] = mat.to_arrow()
                         continue
             except Exception:
-                pass  # Fall through to .to_arrow() fallback
+                _logger.debug("SourcePlugin fallback for checkpoint failed; using DeferredRef.to_arrow()", exc_info=True)  # noqa: BLE001
 
             # Last resort: DeferredRef.to_arrow()
             input_tables[cp_name] = ref.to_arrow()

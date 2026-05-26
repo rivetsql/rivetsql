@@ -7,6 +7,7 @@ materializes to Arrow and writes directly to PostgreSQL.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 
 import pyarrow
@@ -18,6 +19,7 @@ from rivet_core.optimizer import AdapterPushdownResult, Cast, PushdownPlan, Resi
 from rivet_core.plugins import ComputeEngineAdapter
 from rivet_core.strategies import MaterializedRef
 
+_logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from rivet_core.sql_parser import Predicate
 
@@ -59,7 +61,7 @@ def _apply_pyspark_pushdown(
         try:
             df = df.select(*pushdown.projections.pushed_columns)
         except Exception:
-            pass
+            _logger.debug('PySpark projection rewrite', exc_info=True)  # best-effort: see RVT logs at debug level
 
     for pred in pushdown.predicates.pushed:
         try:

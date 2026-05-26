@@ -221,7 +221,7 @@ def catalog_list(
     # --- No path: list all catalogs ---
     if format == "json":
         # Build children dict for depth > 0 (Req 9.4)
-        children: dict[str, list] = {}  # type: ignore[type-arg]
+        children: dict[str, list[ExplorerNode]] = {}
         if depth > 0:
             for cat in all_catalogs:
                 if cat.connected:

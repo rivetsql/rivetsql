@@ -69,7 +69,7 @@ from .widgets.status_bar import (
 
 if TYPE_CHECKING:
     from rivet_core.interactive.session import InteractiveSession
-    from rivet_core.interactive.types import Execution_Log, QueryProgress
+    from rivet_core.interactive.types import CatalogInfo, Execution_Log, QueryProgress
 
     from .config import ReplConfig
 
@@ -303,7 +303,7 @@ class RivetRepl(App):  # type: ignore[type-arg]
         success = True
         error_msg: str | None = None
         catalogs_connected = True
-        catalog_infos: list = []  # type: ignore[type-arg]
+        catalog_infos: list[CatalogInfo] = []
 
         try:
             # Compile the project (session.start() was already called in __init__.py,

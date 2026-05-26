@@ -1,16 +1,10 @@
-"""Bug condition exploration test for PostgreSQL asyncio event loop crash.
+"""PostgreSQL plugin compatibility with running asyncio event loops.
 
-**Validates: Requirements 1.1, 2.1, 2.2**
-
-This test demonstrates the bug where PostgreSQL operations crash with RuntimeError
-when called from within an existing asyncio event loop (e.g., REPL/explore context).
-
-CRITICAL: This test is EXPECTED TO FAIL on unfixed code.
-- Failure confirms the bug exists
-- When the fix is implemented, this test will pass
-
-The test directly calls PostgreSQL plugin methods from within an async context
-to reproduce the exact bug condition.
+Verifies that source/engine/sink methods on ``rivet_postgres`` work when
+they are invoked from inside an existing event loop (REPL, explore session,
+Textual TUI). The plugin internally uses ``asyncio.AsyncConnection`` and
+must not crash with ``RuntimeError: This event loop is already running``
+when the surrounding caller already owns a loop.
 """
 
 import asyncio
@@ -38,7 +32,6 @@ def mock_postgres_catalog() -> Catalog:
         },
     )
 
-
 @pytest.fixture
 def mock_postgres_engine_config() -> dict:
     """Create mock PostgreSQL engine config."""
@@ -47,7 +40,6 @@ def mock_postgres_engine_config() -> dict:
         "pool_min_size": 1,
         "pool_max_size": 10,
     }
-
 
 @pytest.fixture
 def sample_arrow_table() -> pa.Table:
@@ -60,27 +52,15 @@ def sample_arrow_table() -> pa.Table:
         }
     )
 
-
-class TestPostgresAsyncioEventLoopBug:
-    """Property 1: Fault Condition - PostgreSQL Operations Work in Async Context.
-
-    These tests encode the EXPECTED behavior: PostgreSQL operations should work
-    correctly when called from within an existing asyncio event loop.
-
-    EXPECTED OUTCOME ON UNFIXED CODE: Tests FAIL (RuntimeError is raised)
-    EXPECTED OUTCOME ON FIXED CODE: Tests PASS (operations complete successfully)
-
-    The tests will FAIL on unfixed code because the bug prevents the expected behavior.
+class TestPostgresAsyncioInRunningLoop:
+    """The PostgreSQL plugin (source/engine/sink) must function when its
+    methods are called from inside an already-running event loop.
     """
 
     @pytest.mark.integration
     def test_postgres_source_works_in_async_context(self) -> None:
-        """Test that PostgreSQL source.to_arrow() works when called from async context.
-
-        Simulates REPL/explore context where an event loop is already running.
-
-        EXPECTED ON UNFIXED CODE: Test FAILS with RuntimeError
-        EXPECTED ON FIXED CODE: Test PASSES, returns Arrow table
+        """``PostgresDeferredMaterializedRef.to_arrow()`` returns an Arrow table
+        when called from an async function dispatched via ``asyncio.run``.
         """
         from rivet_postgres.source import PostgresDeferredMaterializedRef
 
@@ -130,12 +110,8 @@ class TestPostgresAsyncioEventLoopBug:
     def test_postgres_engine_works_in_async_context(
         self, mock_postgres_engine_config: dict
     ) -> None:
-        """Test that PostgreSQL engine.execute_sql() works when called from async context.
-
-        Simulates REPL/explore context where an event loop is already running.
-
-        EXPECTED ON UNFIXED CODE: Test FAILS with ExecutionError wrapping RuntimeError
-        EXPECTED ON FIXED CODE: Test PASSES, returns Arrow table
+        """``PostgresComputeEnginePlugin.execute_sql`` returns an Arrow table
+        when invoked from an async function.
         """
         from rivet_postgres.engine import PostgresComputeEnginePlugin
 
@@ -172,12 +148,8 @@ class TestPostgresAsyncioEventLoopBug:
     def test_postgres_sink_works_in_async_context(
         self, mock_postgres_catalog: Catalog, sample_arrow_table: pa.Table
     ) -> None:
-        """Test that PostgreSQL sink.write() works when called from async context.
-
-        Simulates REPL/explore context where an event loop is already running.
-
-        EXPECTED ON UNFIXED CODE: Test FAILS with ExecutionError wrapping RuntimeError
-        EXPECTED ON FIXED CODE: Test PASSES, write completes successfully
+        """``PostgresSink.write`` completes successfully when invoked from an
+        async function.
         """
         from rivet_postgres.sink import PostgresSink
 

@@ -201,12 +201,53 @@ def load_inline_data(
 def load_fixture(spec: dict, project_root: Path) -> pa.Table:  # type: ignore[type-arg]
     """Load a fixture from either a file reference or inline data.
 
-    Dispatches based on presence of 'file' key vs 'columns'+'rows' keys.
+    Dispatches based on the keys present in *spec*:
+
+    - ``{"file": "..."}`` — load an external table file.
+    - ``{"rows": [{...}, {...}]}`` — dict-form rows; column names are
+      inferred from the union of keys in the first row, with later rows
+      filling in ``None`` for any missing keys.
+    - ``{"columns": [...], "rows": [[...], ...]}`` — list-form rows aligned
+      to the explicit column list.
+
+    The dict-form shape matches what ``docs/guides/testing.md`` shows and
+    what most humans write by hand. Both forms accept an optional
+    ``types: [...]`` for explicit Arrow type casting.
     """
     if "file" in spec:
         return load_fixture_file(Path(spec["file"]), project_root)
-    return load_inline_data(
-        columns=spec["columns"],
-        rows=spec["rows"],
-        types=spec.get("types"),
-    )
+
+    rows = spec.get("rows")
+    if rows is None:
+        raise FixtureError(RivetError(
+            code="RVT-902",
+            message="Inline fixture must include either 'file' or 'rows'.",
+            context={"keys": sorted(spec.keys())},
+        ))
+
+    columns = spec.get("columns")
+    types = spec.get("types")
+
+    # Dict-form rows: infer columns from the first row's keys (preserving
+    # insertion order) and transpose to list form. Missing keys in later
+    # rows become None so type inference still works.
+    if rows and isinstance(rows[0], dict):
+        if columns is None:
+            columns = list(rows[0].keys())
+        list_rows: list[list[Any]] = [
+            [row.get(col) for col in columns] for row in rows
+        ]
+        return load_inline_data(columns=columns, rows=list_rows, types=types)
+
+    # List-form rows require an explicit columns array.
+    if columns is None:
+        raise FixtureError(RivetError(
+            code="RVT-902",
+            message=(
+                "Inline fixture with list-form rows requires an explicit "
+                "'columns' field. Either switch to dict-form rows "
+                "(`rows: [{col: value, ...}]`) or add `columns: [...]`."
+            ),
+            context={"keys": sorted(spec.keys())},
+        ))
+    return load_inline_data(columns=columns, rows=rows, types=types)

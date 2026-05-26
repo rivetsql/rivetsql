@@ -2,11 +2,29 @@
 
 Scans all pyproject.toml files and verifies each declared dependency
 has at least one corresponding import in the relevant source scope.
+
+Packages in :data:`SKIP_PACKAGES` are intentionally not enforced — they
+are runtime-optional plugin distributions that users install via extras
+(e.g. ``pip install rivetsql[duckdb]``); their imports happen in user
+code, not in this repository's source.
 """
 
 import re
 import sys
 from pathlib import Path
+
+# Plugin extras and the rivetsql self-reference are not expected to appear in
+# this repository's source; users opt-in via `pip install rivetsql[plugin]`.
+SKIP_PACKAGES: set[str] = {
+    "rivetsql",
+    "rivetsql-duckdb",
+    "rivetsql-polars",
+    "rivetsql-pyspark",
+    "rivetsql-postgres",
+    "rivetsql-aws",
+    "rivetsql-databricks",
+    "rivetsql-rest",
+}
 
 # Map from PyPI package name to Python import name(s)
 PACKAGE_TO_IMPORT = {
@@ -115,6 +133,8 @@ def main() -> int:
     for section, pkg_names in deps.items():
         for pkg in pkg_names:
             pkg_lower = pkg.lower()
+            if pkg_lower in SKIP_PACKAGES:
+                continue
             import_names = PACKAGE_TO_IMPORT.get(pkg_lower, [pkg_lower.replace("-", "_")])
             if not import_names:
                 continue
@@ -147,13 +167,15 @@ def main() -> int:
         for section, pkg_names in deps.items():
             for pkg in pkg_names:
                 pkg_lower = pkg.lower()
+                if pkg_lower in SKIP_PACKAGES:
+                    continue  # plugin self-reference / cross-plugin dep
                 import_names = PACKAGE_TO_IMPORT.get(
                     pkg_lower, [pkg_lower.replace("-", "_")]
                 )
                 if not import_names:
                     continue
                 if pkg_lower == "rivet-core":
-                    continue  # self-reference
+                    continue  # historical alias
                 found = any(name in plugin_imports for name in import_names)
                 status = "OK" if found else "UNUSED"
                 print(f"  [{status}] {section} :: {pkg} (imports: {import_names})")

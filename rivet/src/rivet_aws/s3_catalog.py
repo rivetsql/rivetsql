@@ -133,7 +133,7 @@ def _build_s3fs(options: dict[str, Any]) -> Any:
             if creds.session_token:
                 kwargs["session_token"] = creds.session_token
         except Exception:
-            pass  # Fall through to direct credential extraction
+            logger.debug("Credential resolution from chain failed; falling back to direct extraction", exc_info=True)  # noqa: BLE001
     else:
         access_key = options.get("access_key_id")
         secret_key = options.get("secret_access_key")
@@ -350,7 +350,7 @@ class S3CatalogPlugin(CatalogPlugin):
                                 )
                             )
                     except Exception:
-                        pass
+                        logger.debug('Object summary collection (best-effort)', exc_info=True)  # best-effort: see RVT logs at debug level
 
         return nodes
 
@@ -501,7 +501,7 @@ class S3CatalogPlugin(CatalogPlugin):
                     size_bytes = fi.size
                     last_modified = fi.mtime
             except Exception:
-                pass
+                logger.debug('S3 file metadata retrieval (best-effort)', exc_info=True)  # best-effort: see RVT logs at debug level
 
         row_count: int | None = None
         num_row_groups: int | None = None
@@ -516,7 +516,7 @@ class S3CatalogPlugin(CatalogPlugin):
                 num_row_groups = meta.num_row_groups
                 properties["num_row_groups"] = str(num_row_groups)
             except Exception:
-                pass
+                logger.debug('Parquet metadata footer read (best-effort)', exc_info=True)  # best-effort: see RVT logs at debug level
 
         return ObjectMetadata(
             path=[bucket, table],

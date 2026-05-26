@@ -788,7 +788,7 @@ def _resolve_checkpoint_cte_body(
         if resolved and resolved != synthetic_sql:
             return resolved
     except Exception:
-        pass
+        logger.debug('Synthetic SQL re-resolution', exc_info=True)  # best-effort: see RVT logs at debug level
     return None
 
 

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import logging
+
 import polars as pl
 
 from rivet_core.optimizer import Cast, PushdownPlan, ResidualPlan
 from rivet_core.sql_parser import Predicate
 
-
+_logger = logging.getLogger(__name__)
 def _apply_polars_pushdown(
     df: pl.DataFrame | pl.LazyFrame,
     pushdown: PushdownPlan,
@@ -26,7 +28,7 @@ def _apply_polars_pushdown(
         try:
             df = df.select(pushdown.projections.pushed_columns)
         except Exception:
-            pass  # full columns already present, no residual needed
+            _logger.debug("Polars projection rewrite skipped (columns already present)", exc_info=True)  # noqa: BLE001
 
     # Predicates
     for pred in pushdown.predicates.pushed:

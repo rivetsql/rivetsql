@@ -40,6 +40,8 @@ from rivet_core.optimizer import FusedGroup
 from rivet_core.plugins import NativeSqlWriteContext, PluginRegistry
 from rivet_core.strategies import DeferredRef, MaterializedRef
 
+log = logging.getLogger("rivet_core.executor")
+
 
 async def dispatch_sink_write(
     cj: CompiledJoint,
@@ -101,7 +103,7 @@ async def dispatch_sink_write(
                     )
             except Exception:
                 # If we can't get the Arrow table or compare schemas, continue without warning
-                pass
+                log.debug('Schema mismatch warning', exc_info=True)  # best-effort: see RVT logs at debug level
 
         mat = Material(
             name=cj.name,
@@ -143,29 +145,20 @@ async def execute_checkpoint(
 
     Raises ExecutionError on write failure or read-back failure.
     Write errors propagate immediately for checkpoints (unlike sinks).
-    """
-    log = logging.getLogger("rivet_core.executor")
 
+    Note: ``incremental_append`` semantics are implemented entirely inside the
+    sink plugins (key-based dedup via INSERT…ON CONFLICT / WHERE NOT EXISTS).
+    The watermark store (``rivet_core.watermark.WatermarkBackend``) is
+    advisory metadata maintained by the ``rivet watermark`` CLI commands and
+    is intentionally orthogonal to the sink write path. Do not add executor
+    logic here that depends on watermark state — it would silently desync
+    from the sink-side dedup.
+    """
     # Step 1: Write via shared sink write path (catalog resolution, SinkPlugin
     # dispatch, schema validation — identical to sink joints).
     await dispatch_sink_write(cj, result_ref, catalog_map, registry)
 
-    write_strategy = cj.write_strategy or "replace"
-
-    # Step 2: Read watermark state for incremental_append
-    if write_strategy == "incremental_append":
-        # TODO: No concrete WatermarkBackend implementation exists yet.
-        # When a file-based backend is added, import and use it here.
-        log.debug(
-            "Watermark backend not yet implemented for checkpoint '%s'; "
-            "proceeding without watermark.",
-            cj.name,
-        )
-
-    # Step 3: Advance watermark state for incremental_append
-    # TODO: Implement when a concrete WatermarkBackend is available.
-
-    # Step 4: Read back — pass the Arrow table so DeferredRef caches it
+    # Step 2: Read back — pass the Arrow table so DeferredRef caches it
     return await checkpoint_read_back(
         cj,
         catalog_map,
@@ -248,8 +241,6 @@ async def try_native_sql_write(
     Returns True if native SQL write was dispatched successfully,
     False if the method fell back (caller should use the Arrow path).
     """
-    log = logging.getLogger("rivet_core.executor")
-
     # 1. Guard: non-empty residuals present → fallback
     if group.residual is not None and (
         group.residual.predicates or group.residual.limit is not None or group.residual.casts
@@ -432,7 +423,7 @@ async def run_audits(
                     if mat.materialized_ref is not None:
                         read_back_table = mat.to_arrow()
                 except Exception:
-                    pass
+                    log.debug('Audit read-back via SourcePlugin', exc_info=True)  # best-effort: see RVT logs at debug level
 
     if read_back_table is None:
         # Fallback: use the written table as best-effort read-back

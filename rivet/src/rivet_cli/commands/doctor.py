@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -282,13 +283,13 @@ def _check_level2(
 
 def _discover_declarations(
     project: Path, rivet_yaml: Path
-) -> list[dict]:  # type: ignore[type-arg]
+) -> list[dict[str, Any]]:
     """Discover all declaration files and return parsed info dicts."""
     data, _ = _safe_load_yaml(rivet_yaml)
     if not isinstance(data, dict):
         return []
 
-    declarations: list[dict] = []  # type: ignore[type-arg]
+    declarations: list[dict[str, Any]] = []
     for dir_key in ("sources", "joints", "sinks"):
         dir_val = data.get(dir_key)
         if not dir_val:
@@ -332,11 +333,15 @@ def _discover_declarations(
                         "quality": fdata.get("quality"),
                     })
 
-    # Infer upstream from SQL body for declarations without explicit upstream
+    # Infer upstream from SQL body for declarations without explicit upstream.
+    # Filter self-references — the compiler treats both `FROM <joint_name>` and
+    # `FROM __self` in source SQL as the joint's own table at compile time, so
+    # they must NOT be reported as upstream cycles by the doctor.
     all_names = {d["name"] for d in declarations}
     for decl in declarations:
         if decl.get("sql") and not decl.get("upstream"):
-            decl["upstream"] = _infer_sql_table_refs(decl["sql"], all_names)
+            inferred = _infer_sql_table_refs(decl["sql"], all_names)
+            decl["upstream"] = [u for u in inferred if u != decl["name"]]
 
     return declarations
 
@@ -386,7 +391,7 @@ def _infer_sql_table_refs(sql_text: str, known_names: set[str]) -> list[str]:
 
 
 def _check_level3(
-    project: Path, declarations: list[dict], checks: list[DoctorCheckResult]  # type: ignore[type-arg]
+    project: Path, declarations: list[dict[str, Any]], checks: list[DoctorCheckResult]
 ) -> None:
     sql_files = [d for d in declarations if d.get("sql")]
     if not sql_files:
@@ -435,7 +440,7 @@ def _check_level3(
 
 # --- Level 4: DAG health ---
 
-def _check_level4(declarations: list[dict], checks: list[DoctorCheckResult]) -> None:  # type: ignore[type-arg]
+def _check_level4(declarations: list[dict[str, Any]], checks: list[DoctorCheckResult]) -> None:
     # Build adjacency from declarations
     names = {d["name"] for d in declarations}
     edges: dict[str, list[str]] = {d["name"]: [] for d in declarations}
@@ -507,7 +512,7 @@ def _check_level4(declarations: list[dict], checks: list[DoctorCheckResult]) -> 
 # --- Level 5: Unused declarations ---
 
 def _check_level5(
-    declarations: list[dict], project: Path, rivet_yaml: Path,  # type: ignore[type-arg]
+    declarations: list[dict[str, Any]], project: Path, rivet_yaml: Path,
     checks: list[DoctorCheckResult],
 ) -> None:
     names = {d["name"] for d in declarations}
@@ -554,7 +559,7 @@ def _check_level5(
 # --- Level 6: Best practices ---
 
 def _check_level6(
-    declarations: list[dict], project: Path, rivet_yaml: Path,  # type: ignore[type-arg]
+    declarations: list[dict[str, Any]], project: Path, rivet_yaml: Path,
     checks: list[DoctorCheckResult],
 ) -> None:
     {d["name"] for d in declarations}

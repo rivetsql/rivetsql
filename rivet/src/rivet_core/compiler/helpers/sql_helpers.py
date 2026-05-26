@@ -131,7 +131,7 @@ def _validate_source_inline_transforms(
                     )
                 )
         except Exception:
-            pass
+            logger.debug('Inline-transform SQL re-parse', exc_info=True)  # best-effort: see RVT logs at debug level
     elif sql:
         try:
             import sqlglot
@@ -167,7 +167,7 @@ def _validate_source_inline_transforms(
                     )
                 )
         except Exception:
-            pass  # Best-effort: if SQL can't be re-parsed, skip these checks
+            logger.debug("Column-warning SQL re-parse failed; skipping warnings", exc_info=True)  # noqa: BLE001
 
     # --- Column reference warnings (only when introspected schema is available) ---
 
@@ -272,7 +272,7 @@ def _infer_projection_type(
 
                 return SQLParser._normalize_sqlglot_type(parsed.to)
         except Exception:
-            pass
+            logger.debug('sqlglot type inference fallback', exc_info=True)  # best-effort: see RVT logs at debug level
 
     # Cannot determine type — emit warning
     col_label = alias or expr

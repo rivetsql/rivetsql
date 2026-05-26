@@ -41,6 +41,7 @@ pyspark = ["rivetsql-pyspark>=0.1.0,<0.2.0"]
 postgres = ["rivetsql-postgres>=0.1.0,<0.2.0"]
 aws = ["rivetsql-aws>=0.1.0,<0.2.0"]
 databricks = ["rivetsql-databricks>=0.1.0,<0.2.0"]
+rest = ["rivetsql-rest>=0.1.0,<0.2.0"]
 all = [
     "rivetsql-duckdb>=0.1.0,<0.2.0",
     "rivetsql-polars>=0.1.0,<0.2.0",
@@ -48,6 +49,7 @@ all = [
     "rivetsql-postgres>=0.1.0,<0.2.0",
     "rivetsql-aws>=0.1.0,<0.2.0",
     "rivetsql-databricks>=0.1.0,<0.2.0",
+    "rivetsql-rest>=0.1.0,<0.2.0",
 ]
 dev = [
     "pytest>=8.0",
@@ -70,10 +72,10 @@ test = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/rivet_core", "src/rivet_config", "src/rivet_bridge", "src/rivet_cli", "src/rivet_rest"]
+packages = ["src/rivet_core", "src/rivet_config", "src/rivet_bridge", "src/rivet_cli"]
 
 [tool.hatch.build.targets.editable]
-packages = ["src/rivet_core", "src/rivet_config", "src/rivet_bridge", "src/rivet_cli", "src/rivet_rest"]
+packages = ["src/rivet_core", "src/rivet_config", "src/rivet_bridge", "src/rivet_cli"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests/e2e", "tests/integration", "tests/unit"]
@@ -114,6 +116,13 @@ module = ["pyarrow", "pyarrow.*"]
 ignore_errors = true
 ignore_missing_imports = true
 
+# --- Per-module overrides — each entry is a known pyarrow stub gap or a
+# Textual lifecycle constraint, NOT a free pass. To remove an entry from
+# this list, write a typed wrapper at the call site (or replace the bare
+# pyarrow call with `pa.compute.<...>` whose signature is stubbed) and run
+# `mypy --strict <module>` to confirm the override is no longer needed.
+# Tracking issue: see ROADMAP.md "Type cleanup".
+#
 # Our packages that use pyarrow heavily: suppress the stub-quality errors that
 # pyarrow 16+ stubs produce (attr-defined on compute functions, no-untyped-call
 # on parquet/ipc/dataset functions). These are pyarrow stub gaps, not real bugs.

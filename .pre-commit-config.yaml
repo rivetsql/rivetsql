@@ -22,9 +22,34 @@ repos:
     rev: v1.10.0
     hooks:
       - id: mypy
-        files: ^rivet/src/
+        # Use the project's pyproject.toml as the single source of truth for
+        # mypy configuration. Do NOT pass --ignore-missing-imports here — it
+        # overrides the per-module overrides in pyproject.toml and causes
+        # local pre-commit results to disagree with CI.
+        files: ^rivet/(src|tests)/
         pass_filenames: false
-        args: [--ignore-missing-imports, rivet/src/]
+        args: [--config-file=rivet/pyproject.toml, rivet/src, rivet/tests]
         additional_dependencies:
           - types-PyYAML>=6.0
           - types-requests>=2.31
+
+  - repo: local
+    hooks:
+      - id: check-changelog
+        name: CHANGELOG hygiene
+        entry: python scripts/check_changelog.py
+        language: system
+        files: ^CHANGELOG\.md$
+        pass_filenames: false
+      - id: check-module-boundaries
+        name: Module boundaries
+        entry: python rivet/scripts/check_module_boundaries.py
+        language: system
+        files: ^rivet/src/.*\.py$
+        pass_filenames: false
+      - id: check-plugin-coherence
+        name: Plugin coherence
+        entry: python rivet/scripts/check_plugin_coherence.py
+        language: system
+        files: ^rivet/src/rivet_(aws|databricks|duckdb|polars|postgres|pyspark|rest)/.*$
+        pass_filenames: false

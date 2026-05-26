@@ -21,7 +21,7 @@ classifiers = [
 ]
 dependencies = [
     "rivetsql>=0.1.0,<0.2.0",
-    "polars>=0.20",
+    "polars>=1.0",
 ]
 
 [project.optional-dependencies]

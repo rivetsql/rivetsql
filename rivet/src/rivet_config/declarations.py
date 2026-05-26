@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from rivet_config.quality import QualityParser
 from rivet_config.sql_parser import SQLParser
 from rivet_config.yaml_parser import YAMLParser
 
+_logger = logging.getLogger(__name__)
 _YAML_EXTENSIONS = frozenset({".yaml", ".yml"})
 _SQL_EXTENSIONS = frozenset({".sql"})
 _PY_EXTENSIONS = frozenset({".py"})
@@ -98,7 +100,7 @@ class DeclarationLoader:
                 errors.extend(q_errs)
                 quality_checks.extend(sql_checks)
             except Exception:
-                pass
+                _logger.debug('Inline SQL annotation parse', exc_info=True)  # best-effort: see RVT logs at debug level
 
         if f.suffix in _PY_EXTENSIONS:
             try:
@@ -111,7 +113,7 @@ class DeclarationLoader:
                 errors.extend(q_errs)
                 quality_checks.extend(py_checks)
             except Exception:
-                pass
+                _logger.debug('Inline Python annotation parse', exc_info=True)  # best-effort: see RVT logs at debug level
 
         if quality_checks:
             decl = replace(decl, quality_checks=quality_checks)

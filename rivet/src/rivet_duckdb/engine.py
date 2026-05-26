@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import pyarrow
@@ -9,6 +10,7 @@ import pyarrow
 from rivet_core.models import ComputeEngine
 from rivet_core.plugins import ComputeEnginePlugin, ReferenceResolver
 
+_logger = logging.getLogger(__name__)
 ALL_6_CAPABILITIES = [
     "projection_pushdown",
     "predicate_pushdown",
@@ -271,7 +273,7 @@ class DuckDBComputeEnginePlugin(ComputeEnginePlugin):
             try:
                 conn.unregister(view)
             except Exception:
-                pass
+                _logger.debug('DuckDB view unregister (idempotent)', exc_info=True)  # best-effort: see RVT logs at debug level
         self._registered_views.clear()
 
     def _get_engine_lock(self, engine_name: str) -> Any:
@@ -333,7 +335,7 @@ class DuckDBComputeEnginePlugin(ComputeEnginePlugin):
                     try:
                         conn.unregister(view)
                     except Exception:
-                        pass
+                        _logger.debug('DuckDB view cleanup (idempotent)', exc_info=True)  # best-effort: see RVT logs at debug level
                 views.clear()
 
                 for name, table in input_tables.items():
@@ -585,7 +587,7 @@ def _collect_duckdb_metrics(execution_context: Any) -> Any:
                 peak_bytes = int(rows[0]) if rows[0] is not None else None
                 spilled_bytes = int(rows[1]) if rows[1] is not None else None
         except Exception:
-            pass
+            _logger.debug('DuckDB profiling stats read', exc_info=True)  # best-effort: see RVT logs at debug level
 
     # --- parallelism ---
     threads_used: int | None = None
@@ -595,7 +597,7 @@ def _collect_duckdb_metrics(execution_context: Any) -> Any:
             if row and row[0] is not None:
                 threads_used = int(row[0])
         except Exception:
-            pass
+            _logger.debug('DuckDB threads-setting read', exc_info=True)  # best-effort: see RVT logs at debug level
     if threads_used is None:
         threads_used = ctx.get("threads_used")
 
@@ -638,7 +640,7 @@ def _collect_duckdb_metrics(execution_context: Any) -> Any:
             ).fetchall()
             extensions["duckdb.loaded_extensions"] = [r[0] for r in loaded]
         except Exception:
-            pass
+            _logger.debug('DuckDB loaded-extensions read', exc_info=True)  # best-effort: see RVT logs at debug level
 
     return PluginMetrics(
         well_known=well_known,  # type: ignore[arg-type]

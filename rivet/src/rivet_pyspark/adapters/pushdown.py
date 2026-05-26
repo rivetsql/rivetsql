@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from rivet_core.optimizer import Cast, PushdownPlan, ResidualPlan
 from rivet_core.sql_parser import Predicate
 
+_logger = logging.getLogger(__name__)
 EMPTY_RESIDUAL = ResidualPlan(predicates=[], limit=None, casts=[])
 
 
@@ -31,7 +33,7 @@ def _apply_pyspark_pushdown(
         try:
             df = df.select(*pushdown.projections.pushed_columns)
         except Exception:
-            pass  # full columns already present, no residual needed
+            _logger.debug("PySpark projection rewrite skipped (columns already present)", exc_info=True)  # noqa: BLE001
 
     # Predicates: df.filter(expression)
     for pred in pushdown.predicates.pushed:

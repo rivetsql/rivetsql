@@ -6,6 +6,12 @@ on:
   push:
     branches: [main]
 
+# A new push to a PR cancels in-flight runs of the same ref. Pushes to main
+# are never cancelled (we always want a green build artifact for the tip).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -16,11 +22,35 @@ jobs:
           python-version: "3.12"
           cache: 'pip'
           cache-dependency-path: rivet/pyproject.toml
-      - run: pip install -e "./rivet[dev]"
+      - run: pip install -e "./rivet[dev,test]"
       - run: ruff check src tests
         working-directory: rivet
-      - run: mypy src
+      - run: mypy src tests
         working-directory: rivet
+
+  checks:
+    name: Internal quality scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: 'pip'
+          cache-dependency-path: rivet/pyproject.toml
+      - run: pip install -e "./rivet[dev]"
+      - name: Module boundaries
+        run: python rivet/scripts/check_module_boundaries.py
+      - name: Plugin coherence
+        run: python rivet/scripts/check_plugin_coherence.py
+      - name: Dependency audit
+        run: python rivet/scripts/audit_dependencies.py
+      - name: Dead code
+        run: python rivet/scripts/find_dead_code.py
+      - name: Stale docs
+        run: python rivet/scripts/flag_stale_docs.py
+      - name: CHANGELOG hygiene
+        run: python scripts/check_changelog.py
 
   test:
     strategy:
@@ -28,16 +58,16 @@ jobs:
         include:
           - python-version: "3.11"
             os: ubuntu-latest
-            test-scope: "tests/unit tests/integration"
+            test-scope: "tests"
           - python-version: "3.12"
             os: ubuntu-latest
             test-scope: "tests"
           - python-version: "3.12"
             os: macos-latest
-            test-scope: "tests/unit tests/integration"
+            test-scope: "tests"
           - python-version: "3.13"
             os: ubuntu-latest
-            test-scope: "tests/unit tests/integration"
+            test-scope: "tests"
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
@@ -77,4 +107,9 @@ jobs:
           cache: 'pip'
           cache-dependency-path: rivet/pyproject.toml
       - run: pip install -e "./rivet[dev,test]"
-      - run: pip install pip-audit && pip-audit
+      - name: pip-audit (advisory)
+        # Non-blocking: a transient CVE in an unrelated transitive dep should
+        # not gate PR merges. Failures are surfaced as PR annotations and
+        # tracked via the issue tracker (see CONTRIBUTING.md "Security audits").
+        continue-on-error: true
+        run: pip install pip-audit && pip-audit

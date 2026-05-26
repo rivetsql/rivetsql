@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 
 from botocore.exceptions import ClientError
@@ -9,6 +10,7 @@ from botocore.exceptions import ClientError
 from rivet_core.errors import ExecutionError, PluginValidationError, plugin_error
 from rivet_core.plugins import SinkPlugin
 
+_logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from rivet_core.models import Catalog, Joint, Material
 
@@ -641,4 +643,4 @@ def _apply_lf_tags(
         lf_client.add_lf_tags_to_resource(Resource=resource, LFTags=lf_tags_list)
     except Exception:
         # LF tag application is best-effort; do not fail the write
-        pass
+        _logger.debug('Lake Formation tag application (best-effort)', exc_info=True)  # best-effort: see RVT logs at debug level

@@ -42,7 +42,15 @@ class DuckDBLocalAdapter(ComputeEngineAdapter):
         self, engine: Any, catalog: Any, joint: Any, pushdown: PushdownPlan | None = None
     ) -> AdapterPushdownResult:
         # DuckDB→DuckDB reads use engine-native SQL, not adapter dispatch.
-        raise NotImplementedError("DuckDB local reads use engine-native SQL, not adapter dispatch")
+        raise ExecutionError(
+            plugin_error(
+                "RVT-501",
+                "DuckDB local reads use engine-native SQL, not adapter dispatch.",
+                plugin_name="rivet_duckdb",
+                plugin_type="adapter",
+                remediation="This adapter only supports write_dispatch. Reads should go through the engine directly.",
+            )
+        )
 
     def write_dispatch(self, engine: Any, catalog: Any, joint: Any, material: Any) -> Any:
         if isinstance(material, NativeSqlWriteContext):
@@ -130,7 +138,7 @@ class DuckDBLocalAdapter(ComputeEngineAdapter):
                 try:
                     conn.execute(f"DETACH {alias}")
                 except Exception:
-                    pass  # Best-effort detach
+                    _logger.debug("Best-effort DETACH failed for alias %s", alias, exc_info=True)  # noqa: BLE001
 
             _logger.debug(
                 "native_sql_write (engine conn): %s strategy=%s target=%s",

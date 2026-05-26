@@ -5,7 +5,7 @@ from __future__ import annotations
 from rivet_bridge.errors import BridgeError
 from rivet_bridge.models import BridgeResult
 from rivet_config import ResolvedProfile
-from rivet_core import Assembly, Catalog, ComputeEngine
+from rivet_core import Assembly, Catalog, ComputeEngine, Joint
 from rivet_core.assembly import AssemblyError
 
 _ERROR_CODE_MAP = {
@@ -20,7 +20,7 @@ _ERROR_CODE_MAP = {
 class AssemblyBuilder:
     def build(
         self,
-        joints: list,  # type: ignore[type-arg]
+        joints: list[Joint],
         catalogs: dict[str, Catalog],
         engines: dict[str, ComputeEngine],
         profile: ResolvedProfile,

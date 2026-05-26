@@ -39,8 +39,14 @@ class PostgresLocalAdapter(ComputeEngineAdapter):
     def read_dispatch(
         self, engine: Any, catalog: Any, joint: Any, pushdown: PushdownPlan | None = None
     ) -> AdapterPushdownResult:
-        raise NotImplementedError(
-            "Postgres local reads use engine-native SQL, not adapter dispatch"
+        raise ExecutionError(
+            plugin_error(
+                "RVT-501",
+                "Postgres local reads use engine-native SQL, not adapter dispatch.",
+                plugin_name="rivet_postgres",
+                plugin_type="adapter",
+                remediation="This adapter only supports write_dispatch. Reads should go through the engine directly.",
+            )
         )
 
     def write_dispatch(self, engine: Any, catalog: Any, joint: Any, material: Any) -> Any:

@@ -20,10 +20,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - `--engine` / `-e` flag on `rivet run` and `rivet compile` to override the profile's `default_engine` without editing `profiles.yaml`
 
+- Subgraph poisoning in the compiler: when a joint fails engine or adapter resolution in Phase 2, all its downstream dependents are skipped in Phase 4 (SQL compilation), preventing cascading error noise that obscured the root cause
+- `compile_until()` public API for partial compilation — returns the intermediate `PhaseState` at any named phase, enabling targeted debugging and testing
+- `AdapterDecision` traceability records on `CompiledAssembly` — each adapter lookup records the engine/catalog pair, resolution method (exact match, wildcard fallback, none), and available alternatives
+- Per-phase timing in `CompilationStats.phase_durations_ms` — records execution duration of each compiler phase in milliseconds
+- `PluginAnnotation` records on `CompiledAssembly` for core/plugin boundary visibility — every catalog, engine, adapter, and reference resolver invocation is annotated with phase, plugin class, operation, and result
+- Exhaustive compiler internals documentation at `docs/concepts/compiler-internals.md` covering all 10 compilation phases, optimizer passes, SQL parser, lineage, plugin interactions, and data models
+- `IntrospectionRecord` entries on `CompiledAssembly` — per-source introspection details including catalog type, result status, duration, and schema/stats availability
+- Three verbosity tiers for `rivet compile` output: compact (v=0), normal (v=1), verbose (v=2)
+- `ProgressCallback` protocol in the Executor for live progress events during pipeline execution
+- `LiveRunRenderer` for real-time execution progress during `rivet run` with three verbosity tiers
+- Consistent icon vocabulary for joint types (`📥` source, `🔧` transform, `📤` sink, `🔒` checkpoint)
+- Output channel separation: live progress to stderr, final summary to stdout
+- Compilation summary line printed to stderr before `rivet run` execution
+
 ### Changed
 - Compiler pipeline phases 8 and 9 swapped: Engine Boundary Detection now runs before Materialization Determination, so materialization uses validated `engine_boundaries` instead of ad-hoc engine-name comparison
 - Group stats table in `compile` and `run` output now shows the last joint name instead of the group UUID, making output easier to read
 - Dialect translation pipeline refactored into composable pre-transpile and post-transpile normalization passes for extensibility
+
+- Compiler internals refactored into 10 sequential phases (`prune_dag` → `resolve_metadata` → `introspect_sources` → `compile_sql` → `fusion` → `optimization` → `strategy_resolution` → `materialization` → `engine_boundaries` → `finalization`), each a pure function over an immutable `PhaseState` accumulator — no change to `compile()` signature or `CompiledAssembly` output
+- Normal compile output (v=1) shows only executed SQL, omitting original/translated/resolved variants (now v=2 only)
+- `rivet run` text format uses `LiveRunRenderer` for real-time progress output
 
 ### Fixed
 - Source joints without an adapter (e.g. filesystem catalog on Spark/Polars) now correctly rewrite CTE bodies to reference the joint name instead of the `table_map`-resolved physical name — previously only adapter-backed sources were rewritten, causing `TABLE_OR_VIEW_NOT_FOUND` errors on engines like PySpark
@@ -46,26 +64,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fused SQL now uses dialect-translated SQL (`sql_translated`) instead of DuckDB-normalized SQL (`j.sql`), fixing `UNSUPPORTED_DATATYPE` errors (e.g. `TEXT` instead of `STRING`) on engines like PySpark
 - Execution SQL resolution no longer uses catalog-resolved SQL (`sql_resolved`) when upstream data is materialized across engine boundaries, preventing bypass of in-memory input tables (e.g. source inline transforms like YAML columns/filter being ignored)
 
-### Added
-- Subgraph poisoning in the compiler: when a joint fails engine or adapter resolution in Phase 2, all its downstream dependents are skipped in Phase 4 (SQL compilation), preventing cascading error noise that obscured the root cause
-- `compile_until()` public API for partial compilation — returns the intermediate `PhaseState` at any named phase, enabling targeted debugging and testing
-- `AdapterDecision` traceability records on `CompiledAssembly` — each adapter lookup records the engine/catalog pair, resolution method (exact match, wildcard fallback, none), and available alternatives
-- Per-phase timing in `CompilationStats.phase_durations_ms` — records execution duration of each compiler phase in milliseconds
-- `PluginAnnotation` records on `CompiledAssembly` for core/plugin boundary visibility — every catalog, engine, adapter, and reference resolver invocation is annotated with phase, plugin class, operation, and result
-- Exhaustive compiler internals documentation at `docs/concepts/compiler-internals.md` covering all 10 compilation phases, optimizer passes, SQL parser, lineage, plugin interactions, and data models
-- `IntrospectionRecord` entries on `CompiledAssembly` — per-source introspection details including catalog type, result status, duration, and schema/stats availability
-- Three verbosity tiers for `rivet compile` output: compact (v=0), normal (v=1), verbose (v=2)
-- `ProgressCallback` protocol in the Executor for live progress events during pipeline execution
-- `LiveRunRenderer` for real-time execution progress during `rivet run` with three verbosity tiers
-- Consistent icon vocabulary for joint types (`📥` source, `🔧` transform, `📤` sink, `🔒` checkpoint)
-- Output channel separation: live progress to stderr, final summary to stdout
-- Compilation summary line printed to stderr before `rivet run` execution
-
-### Changed
-- Compiler internals refactored into 10 sequential phases (`prune_dag` → `resolve_metadata` → `introspect_sources` → `compile_sql` → `fusion` → `optimization` → `strategy_resolution` → `materialization` → `engine_boundaries` → `finalization`), each a pure function over an immutable `PhaseState` accumulator — no change to `compile()` signature or `CompiledAssembly` output
-- Normal compile output (v=1) shows only executed SQL, omitting original/translated/resolved variants (now v=2 only)
-- `rivet run` text format uses `LiveRunRenderer` for real-time progress output
-
 ## [0.1.15] - 2026-03-16
 
 ### Added
@@ -79,6 +77,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Optional `schema` filter for Databricks and Unity catalog plugins — when set, restricts explore/REPL schema listings and source declarations to the configured schema; when omitted, all schemas are visible
 - `CheckpointSourceInfo` frozen dataclass and `checkpoint_sources` field on `FusedGroup` — pre-resolved catalog and adapter metadata for checkpoint-to-downstream resolution, populated at compile time (defaults to empty dict, no impact on existing pipelines)
 - Compiler `_build_checkpoint_sources` step pre-resolves adapter metadata for checkpoint-to-downstream pairs on each `FusedGroup`, with compile-time warnings for missing adapters and inclusion in `rivet compile` adapter output
+
+- Downstream joints can now resolve checkpoint references using adapters, source plugins, or Arrow fallback — enabling cross-engine checkpoint consumption where, for example, a Spark joint reads directly from a DuckDB-written checkpoint table without an Arrow round-trip
+
+- `checkpoint` joint type — writes intermediate pipeline results to a catalog table and re-exposes them for downstream joints, enabling long-pipeline staging and fan-out patterns
+- Compiler support for `checkpoint` joint type: validates `catalog`/`table` fields, defaults `write_strategy` to `"replace"`, emits warning for checkpoints with no downstream consumers, and creates `checkpoint_boundary` materialization entries
+- Checkpoint joints now support SQL (inline or `.sql` file) and YAML transforms (`columns`/`filter`/`limit`) identical to sink joints — enabling cross-group predicate, projection, and limit pushdown from checkpoint SQL to upstream sources
+- `rivet repl execute --compile-only`: new flag that compiles the transient pipeline and prints the compilation result (joints, fused groups, resolved SQL) as JSON without executing the query
+- Sink SQL parsing: sink joints with SQL now have their SQL parsed into a LogicalPlan, enabling cross-group predicate, projection, and limit pushdown from sinks to upstream sources — YAML-declared sink transforms (`columns`/`filter`/`limit`) also benefit because the bridge generates SQL for them
+- `DatabricksAdapter` for `(databricks, databricks)` engine/catalog pair — enables source joints on `databricks` catalog type (both Unity namespaces and legacy `hive_metastore`) to be read/written via the Databricks Statement Execution API
+- Type parser now supports `map<K,V>` complex types, resolving unknown-type warnings for Databricks/Hive columns with map types
+
+### Changed
+- Checkpoint joints now return a `DeferredRef` instead of eagerly reading data back into an Arrow table, enabling lazy resolution by downstream groups through the same adapter and source plugin mechanism used for source joints
+
+- Source inline SQL now uses `FROM __self` instead of `FROM {joint_name}` — `__self` is a reserved alias substituted with the table FQN at compile time
+- Python joint documentation now recommends `-> Material` as the canonical return type hint across all guides, concept docs, and plugin docs
+- `rivet init` source template now uses SQL with an explicit SELECT statement by default (sql and mixed styles); yaml style uses `columns` field for explicit projection
+- All plugin `pyproject.toml` files now use `dev-mode-dirs = ["."]` so `pip install -e` works for every plugin, not just core
+- `scripts/dev-install.sh` now installs all plugins in editable mode (`-e`) for instant source change pickup during development
 
 ### Fixed
 - Databricks sink FQN resolution: two-part table names (`schema.table`) on legacy catalogs no longer produce invalid four-part names (`catalog.default.schema.table`) — the sink now correctly prepends only the catalog, producing `catalog.schema.table`
@@ -94,29 +111,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Executor no longer calls `.to_arrow()` on `DeferredRef` entries from unrelated groups when building Arrow input tables — previously, a checkpoint written via native SQL in one group caused `RVT-501` errors when a sibling group tried to eagerly materialize it during its own execution
 - Sink joints now use native SQL write when fused SQL is unavailable — when a sink is in its own fused group (e.g. upstream has assertions or is on a different engine), the executor constructs `SELECT * FROM {upstream}` from the materialized upstream table instead of silently falling back to the Arrow path
 
-### Changed
-- Checkpoint joints now return a `DeferredRef` instead of eagerly reading data back into an Arrow table, enabling lazy resolution by downstream groups through the same adapter and source plugin mechanism used for source joints
-
-### Added
-- Downstream joints can now resolve checkpoint references using adapters, source plugins, or Arrow fallback — enabling cross-engine checkpoint consumption where, for example, a Spark joint reads directly from a DuckDB-written checkpoint table without an Arrow round-trip
-
-### Changed
-- Source inline SQL now uses `FROM __self` instead of `FROM {joint_name}` — `__self` is a reserved alias substituted with the table FQN at compile time
-- Python joint documentation now recommends `-> Material` as the canonical return type hint across all guides, concept docs, and plugin docs
-- `rivet init` source template now uses SQL with an explicit SELECT statement by default (sql and mixed styles); yaml style uses `columns` field for explicit projection
-- All plugin `pyproject.toml` files now use `dev-mode-dirs = ["."]` so `pip install -e` works for every plugin, not just core
-- `scripts/dev-install.sh` now installs all plugins in editable mode (`-e`) for instant source change pickup during development
-
-### Added
-- `checkpoint` joint type — writes intermediate pipeline results to a catalog table and re-exposes them for downstream joints, enabling long-pipeline staging and fan-out patterns
-- Compiler support for `checkpoint` joint type: validates `catalog`/`table` fields, defaults `write_strategy` to `"replace"`, emits warning for checkpoints with no downstream consumers, and creates `checkpoint_boundary` materialization entries
-- Checkpoint joints now support SQL (inline or `.sql` file) and YAML transforms (`columns`/`filter`/`limit`) identical to sink joints — enabling cross-group predicate, projection, and limit pushdown from checkpoint SQL to upstream sources
-- `rivet repl execute --compile-only`: new flag that compiles the transient pipeline and prints the compilation result (joints, fused groups, resolved SQL) as JSON without executing the query
-- Sink SQL parsing: sink joints with SQL now have their SQL parsed into a LogicalPlan, enabling cross-group predicate, projection, and limit pushdown from sinks to upstream sources — YAML-declared sink transforms (`columns`/`filter`/`limit`) also benefit because the bridge generates SQL for them
-- `DatabricksAdapter` for `(databricks, databricks)` engine/catalog pair — enables source joints on `databricks` catalog type (both Unity namespaces and legacy `hive_metastore`) to be read/written via the Databricks Statement Execution API
-- Type parser now supports `map<K,V>` complex types, resolving unknown-type warnings for Databricks/Hive columns with map types
-
-### Fixed
 - Checkpoint read-back on Databricks (and similar deferred-execution backends) no longer fails with `RVT-501 "requires the Databricks engine to read data"` — adapter read-back errors now propagate instead of silently falling through to the SourcePlugin (which always fails for deferred-execution backends); for backends where the SourcePlugin works (e.g. DuckDB), the fallback is still used
 - Source joints with inline SQL transforms no longer produce circular CTE references — `SQLGenerator` now emits `FROM __self` and the compiler substitutes it with the table FQN at compile time
 - `rivet repl execute` no longer produces `TABLE_OR_VIEW_NOT_FOUND` when querying known source joints (e.g. `select * from d_sku`) — source joints reconstructed from compiled_map now have their inline SQL stripped so the fusionner treats them as pure sources resolved to their FQN, matching the behavior of sources created by `preprocess_sql`
@@ -147,20 +141,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - REST API sink now declares `supported_strategies` and validates write strategies upfront
 - Arrow sink now declares `supported_strategies` class attribute
 
-### Fixed
-- Arrow sink now raises `ExecutionError` (RVT-501) for unsupported write strategies instead of silently falling back to replace
-- Arrow source now raises `ExecutionError` instead of bare `KeyError` when a table is not found
-- Arrow catalog `get_schema` now raises `ExecutionError` instead of bare `NotImplementedError` for missing tables
-- Arrow engine `validate` now rejects unrecognized options with `PluginValidationError` instead of silently accepting them
-- Filesystem catalog `validate` now rejects unrecognized options with `PluginValidationError` instead of silently accepting them
-- REST API sink now raises `ExecutionError` (RVT-501) for unsupported write strategies instead of silently accepting them
-- Multi-engine execution plans no longer fail when a reference resolver from one engine type (e.g. postgres) incorrectly rewrites SQL in groups belonging to a different engine type (e.g. duckdb)
-- Source inline transforms now work correctly for filesystem and other non-adapter catalogs — predicates, projections, and limits from YAML `filter`/`columns`/`limit` are applied as post-read residuals when the source plugin does not support pushdown
-- Source joints with YAML `filter` or `limit` (without `columns`) now correctly generate SQL for LogicalPlan extraction — previously only `columns` triggered SQL generation
-
-### Added
-- Databricks catalog plugin now implements `test_connection` (lightweight `/catalogs` API check) and `list_children` (schema → table → column hierarchy navigation)
-- PostgreSQL catalog plugin now implements `test_connection` (lightweight `SELECT 1` check) and `list_children` (schema → table → column hierarchy navigation)
 - Source inline transforms: `columns`, `filter`, and `limit` YAML fields on source joints push predicates, projections, and row limits to the adapter during reads — column expressions (renames, CAST, computed) are applied as post-read residuals; both YAML and SQL forms are interchangeable
 - Source inline transform validation in the compiler: single-table constraint enforcement (RVT-760, RVT-761, RVT-762), column reference warnings against introspected schema, and transformed output schema propagation for source joints with projections, renames, and CAST expressions
 - Python joints now automatically resolve project-local imports — no need to set `PYTHONPATH` manually; the compiler and executor inject the project root into `sys.path` transparently
@@ -177,6 +157,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fused group display now shows individual joint SQL (original, translated, resolved) instead of duplicating execution SQL for each joint, making it clearer how joints compose into the final fused query
 
 ### Fixed
+- Arrow sink now raises `ExecutionError` (RVT-501) for unsupported write strategies instead of silently falling back to replace
+- Arrow source now raises `ExecutionError` instead of bare `KeyError` when a table is not found
+- Arrow catalog `get_schema` now raises `ExecutionError` instead of bare `NotImplementedError` for missing tables
+- Arrow engine `validate` now rejects unrecognized options with `PluginValidationError` instead of silently accepting them
+- Filesystem catalog `validate` now rejects unrecognized options with `PluginValidationError` instead of silently accepting them
+- REST API sink now raises `ExecutionError` (RVT-501) for unsupported write strategies instead of silently accepting them
+- Multi-engine execution plans no longer fail when a reference resolver from one engine type (e.g. postgres) incorrectly rewrites SQL in groups belonging to a different engine type (e.g. duckdb)
+- Source inline transforms now work correctly for filesystem and other non-adapter catalogs — predicates, projections, and limits from YAML `filter`/`columns`/`limit` are applied as post-read residuals when the source plugin does not support pushdown
+- Source joints with YAML `filter` or `limit` (without `columns`) now correctly generate SQL for LogicalPlan extraction — previously only `columns` triggered SQL generation
+
 - CTE fusion bug: joints containing WITH clauses now fuse correctly — CTEs are extracted and merged into a single top-level WITH clause instead of generating invalid SQL with multiple WITH keywords
 - Cross-wave table references: joints in later execution waves can now correctly reference materialized tables from earlier waves when those tables have assertion boundaries — improved SQL parser now extracts table references from CTEs, subqueries, and complex SQL patterns, not just simple FROM/JOIN clauses
 - PostgreSQL plugin now works correctly when called from async contexts (REPL, explore sessions) — replaced direct `asyncio.run()` calls with safe async execution that detects running event loops and uses thread-based execution when necessary
@@ -344,21 +334,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.1] - 2026-03-06
 
+### Changed
+- Removed automated semantic-release workflow; versions are now managed manually
+- Properly typed `ExploreController` renderer as `TerminalRenderer`
+- Cleaned up `# type: ignore` comments in explore command
+
 ### Fixed
 - Resolved ruff lint errors across CLI and tests (dead code, unused imports, f-string prefixes, import sorting)
 - Fixed missing `_initial_sql` attribute in editor cache restore test
 - Resolved mypy type errors in explore command and terminal renderer
 - Fixed `.gitignore` entry for `.kiro/` directory
 
-### Changed
-- Removed automated semantic-release workflow; versions are now managed manually
-- Properly typed `ExploreController` renderer as `TerminalRenderer`
-- Cleaned up `# type: ignore` comments in explore command
-
 ## [0.1.0] - 2025-01-01
 
 ### Added
-
 #### Core Framework (`rivetsql-core`)
 - **Joints** — declarative pipeline units defined in SQL, YAML, or Python
 - **Engines** — pluggable execution backends; swap without changing pipeline logic

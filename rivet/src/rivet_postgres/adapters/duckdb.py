@@ -10,6 +10,7 @@ PostgreSQL access from DuckDB queries.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 
 import pyarrow
@@ -20,6 +21,7 @@ from rivet_core.optimizer import AdapterPushdownResult, Cast, PushdownPlan, Resi
 from rivet_core.plugins import ComputeEngineAdapter
 from rivet_core.strategies import MaterializedRef
 
+_logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     import duckdb
 
@@ -46,7 +48,7 @@ def _apply_pushdown(
             cols = ", ".join(pushdown.projections.pushed_columns)
             sql = sql.replace("SELECT *", f"SELECT {cols}", 1)
         except Exception:
-            pass
+            _logger.debug('Pushdown projection rewrite', exc_info=True)  # best-effort: see RVT logs at debug level
 
     if pushdown.predicates.pushed:
         where_parts: list[str] = []
