@@ -1,0 +1,364 @@
+/* ── Rivet Brand Colors ─────────────────────────────────── */
+
+:root {
+  --md-primary-fg-color: #1a1a2e;
+  --md-primary-fg-color--light: #2d2d4a;
+  --md-primary-fg-color--dark: #0f0f1a;
+  --md-accent-fg-color: #6c63ff;
+  --md-accent-fg-color--transparent: rgba(108, 99, 255, 0.1);
+
+  /* Custom properties */
+  --rivet-gradient-start: #6c63ff;
+  --rivet-gradient-end: #3b82f6;
+  --rivet-surface: #f8f9fc;
+  --rivet-border: #e2e8f0;
+  --rivet-text-muted: #64748b;
+}
+
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: #1a1a2e;
+  --md-primary-fg-color--light: #2d2d4a;
+  --md-primary-fg-color--dark: #0f0f1a;
+  --md-accent-fg-color: #818cf8;
+  --md-accent-fg-color--transparent: rgba(129, 140, 248, 0.1);
+
+  --rivet-surface: #1e1e2e;
+  --rivet-border: #313244;
+  --rivet-text-muted: #94a3b8;
+}
+
+/* ── Header ────────────────────────────────────────────── */
+
+.md-header {
+  background: linear-gradient(135deg, var(--rivet-gradient-start), var(--rivet-gradient-end));
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.md-header__button.md-logo img {
+  height: 2rem;
+  width: auto;
+}
+
+.md-tabs {
+  background: rgba(0, 0, 0, 0.15);
+}
+
+/* ── Hero Section (home page) ──────────────────────────── */
+
+.hero-logo {
+  display: block;
+  margin: 0 auto 1.5rem;
+  width: 180px;
+  height: auto;
+}
+
+/* ── Hero Section (home page) ──────────────────────────── */
+
+.hero {
+  padding: 4rem 0 3rem;
+  text-align: center;
+}
+
+.hero h1 {
+  font-size: 3.2rem;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  background: linear-gradient(135deg, var(--rivet-gradient-start), var(--rivet-gradient-end));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  margin-bottom: 1rem;
+}
+
+.hero p.subtitle {
+  font-size: 1.25rem;
+  color: var(--rivet-text-muted);
+  max-width: 640px;
+  margin: 0 auto 2rem;
+  line-height: 1.6;
+}
+
+.hero-buttons {
+  display: flex;
+  gap: 1rem;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.hero-buttons .md-button {
+  border-radius: 8px;
+  padding: 0.7rem 2rem;
+  font-weight: 600;
+  font-size: 0.95rem;
+  transition: all 0.2s ease;
+}
+
+.hero-buttons .md-button--primary {
+  background: linear-gradient(135deg, var(--rivet-gradient-start), var(--rivet-gradient-end));
+  border: none;
+  color: white;
+}
+
+.hero-buttons .md-button--primary:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 16px rgba(108, 99, 255, 0.4);
+}
+
+/* ── Feature Grid ──────────────────────────────────────── */
+
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1.5rem;
+  margin: 2.5rem 0;
+}
+
+.feature-card {
+  background: var(--rivet-surface);
+  border: 1px solid var(--rivet-border);
+  border-radius: 12px;
+  padding: 1.75rem;
+  transition: all 0.2s ease;
+}
+
+.feature-card:hover {
+  border-color: var(--md-accent-fg-color);
+  box-shadow: 0 4px 16px var(--md-accent-fg-color--transparent);
+  transform: translateY(-2px);
+}
+
+.feature-card .twemoji,
+.feature-card .feature-icon {
+  font-size: 1.5rem;
+  margin-bottom: 0.75rem;
+  display: block;
+}
+
+.feature-card h3 {
+  font-size: 1.05rem;
+  font-weight: 700;
+  margin: 0 0 0.5rem;
+}
+
+.feature-card p {
+  font-size: 0.9rem;
+  color: var(--rivet-text-muted);
+  margin: 0;
+  line-height: 1.5;
+}
+
+/* ── Pillar Cards (concepts overview) ──────────────────── */
+
+.pillar-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1.5rem;
+  margin: 2rem 0;
+}
+
+@media (max-width: 768px) {
+  .pillar-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.pillar-card {
+  background: var(--rivet-surface);
+  border: 1px solid var(--rivet-border);
+  border-radius: 12px;
+  padding: 2rem 1.75rem;
+  text-align: center;
+  transition: all 0.2s ease;
+}
+
+.pillar-card:hover {
+  border-color: var(--md-accent-fg-color);
+  box-shadow: 0 4px 16px var(--md-accent-fg-color--transparent);
+}
+
+.pillar-card .pillar-icon {
+  font-size: 2rem;
+  margin-bottom: 1rem;
+}
+
+.pillar-card h3 {
+  font-size: 1.1rem;
+  font-weight: 700;
+  margin: 0 0 0.25rem;
+}
+
+.pillar-card .pillar-subtitle {
+  font-size: 0.85rem;
+  color: var(--md-accent-fg-color);
+  font-weight: 600;
+  margin: 0 0 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.pillar-card p:last-child {
+  font-size: 0.9rem;
+  color: var(--rivet-text-muted);
+  margin: 0;
+  line-height: 1.5;
+}
+
+/* ── Install Banner ────────────────────────────────────── */
+
+.install-banner {
+  background: var(--rivet-surface);
+  border: 1px solid var(--rivet-border);
+  border-radius: 12px;
+  padding: 1.5rem 2rem;
+  text-align: center;
+  margin: 2rem 0;
+}
+
+.install-banner code {
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+/* ── Content Tabs Fix ──────────────────────────────────── */
+
+.md-typeset .tabbed-set {
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.md-typeset .tabbed-labels {
+  border-bottom: 2px solid var(--rivet-border);
+  gap: 0;
+}
+
+.md-typeset .tabbed-labels > label {
+  font-size: 0.82rem;
+  font-weight: 600;
+  padding: 0.7rem 1.2rem;
+  border-radius: 0;
+  opacity: 0.6;
+  transition: all 0.2s ease;
+}
+
+.md-typeset .tabbed-labels > label:hover {
+  opacity: 0.85;
+}
+
+.md-typeset .tabbed-labels > label.tabbed-labels--active,
+.md-typeset .tabbed-set > input:checked + label {
+  opacity: 1;
+  border-bottom: 2px solid var(--md-accent-fg-color);
+  color: var(--md-accent-fg-color);
+}
+
+/* ── Code Blocks ───────────────────────────────────────── */
+
+.md-typeset code {
+  border-radius: 4px;
+}
+
+.md-typeset pre {
+  border-radius: 8px;
+}
+
+.md-typeset pre > code {
+  font-size: 0.82rem;
+  line-height: 1.6;
+}
+
+/* ── Admonitions ───────────────────────────────────────── */
+
+.md-typeset .admonition,
+.md-typeset details {
+  border-radius: 8px;
+  border-left-width: 4px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.05);
+}
+
+/* ── Tables ────────────────────────────────────────────── */
+
+.md-typeset table:not([class]) {
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--rivet-border);
+  font-size: 0.88rem;
+}
+
+.md-typeset table:not([class]) th {
+  background: var(--rivet-surface);
+  font-weight: 700;
+  text-transform: uppercase;
+  font-size: 0.75rem;
+  letter-spacing: 0.05em;
+}
+
+/* ── Mermaid Diagrams ──────────────────────────────────── */
+
+.md-typeset .mermaid {
+  text-align: center;
+  margin: 1.5rem 0;
+}
+
+/* ── Footer ────────────────────────────────────────────── */
+
+.md-footer {
+  background: var(--md-primary-fg-color);
+}
+
+/* ── Sidebar Navigation ────────────────────────────────── */
+
+.md-nav__link {
+  font-size: 0.85rem;
+}
+
+/* ── Quick Links Grid ──────────────────────────────────── */
+
+.link-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem;
+  margin: 2rem 0;
+}
+
+.link-card {
+  display: block;
+  background: var(--rivet-surface);
+  border: 1px solid var(--rivet-border);
+  border-radius: 10px;
+  padding: 1.25rem 1.5rem;
+  text-decoration: none;
+  color: inherit;
+  transition: all 0.2s ease;
+}
+
+.link-card:hover {
+  border-color: var(--md-accent-fg-color);
+  box-shadow: 0 4px 12px var(--md-accent-fg-color--transparent);
+  transform: translateY(-1px);
+  text-decoration: none;
+  color: inherit;
+}
+
+.link-card strong {
+  display: block;
+  margin-bottom: 0.25rem;
+  font-size: 0.95rem;
+}
+
+.link-card span {
+  font-size: 0.82rem;
+  color: var(--rivet-text-muted);
+}
+
+/* ── Comparison Table (plugins) ────────────────────────── */
+
+.md-typeset .comparison-table th,
+.md-typeset .comparison-table td {
+  text-align: center;
+  padding: 0.6rem 0.8rem;
+}
+
+.md-typeset .comparison-table td:first-child,
+.md-typeset .comparison-table th:first-child {
+  text-align: left;
+}
