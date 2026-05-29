@@ -75,6 +75,7 @@ nav:
     - AWS (S3 + Glue): plugins/aws.md
     - Unity / Databricks: plugins/unity.md
     - Plugin Development: plugins/development.md
+    - New Plugin Spec Template: plugins/new-plugin-spec-template.md
   - Reference:
     - API Reference: reference/api/index.md
     - Configuration: reference/config/index.md

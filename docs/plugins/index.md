@@ -147,4 +147,22 @@ default:
 <span>Build your own engine, catalog, or adapter plugin</span>
 </a>
 
+<a class="link-card" href="new-plugin-spec-template/">
+<strong>New Plugin Spec Template</strong>
+<span>Fill-in-the-blanks requirements / design / tasks template — use before writing code</span>
+</a>
+
 </div>
+
+---
+
+## For AI coding agents
+
+If you are an AI coding agent (Claude Code, OpenAI Codex, Cursor, Aider, etc.) tasked with building a new plugin, read these files in order:
+
+1. The repository's root [`AGENTS.md`](https://github.com/rivetsql/rivetsql/blob/main/AGENTS.md) — repository orientation.
+2. [`rivet/src/AGENTS.md`](https://github.com/rivetsql/rivetsql/blob/main/rivet/src/AGENTS.md) — the rule sheet for plugin authoring (layout, registration, naming, error handling, audits).
+3. [`new-plugin-spec-template.md`](new-plugin-spec-template.md) — fill it in before writing code.
+4. [`development.md`](development.md) — long-form ABC reference and worked examples.
+
+The same files apply equally to first-party plugins (in this repository) and third-party plugins (in your own repository).
