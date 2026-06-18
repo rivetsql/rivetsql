@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: pypi
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -30,7 +30,7 @@ jobs:
       matrix:
         plugin: [rivet_duckdb, rivet_postgres, rivet_polars, rivet_pyspark, rivet_databricks, rivet_aws, rivet_rest]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
